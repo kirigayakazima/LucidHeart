@@ -1,0 +1,5 @@
+# dsh-heart bundle patch: 以社区插件层的形式插入一行。
+# host 半边 = 包默认导出（lib/index.js 的 apply），数据目录不随包分发。
+- insert:
+    - id: dsh-heart
+      name: "@dsh/heart"

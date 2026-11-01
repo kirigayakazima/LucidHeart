@@ -1,0 +1,4 @@
+{
+  "version": 3,
+  "note": "心数据格式版本。与插件版本解耦：插件升级不改变这里，只有文件布局变化才递增。v2 起用 notebook/handoff/body 取代 CORE/RELATIONSHIP；v3 废弃 handoff 目录，记忆支持门牌出处索引与事实层分离。"
+}

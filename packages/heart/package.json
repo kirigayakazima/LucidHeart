@@ -1,0 +1,73 @@
+{
+  "name": "@dsh/heart",
+  "version": "0.20.0",
+  "description": "DSH 的「心」与「身体」：身体按宿主环境安装，心分三层（本子/事实/情节）。数据在用户主目录，插件只提供写入面。",
+  "type": "module",
+  "main": "lib/index.js",
+  "bin": {
+    "heart": "./bin/heart.js",
+    "sense": "./bin/sense.js"
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./contracts": {
+      "default": "./contracts/index.js"
+    },
+    "./service": {
+      "default": "./lib/service.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./store": {
+      "default": "./lib/store.js"
+    },
+    "./dream": {
+      "default": "./lib/dream.js"
+    },
+    "./logger": {
+      "default": "./lib/logger.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "contracts",
+    "lib/client.js",
+    "bin",
+    "schema.json",
+    "cordis.patch.yml"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "heart",
+    "memory",
+    "notebook"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": false,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

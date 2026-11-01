@@ -1,0 +1,4 @@
+# 手机容器是 Linux：所有文本强制 LF，避免 CRLF 进容器
+* text=auto eol=lf
+*.png binary
+*.jpg binary
