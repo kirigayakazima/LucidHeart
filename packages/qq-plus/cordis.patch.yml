@@ -1,0 +1,4 @@
+# @dsh/qq-plus bundle patch
+- insert:
+    - id: dsh-qq-plus
+      name: "@dsh/qq-plus"

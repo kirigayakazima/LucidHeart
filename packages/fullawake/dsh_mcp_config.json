@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "fullawake": {
+      "url": "http://<PC_LAN_IP>:8765/sse",
+      "headers": {
+        "Authorization": "Bearer xiaoman-pc-bridge-secret-2026"
+      }
+    }
+  }
+}

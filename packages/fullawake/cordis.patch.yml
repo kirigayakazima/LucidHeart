@@ -1,0 +1,4 @@
+# dsh-fullawake bundle patch: 以插件层的形式插入一行
+- insert:
+    - id: dsh-fullawake
+      name: "dsh-fullawake"

@@ -1,0 +1,40 @@
+{
+  "name": "dsh-fullawake",
+  "version": "0.1.0",
+  "description": "FullAwake PC 感官与能力扩展适配插件：桥接 Windows PC 视觉与文件能力，向 Heart 提供设备在线与状态观察。",
+  "type": "module",
+  "main": "lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "package.json"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "fullawake",
+    "pc-bridge",
+    "sensor",
+    "vision"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
+    "@deepseek-ai/schemastery": ">=3.18.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

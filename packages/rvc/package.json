@@ -1,0 +1,46 @@
+{
+  "name": "@dsh/rvc",
+  "version": "0.1.3",
+  "description": "RVC 拟人音色与 Heart 情绪自适应发音插件：适配 Dv5 大肥鱼少女音色，支持 PC GPU 极速算力分流与手机纯离线本地推理双模式，无缝对接 Heart Protocol v1 情绪态与 QQ 语音发送。",
+  "type": "module",
+  "main": "lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./acoustic": {
+      "default": "./lib/acoustic.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "vendor",
+    "cordis.patch.yml",
+    "package.json",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "rvc",
+    "voice",
+    "tts",
+    "heart",
+    "dv5"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.3.0",
+    "@deepseek-ai/schemastery": ">=3.18.0"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
