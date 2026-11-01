@@ -85,12 +85,12 @@
     },
     "sticker-look": {
       "id": "dsh-sticker-look",
-      "name": "Sticker Look Sovereign Fork",
-      "type": "sovereign_fork",
+      "name": "Sticker Look",
+      "type": "package",
       "version": "0.2.3",
       "layer": "Sensory",
-      "fork": "https://github.com/kirigayakazima/dsh-sticker-look",
-      "description": "Image and sticker intent recognition with Heart observation feedback."
+      "source": "packages/sticker-look",
+      "description": "Pure JS zero-dependency GIF frame decoder, contact sheet storyboard generator, and Heart Protocol v1 intent observer."
     }
   },
   "externalTools": {

@@ -1,0 +1,4 @@
+# dsh-sticker-look bundle patch：插一条 host 插件行。
+- insert:
+    - id: sticker-look
+      name: "dsh-sticker-look"

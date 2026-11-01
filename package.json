@@ -9,7 +9,8 @@
     "test:heart": "pnpm --filter @dsh/heart test",
     "test:fullawake": "pnpm --filter dsh-fullawake test",
     "test:qq-plus": "pnpm --filter @dsh/qq-plus test",
-    "test:rvc": "pnpm --filter @dsh/rvc test"
+    "test:rvc": "pnpm --filter @dsh/rvc test",
+    "test:sticker-look": "pnpm --filter dsh-sticker-look test"
   },
   "keywords": [
     "dsh",
