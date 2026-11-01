@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "version": "1.0.0",
-  "name": "dsha-suite-manifest",
-  "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the DSHA ecosystem.",
-  "updatedAt": "2026-11-01T11:40:00+08:00",
+  "name": "lucidheart-suite-manifest",
+  "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
+  "updatedAt": "2026-11-01T12:40:00+08:00",
   "components": {
     "heart": {
       "id": "@dsh/heart",

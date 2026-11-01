@@ -1,3 +1,6 @@
+# Local Private Documentation (Keep on local workspace only)
+docs/
+
 # Dependencies & Build artifacts
 node_modules/
 .pnpm-store/

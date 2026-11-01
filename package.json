@@ -1,8 +1,8 @@
 {
-  "name": "dsha-suite",
+  "name": "lucidheart",
   "version": "0.1.0",
   "private": true,
-  "description": "DeepSeek Heart Agent (DSHA) - Open Sovereign Multi-Agent Suite for Xiaoman & Axing",
+  "description": "LucidHeart (HeartAwake Suite) - Dual-Embodied AI Companion System for Xiaoman & Axing",
   "type": "module",
   "scripts": {
     "test": "pnpm -r --if-present test",
@@ -13,8 +13,11 @@
     "test:sticker-look": "pnpm --filter dsh-sticker-look test"
   },
   "keywords": [
-    "dsh",
-    "dsha",
+    "lucidheart",
+    "heartawake",
+    "xiaoman",
+    "axing",
+    "companion",
     "agent",
     "cordis",
     "heart-protocol",
@@ -23,5 +26,9 @@
     "embodiment"
   ],
   "author": "kirigayakazima",
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kirigayakazima/LucidHeart.git"
+  }
 }

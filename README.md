@@ -1,6 +1,6 @@
-# DSHA - DeepSeek Heart Agent Suite
+# LucidHeart (HeartAwake Suite)
 
-> **Sovereign Multi-Agent Architecture for Xiaoman (小满 · 手机端) & Axing (阿醒 · PC端)**  
+> **Sovereign Dual-Embodied AI Companion System for Xiaoman (妹妹·小满 · 手机端) & Axing (姐姐·阿醒 · PC端)**  
 > 运行双端：`Redmi 23049RAD8C` (Android 17 / Proot Ubuntu) ⟷ `Windows 11 PC`  
 > 核心原则：**Sovereign Fork & Heart Protocol v1** (纯离线闭包封包 + 原生 ADB Socket 推送)
 
@@ -8,16 +8,17 @@
 
 ## 1. 架构总览与生态矩阵
 
-DSHA 采用 **统一主源码 Monorepo + 主权外部驱动 Fork + 独立安全工具** 架构：
+LucidHeart 采用 **统一主源码 Monorepo (HeartAwake Suite) + 主权外部驱动 Fork + 独立安全工具** 架构：
 
 ```mermaid
 flowchart TB
-    subgraph SUITE["DSHA Monorepo (本代码库)"]
+    subgraph SUITE["LucidHeart Monorepo (HeartAwake Suite)"]
         HEART["packages/heart<br/>(Heart Core 微内核 0.20.0)"]
         FULLAWAKE["packages/fullawake<br/>(FullAwake 手机客户端桥 0.1.0)"]
         PC_APP["apps/fullawake-pc<br/>(FullAwake PC 网关)"]
         QQ_PLUS["packages/qq-plus<br/>(QQ 双向拟人交互 0.2.1)"]
         RVC["packages/rvc<br/>(Dv5 拟人音色器官 0.1.3)"]
+        STICKER["packages/sticker-look<br/>(自研表情包与动图抽帧 0.2.3)"]
     end
 
     subgraph FORKS["主权外部驱动与能力 (固定锁定版本)"]
@@ -25,7 +26,6 @@ flowchart TB
         MNEMON["dsh-mnemon<br/>(三层记忆引擎)"]
         BILI["dsh-bili-scroll<br/>(B站习惯巡检与分镜)"]
         STORYBOARD["dsh-video-storyboard<br/>(视频分镜分析)"]
-        STICKER["dsh-sticker-look<br/>(表情包感知)"]
     end
 
     subgraph TOOLS["独立高安全工具 (物理隔离维护)"]
@@ -36,6 +36,7 @@ flowchart TB
     HEART <== Heart Protocol v1 ==> FULLAWAKE
     HEART <== 门控与情绪节奏 ==> QQ_PLUS
     HEART <== 声学映射 ==> RVC
+    HEART <== 意图感知回流 ==> STICKER
     FULLAWAKE <== MCP / HTTP ==> PC_APP
     QQ_PLUS <== 发送包装 ==> QQBOT
     RVC <== 语音条直发 ==> QQBOT
@@ -46,7 +47,7 @@ flowchart TB
 ## 2. 目录布局
 
 ```text
-dsha-suite/
+lucidheart/ (HeartAwake Suite)
   apps/
     fullawake-pc/             # PC 端感官与算力分流网关 (Python / FastAPI / uv)
   packages/
@@ -54,11 +55,11 @@ dsha-suite/
     fullawake/                # dsh-fullawake: 手机端 PC 感官适配器与多模态截屏
     qq-plus/                  # @dsh/qq-plus: 小满/阿醒双角色唤醒与拟人断句气泡
     rvc/                      # @dsh/rvc: Dv5 拟人发音与歌唱器官
+    sticker-look/             # dsh-sticker-look: 零依赖动图抽帧、联系表生成与意图推断
   manifests/
     components.lock.json      # 全组件权威版本、上游溯源与锁定清单
   tests/
     integration/              # 跨子系统端到端集成测试
-  docs/                       # 架构设计、RFC 提案与路线图
   pnpm-workspace.yaml
   package.json
 ```
@@ -82,6 +83,7 @@ pnpm test:heart
 pnpm test:fullawake
 pnpm test:qq-plus
 pnpm test:rvc
+pnpm test:sticker-look
 ```
 
 ### 3.2 Python 模块开发规范
