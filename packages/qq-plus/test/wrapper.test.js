@@ -191,3 +191,25 @@ test('Heart 唤醒感知上报（reportWakeToHeart）', async () => {
   assert.equal(observed[0].evidence.hitWord, '小满')
   assert.equal(observed[0].evidence.persona, 'xiaoman')
 })
+
+test('出站分段发送：首段保留引用，后续分段关闭引用防刷屏', async () => {
+  const sender = createFakeSender()
+  const ctx = createFakeCtx(sender)
+  apply(ctx, {
+    persona: 'xiaoman',
+    split: { minChars: 20, targetChars: 25, delayMs: 10, maxSegments: 2 },
+  })
+
+  const longText = '第一句话详细说明情况，提供必要的背景上下文。第二句话给出具体解决方案，指导后续动作。'
+  const opts = { refMsgId: 'msg_target_001', customTag: 'val' }
+  await sender.sendMarkdown({ scope: 'group', targetId: 'grp_1' }, longText, opts)
+
+  const calls = sender.getCalls()
+  assert.equal(calls.length, 2)
+  // 第一段保留原始 opts
+  assert.equal(calls[0].opts.refMsgId, 'msg_target_001')
+  assert.equal(calls[0].opts.customTag, 'val')
+  // 第二段显式关闭引用
+  assert.equal(calls[1].opts.quoteReply, false)
+  assert.equal(calls[1].opts.refMsgId, undefined)
+})

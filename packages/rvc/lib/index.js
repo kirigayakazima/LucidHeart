@@ -28,7 +28,7 @@ export const Config = z
       mock: z.boolean().default(false).description('开发与测试模式 (不调用真实推理)'),
       autoSendQq: z.boolean().default(true).description('在 QQ 会话中调用时是否自动发送语音条'),
     })
-  : null
+  : undefined
 
 const defaultOutput = {
   schema: { type: 'object', properties: {}, additionalProperties: true },

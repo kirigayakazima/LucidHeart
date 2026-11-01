@@ -29,4 +29,4 @@ export const Config = Schema
         skipPrefixes: Schema.array(Schema.string()).default(['🔧', '❌', '⚠️']).description('跳过断句的消息前缀'),
       }).description('出站消息切分参数'),
     })
-  : null
+  : undefined

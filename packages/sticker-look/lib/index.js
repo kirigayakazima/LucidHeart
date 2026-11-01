@@ -42,7 +42,7 @@ export const Config = z
       /** 是否向 Heart Protocol v1 汇报感知事实以驱动情绪微调。 */
       observeHeart: z.boolean().default(true),
     })
-  : null
+  : undefined
 
 const textOutput = {
   schema: {

@@ -1,0 +1,54 @@
+{
+  "name": "@dsh/memory",
+  "version": "0.1.0",
+  "description": "LucidHeart Sovereign Memory Core - Local-First, Markdown Ground Truth, Built-in SQLite FTS5 Indexing & Token Budgeting",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./types": {
+      "default": "./lib/types.js"
+    },
+    "./service": {
+      "default": "./lib/service.js"
+    },
+    "./store": {
+      "default": "./lib/store.js"
+    },
+    "./indexer": {
+      "default": "./lib/indexer.js"
+    },
+    "./tokenizer": {
+      "default": "./lib/tokenizer.js"
+    },
+    "./budget": {
+      "default": "./lib/budget.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "agent-memory",
+    "lucidheart",
+    "fts5",
+    "local-first"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

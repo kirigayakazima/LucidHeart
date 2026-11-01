@@ -3,7 +3,12 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 /**
  * 探测当前运行环境与可用执行模式
@@ -91,6 +96,68 @@ export function executePhoneSayvoice(sayvoicePath, text, acoustic, outWav, model
 }
 
 /**
+ * 在 PC 端执行 GPU 极速发声合成 (pc_sayvoice.py)
+ */
+export function executePcSayvoice(text, acoustic, outWav) {
+  return new Promise((resolve, reject) => {
+    const defaultOut = path.resolve(os.homedir(), '.dsh', 'audio', `axing_voice_${Date.now()}.wav`)
+    const finalOut = outWav || defaultOut
+    fs.mkdirSync(path.dirname(finalOut), { recursive: true })
+
+    const pyExe = "C:\\Users\\xuaner\\AppData\\Roaming\\uv\\python\\cpython-3.10-windows-x86_64-none\\python.exe"
+    const scriptPath = path.resolve(__dirname, '../../../../rvc/scripts/pc_sayvoice.py')
+
+    const pythonPath = [
+      path.resolve(__dirname, '../../../../rvc/.venv310/Lib/site-packages'),
+      path.resolve(__dirname, '../../../../rvc/src'),
+      path.resolve(__dirname, '../../../../rvc/scripts')
+    ].join(';')
+
+    const pitch = typeof acoustic?.pitch === 'number' ? acoustic.pitch : -4
+    const args = [
+      scriptPath,
+      '--text', text,
+      '--pitch', String(pitch),
+      '--out', finalOut,
+      '--device', 'cuda:0',
+    ]
+
+    const t0 = Date.now()
+    const proc = spawn(pyExe, args, {
+      env: {
+        ...process.env,
+        PYTHONPATH: pythonPath,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+    proc.stdout.on('data', (d) => { stdout += d.toString() })
+    proc.stderr.on('data', (d) => { stderr += d.toString() })
+
+    proc.on('error', (err) => {
+      reject(new Error(`[pc_sayvoice] 进程启动失败: ${err.message}`))
+    })
+
+    proc.on('close', (code) => {
+      const durationMs = Date.now() - t0
+      if (code !== 0 || !fs.existsSync(finalOut)) {
+        return reject(new Error(`[pc_sayvoice] 失败 (退出码 ${code}):\n${stderr}\n${stdout}`))
+      }
+      resolve({
+        ok: true,
+        audioPath: finalOut,
+        durationMs,
+        acoustic,
+        mode: 'pc_gpu_rvc',
+        logs: stdout,
+      })
+    })
+  })
+}
+
+/**
  * 统一执行发声推理调度入口
  *
  * @param {object} params
@@ -148,8 +215,14 @@ export async function runSpeak(params) {
     return await executePhoneSayvoice(env.localSayvoicePath, text, acoustic, outWav, modelsDir)
   }
 
-  // 3. PC 本地 CLI 推理 (针对 PC 开发环境)
+  // 3. PC 本地 GPU 极速推理 (Windows PC 真实推理环境)
   if (env.isPc) {
+    const pcScript = path.resolve(__dirname, '../../../../rvc/scripts/pc_sayvoice.py')
+    if (fs.existsSync(pcScript)) {
+      console.log('[@dsh/rvc] 检测到 PC 本地 GPU 发声引擎，执行 GPU 极速合成...')
+      return await executePcSayvoice(text, acoustic, outWav)
+    }
+
     const mockOut = outWav || path.resolve(process.cwd(), `out_dv5_${Date.now()}.wav`)
     return {
       ok: true,

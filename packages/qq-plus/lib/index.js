@@ -34,7 +34,7 @@ export {
  */
 export function shouldSplit(content, opts, splitConfig = {}) {
   if (splitConfig.enabled === false) return false
-  if (opts && Object.keys(opts).length > 0) return false
+  if (opts?.keyboard) return false
   if (typeof content !== 'string') return false
   const trimmed = content.trim()
   const minChars = splitConfig.minChars ?? 120
@@ -130,8 +130,12 @@ export function apply(ctx, rawConfig = {}) {
       )
 
       for (let i = 0; i < parts.length; i++) {
+        // 仅第一段携带引用卡片，后续分段避免重复引用刷屏
+        const segmentOpts = i === 0
+          ? opts
+          : (opts ? { ...opts, quoteReply: false, messageReference: undefined, refMsgId: undefined } : { quoteReply: false })
         try {
-          await original.call(sender, target, parts[i], undefined)
+          await original.call(sender, target, parts[i], segmentOpts)
         } catch (err) {
           console.error(`[qq-plus] segment ${i + 1}/${parts.length} failed:`, err)
           break

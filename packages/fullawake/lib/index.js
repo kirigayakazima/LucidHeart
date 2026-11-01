@@ -24,7 +24,7 @@ export const Config = z
       authToken: z.string().default('xiaoman-pc-bridge-secret-2026').description('Bearer Token'),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
     })
-  : null
+  : undefined
 
 const textOutput = {
   schema: {

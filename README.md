@@ -16,9 +16,10 @@ flowchart TB
         HEART["packages/heart<br/>(Heart Core 微内核 0.20.0)"]
         FULLAWAKE["packages/fullawake<br/>(FullAwake 手机客户端桥 0.1.0)"]
         PC_APP["apps/fullawake-pc<br/>(FullAwake PC 网关)"]
-        QQ_PLUS["packages/qq-plus<br/>(QQ 双向拟人交互 0.2.1)"]
-        RVC["packages/rvc<br/>(Dv5 拟人音色器官 0.1.3)"]
+        QQ_PLUS["packages/qq-plus<br/>(QQ 双向拟人交互 0.2.2)"]
+        RVC["packages/rvc<br/>(Dv5 拟人音色器官 0.1.4)"]
         STICKER["packages/sticker-look<br/>(自研表情包与动图抽帧 0.2.3)"]
+        MEMORY["packages/memory<br/>(LucidMemory 专属记忆核心 0.1.0)"]
     end
 
     subgraph FORKS["主权外部驱动与能力 (固定锁定版本)"]
@@ -37,6 +38,7 @@ flowchart TB
     HEART <== 门控与情绪节奏 ==> QQ_PLUS
     HEART <== 声学映射 ==> RVC
     HEART <== 意图感知回流 ==> STICKER
+    HEART <== 经验检索与记忆流 ==> MEMORY
     FULLAWAKE <== MCP / HTTP ==> PC_APP
     QQ_PLUS <== 发送包装 ==> QQBOT
     RVC <== 语音条直发 ==> QQBOT
@@ -56,6 +58,7 @@ lucidheart/ (HeartAwake Suite)
     qq-plus/                  # @dsh/qq-plus: 小满/阿醒双角色唤醒与拟人断句气泡
     rvc/                      # @dsh/rvc: Dv5 拟人发音与歌唱器官
     sticker-look/             # dsh-sticker-look: 零依赖动图抽帧、联系表生成与意图推断
+    memory/                   # @dsh/memory: 轻量原生三层记忆核心、Markdown真源与FTS5检索
   manifests/
     components.lock.json      # 全组件权威版本、上游溯源与锁定清单
   tests/
