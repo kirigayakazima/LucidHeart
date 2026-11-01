@@ -6,6 +6,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { runProfileSpeak } from './voice-profile.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -170,6 +171,19 @@ export function executePcSayvoice(text, acoustic, outWav) {
  */
 export async function runSpeak(params) {
   const { text, acoustic, outWav, modelsDir, offloadBridge, mock } = params
+
+  let profilePath = params.voiceProfile
+  if (!profilePath && !mock) {
+    const phoneFeiyu = '/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json'
+    if (fs.existsSync(phoneFeiyu)) {
+      profilePath = phoneFeiyu
+    }
+  }
+
+  if (profilePath) {
+    if (mock) throw new Error('Voice profile validation requires a real worker; mock mode cannot certify a new model')
+    return runProfileSpeak({ ...params, voiceProfile: profilePath })
+  }
 
   if (mock) {
     const mockOut = outWav || `/tmp/mock_dv5_${Date.now()}.wav`

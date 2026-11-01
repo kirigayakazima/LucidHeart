@@ -1,0 +1,8 @@
+[
+  {"id": "00_control", "label": "重生成对照：原速、原语调", "rate": "+0%", "intonationScale": 1.0},
+  {"id": "01_rate06", "label": "仅语速加快 6%", "rate": "+6%", "intonationScale": 1.0},
+  {"id": "02_rate12", "label": "仅语速加快 12%", "rate": "+12%", "intonationScale": 1.0},
+  {"id": "03_contour125", "label": "仅语调起伏 1.25 倍", "rate": "+0%", "intonationScale": 1.25},
+  {"id": "04_contour150", "label": "仅语调起伏 1.50 倍", "rate": "+0%", "intonationScale": 1.5},
+  {"id": "05_combo", "label": "语速加快 6% ＋ 语调起伏 1.25 倍", "rate": "+6%", "intonationScale": 1.25}
+]

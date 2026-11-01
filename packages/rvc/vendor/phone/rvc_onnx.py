@@ -124,7 +124,31 @@ def extract_hubert_features(hubert_sess, audio16k: np.ndarray) -> np.ndarray:
     feats_100hz = np.repeat(feats, 2, axis=0) # 50Hz -> 100Hz
     return feats_100hz
 
-def extract_rmvpe_pitch(rmvpe_sess, audio16k: np.ndarray, target_frame_count: int, pitch_change: float = 0.0):
+def shape_intonation(pitchf: np.ndarray, scale: float = 1.0) -> np.ndarray:
+    """Experimental: expand voiced log-F0 around its median, not a global shift.
+
+    Preserve unvoiced frames and cap each frame's added deviation at 2 semitones.
+    Scale 1 is an exact bypass, keeping accepted/default synthesis unchanged.
+    """
+    if not np.isfinite(scale) or not 0.8 <= scale <= 1.6:
+        raise ValueError('Intonation scale must be finite and within 0.8..1.6')
+    if not np.isfinite(pitchf).all() or np.any(pitchf < 0):
+        raise ValueError('F0 must contain finite nonnegative values')
+    if scale == 1.0:
+        return pitchf
+    voiced = pitchf > 0
+    if voiced.sum() < 2:
+        return pitchf.copy()
+    result = pitchf.copy()
+    log_f0 = np.log2(pitchf[voiced].astype(np.float64))
+    center = np.median(log_f0)
+    extra = np.clip((log_f0 - center) * (scale - 1.0), -2 / 12, 2 / 12)
+    result[voiced] = np.clip(np.exp2(log_f0 + extra), 50, 1100)
+    return result
+
+
+def extract_rmvpe_pitch(rmvpe_sess, audio16k: np.ndarray, target_frame_count: int, pitch_change: float = 0.0,
+                        intonation_scale: float = 1.0):
     # Mel Filterbank calculation
     if librosa is not None:
         mel_fb = librosa.filters.mel(sr=16000, n_fft=1024, n_mels=128, fmin=30, fmax=8000, htk=True)
@@ -149,13 +173,14 @@ def extract_rmvpe_pitch(rmvpe_sess, audio16k: np.ndarray, target_frame_count: in
         src_f = min(f, salience.shape[0] - 1)
         best_bin = np.argmax(salience[src_f])
         conf = salience[src_f, best_bin]
-        if conf >= 0.03:
+        if conf >= 0.05:
             cents = RMVPE_CENTS_BASE + RMVPE_CENTS_PER_BIN * best_bin
             freq = 10.0 * (2.0 ** (cents / 1200.0))
             pitchf[f] = freq * semitone_factor
         else:
             pitchf[f] = 0.0
             
+    pitchf = shape_intonation(pitchf, intonation_scale)
     f0_min = 50.0
     f0_max = 1100.0
     f0_mel_min = 1127.0 * np.log(1.0 + f0_min / 700.0)
@@ -172,7 +197,7 @@ def extract_rmvpe_pitch(rmvpe_sess, audio16k: np.ndarray, target_frame_count: in
     
     return pitchf, pitch_quantized
 
-def load_mobile_index(path: str) -> np.ndarray:
+def load_mobile_index(path: str, normalize: bool = True) -> np.ndarray:
     """读 mobile index: magic URVCIDX1 + uint32 count + float32 向量矩阵。"""
     with open(path, "rb") as f:
         magic = f.read(8)
@@ -182,16 +207,35 @@ def load_mobile_index(path: str) -> np.ndarray:
         vec = np.frombuffer(f.read(), dtype=np.float32)
     dim = vec.size // count
     vec = vec[: count * dim].reshape(count, dim)
-    vec = (vec / (np.linalg.norm(vec, axis=1, keepdims=True) + 1e-9)).astype(np.float32)
+    if normalize:
+        vec = (vec / (np.linalg.norm(vec, axis=1, keepdims=True) + 1e-9)).astype(np.float32)
     print(f"[index] 载入 {count} 条 x {dim} 维", flush=True)
     return vec
 
-def apply_index(phone: np.ndarray, table: np.ndarray, ratio: float, batch_size: int = 500) -> np.ndarray:
+def apply_index(phone: np.ndarray, table: np.ndarray, ratio: float, batch_size: int = 500, method: str = 'cosine1') -> np.ndarray:
     """按相似度分批检索最接近的训练特征，按 ratio 混合回去。
     分批检索 (batch_size=500 帧) 避免全曲长音频时 (T, 55548) 相似度矩阵占用数 GB 内存导致 OOM。
     """
     if ratio <= 0.0 or table is None or len(table) == 0:
         return phone
+    if method == 'l2-8':
+        # Standard RVC retrieval: raw vectors, squared-L2 nearest 8 and inverse-square weights.
+        # Bounded batches keep this path usable without FAISS on ARM64.
+        norms = np.sum(table * table, axis=1)
+        results = []
+        k = min(8, len(table))
+        for i in range(0, len(phone), batch_size):
+            query = phone[i:i + batch_size].astype(np.float32)
+            scores = np.maximum(np.sum(query * query, axis=1, keepdims=True) + norms - 2 * query @ table.T, 0)
+            nearest = np.argpartition(scores, k - 1, axis=1)[:, :k]
+            distances = np.take_along_axis(scores, nearest, axis=1)
+            weights = np.square(1.0 / np.maximum(distances, 1e-6))
+            weights /= weights.sum(axis=1, keepdims=True)
+            retrieved = np.sum(table[nearest] * weights[..., None], axis=1)
+            results.append(retrieved * ratio + query * (1.0 - ratio))
+        return np.concatenate(results).astype(np.float32)
+    if method != 'cosine1':
+        raise ValueError(f'Unknown index method: {method}')
     q = phone.astype(np.float32)
     q = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-9)
     n_frames = q.shape[0]
@@ -235,8 +279,24 @@ def apply_brightness(audio: np.ndarray, sr: int = 40000, gain_db: float = 2.5, c
         print(f"[warning] brightness filter failed: {e}", flush=True)
         return audio
 
-def synthesize_segment(voice_sess, phone: np.ndarray, pitch: np.ndarray, pitchf: np.ndarray) -> np.ndarray:
+def synthesize_segment(voice_sess, phone: np.ndarray, pitch: np.ndarray, pitchf: np.ndarray,
+                       mode: str = 'chunked', noise_scale: float = 1.0, max_frames: int = 1000) -> np.ndarray:
     total_frames = len(pitch)
+    if mode not in ('chunked', 'continuous') or not np.isfinite(noise_scale) or not 0 <= noise_scale <= 1:
+        raise ValueError('Invalid synthesis mode/noise scale')
+    if mode == 'continuous':
+        # Independently synthesized voiced chunks have unrelated oscillator phases.
+        # Cross-fading those waveforms can cancel harmonics and produce tremolo.
+        # Keep one phase trajectory per bounded utterance; never silently fall back.
+        if total_frames > max_frames or total_frames < 1:
+            raise ValueError(f'Continuous synthesis requires 1..{max_frames} frames; split the utterance first')
+        inputs = {'phone': np.asarray(phone[:total_frames], dtype=np.float32)[None],
+                  'phone_lengths': np.array([total_frames], dtype=np.int64),
+                  'pitch': np.asarray(pitch, dtype=np.int64)[None],
+                  'pitchf': np.asarray(pitchf, dtype=np.float32)[None],
+                  'ds': np.array([0], dtype=np.int64),
+                  'rnd': np.random.randn(1, 192, total_frames).astype(np.float32) * noise_scale}
+        return voice_sess.run(None, inputs)[0].reshape(-1)[:total_frames * 400].astype(np.float32)
     hop_size = 400  # 40000 / 100
     expected = total_frames * hop_size
     acc = np.zeros(expected + hop_size * 2, dtype=np.float64)
@@ -258,7 +318,7 @@ def synthesize_segment(voice_sess, phone: np.ndarray, pitch: np.ndarray, pitchf:
 
         chunk_lengths = np.array([VOICE_CHUNK_FRAMES], dtype=np.int64)
         chunk_ds = np.array([0], dtype=np.int64)
-        chunk_rnd = np.random.randn(1, 192, VOICE_CHUNK_FRAMES).astype(np.float32)
+        chunk_rnd = np.random.randn(1, 192, VOICE_CHUNK_FRAMES).astype(np.float32) * noise_scale
 
         ort_inputs = {
             "phone": chunk_phone,
@@ -312,7 +372,11 @@ def convert_audio(
     index_ratio: float = 0.0,
     protect: float = 0.33,
     brightness: float = 0.0,
-    progress_callback = None
+    progress_callback = None,
+    index_method: str = 'cosine1',
+    synthesis_mode: str = 'chunked',
+    noise_scale: float = 1.0,
+    intonation_scale: float = 1.0,
 ):
     start_time = time.time()
     
@@ -396,7 +460,7 @@ def convert_audio(
     index_table = None
     if index_path and index_ratio > 0.0:
         t0_idx = time.time()
-        index_table = load_mobile_index(index_path)
+        index_table = load_mobile_index(index_path, normalize=index_method == 'cosine1')
         print(f"[index] 载入耗时 {time.time() - t0_idx:.1f}s", flush=True)
 
     # Process each segment
@@ -417,11 +481,11 @@ def convert_audio(
         phone = extract_hubert_features(hubert_sess, seg_audio16k)
         phone_orig = phone.copy()
         if index_table is not None and index_ratio > 0.0:
-            phone = apply_index(phone, index_table, index_ratio, batch_size=500)
+            phone = apply_index(phone, index_table, index_ratio, batch_size=128 if index_method == 'l2-8' else 500, method=index_method)
         
         # Step B: RMVPE pitch
         target_frames = phone.shape[0]
-        pitchf, pitch = extract_rmvpe_pitch(rmvpe_sess, seg_audio16k, target_frames, pitch_change)
+        pitchf, pitch = extract_rmvpe_pitch(rmvpe_sess, seg_audio16k, target_frames, pitch_change, intonation_scale)
         
         # Consonant protection: blend unvoiced frames with original Hubert features
         if protect < 0.5 and index_table is not None and index_ratio > 0.0:
@@ -429,7 +493,7 @@ def convert_audio(
             phone = phone * pitchff + phone_orig * (1.0 - pitchff)
         
         # Step C: Synthesize voice at 40kHz (OLA)
-        seg_wav = synthesize_segment(voice_sess, phone, pitch, pitchf)
+        seg_wav = synthesize_segment(voice_sess, phone, pitch, pitchf, mode=synthesis_mode, noise_scale=noise_scale)
         
         # Slice out the valid center region (without context padding)
         hop_size_40k = 400
@@ -508,6 +572,10 @@ def main():
     parser.add_argument("--threads", type=int, default=4, help="Intra-op CPU threads")
     parser.add_argument("--index-path", default="", help="Path to mobile index (URVCIDX1)")
     parser.add_argument("--index-ratio", type=float, default=0.0, help="0~1, how much to blend retrieved features (default 0.0=disabled)")
+    parser.add_argument("--index-method", choices=['cosine1', 'l2-8'], default='cosine1')
+    parser.add_argument("--synthesis-mode", choices=['chunked', 'continuous'], default='chunked')
+    parser.add_argument("--noise-scale", type=float, default=1.0)
+    parser.add_argument("--intonation-scale", type=float, default=1.0)
     parser.add_argument("--protect", type=float, default=0.33, help="Protect unvoiced consonants (0~0.5, default 0.33)")
     parser.add_argument("--brightness", type=float, default=0.0, help="High-frequency boost in dB (default 0.0=disabled, recommended 2.0~3.0)")
     parser.add_argument("--clean", action="store_true", help="Clean up intermediate chunks after completion")
@@ -532,7 +600,11 @@ def main():
             index_ratio=args.index_ratio,
             protect=args.protect,
             brightness=args.brightness,
-            progress_callback=on_progress
+            progress_callback=on_progress,
+            index_method=args.index_method,
+            synthesis_mode=args.synthesis_mode,
+            noise_scale=args.noise_scale,
+            intonation_scale=args.intonation_scale,
         )
         if args.json:
             print(json.dumps(res))

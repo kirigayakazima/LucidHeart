@@ -1,6 +1,6 @@
 {
   "name": "@dsh/rvc",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "RVC 拟人音色与 Heart 情绪自适应发音插件：适配 Dv5 大肥鱼少女音色，支持 PC GPU 极速算力分流与手机纯离线本地推理双模式，无缝对接 Heart Protocol v1 情绪态与 QQ 语音发送。",
   "type": "module",
   "main": "lib/index.js",
@@ -20,10 +20,16 @@
   },
   "files": [
     "lib",
-    "vendor",
+    "scripts/*.py",
+    "scripts/*.json",
+    "vendor/phone/*.py",
+    "vendor/phone/*.sh",
+    "vendor/phone/*.md",
     "cordis.patch.yml",
     "package.json",
-    "README.md"
+    "README.md",
+    "VOICE-AUDITION.md",
+    "EDGE-EXPRESSION.md"
   ],
   "keywords": [
     "dsh",

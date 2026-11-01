@@ -22,9 +22,11 @@ export const inject = ['tools']
 
 export const Config = z
   ? z.object({
-      modelsDir: z.string().default('/sdcard/rvc/models/Dv5').description('RVC 移动端 ONNX 权重与检索索引所在目录'),
-      defaultPitch: z.number().default(-4).description('默认基准音高 (0 为活泼少女 255Hz, -4 为沉稳日常 210Hz)'),
-      defaultBrightness: z.number().default(2.5).description('默认 7kHz 高频补偿 (dB)'),
+      modelsDir: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1').description('RVC 移动端 ONNX 权重与检索索引所在目录'),
+      voiceProfile: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json').description('新音色配置文件路径；默认指向 feiyu-rvc-v1'),
+      profilePython: z.string().default('').description('新音色运行环境的 Python 路径'),
+      defaultPitch: z.number().default(0).description('默认基准音高 (0 为活泼少女 255Hz, -4 为沉稳日常 210Hz)'),
+      defaultBrightness: z.number().default(0).description('默认高频补偿 (dB)'),
       mock: z.boolean().default(false).description('开发与测试模式 (不调用真实推理)'),
       autoSendQq: z.boolean().default(true).description('在 QQ 会话中调用时是否自动发送语音条'),
     })
@@ -88,7 +90,7 @@ export function apply(ctx, config = {}) {
           description: '是否通过 QQ 直接作为语音条发送（默认为 true）',
         },
       },
-      async execute(args) {
+      async execute(args, exec) {
         const text = String(args.text || '').trim()
         if (!text) {
           return { ok: false, error: '发音文本不能为空' }
@@ -117,7 +119,7 @@ export function apply(ctx, config = {}) {
           ? heart.getSnapshot()
           : null
         const mood = snapshot?.mood || {}
-        const acoustic = Object.keys(mood).length > 0
+        let acoustic = Object.keys(mood).length > 0
           ? computeAcousticProfile(mood, { pitch: args.pitch, emotion: args.emotion })
           : { ...latestAcoustic, ...(args.pitch !== undefined ? { pitch: args.pitch } : {}) }
 
@@ -131,7 +133,11 @@ export function apply(ctx, config = {}) {
             modelsDir: config.modelsDir,
             offloadBridge,
             mock,
+            voiceProfile: config.voiceProfile,
+            profilePython: config.profilePython,
+            signal: exec?.signal,
           })
+          if (res.acoustic) acoustic = res.acoustic
         } catch (err) {
           return {
             ok: false,

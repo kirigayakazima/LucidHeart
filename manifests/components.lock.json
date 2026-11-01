@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.1.3",
+      "version": "0.2.0",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Xiaoman Dv5 voice synthesis, acoustic parameters mapping, QQ voice notes, and dual-mode CPU/GPU runner."
