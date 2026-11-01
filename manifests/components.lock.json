@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "name": "dsha-suite-manifest",
+  "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the DSHA ecosystem.",
+  "updatedAt": "2026-11-01T11:40:00+08:00",
+  "components": {
+    "heart": {
+      "id": "@dsh/heart",
+      "name": "Heart Core",
+      "type": "subsystem",
+      "version": "0.20.0",
+      "layer": "Core",
+      "source": "packages/heart",
+      "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."
+    },
+    "fullawake": {
+      "id": "dsh-fullawake",
+      "name": "FullAwake",
+      "type": "subsystem",
+      "version": "0.1.0",
+      "layer": "Bridge",
+      "source": "packages/fullawake",
+      "app": "apps/fullawake-pc",
+      "description": "PC sensory bridge, read-only desktop vision, multimodal attachments, and GPU compute delegation."
+    },
+    "qq-plus": {
+      "id": "@dsh/qq-plus",
+      "name": "QQ Plus",
+      "type": "package",
+      "version": "0.2.1",
+      "layer": "Actuator",
+      "source": "packages/qq-plus",
+      "description": "Dual-persona (Xiaoman/Axing) adaptive wake words, emotional typing cadence, and multi-bubble split."
+    },
+    "rvc": {
+      "id": "@dsh/rvc",
+      "name": "RVC Voice",
+      "type": "package",
+      "version": "0.1.3",
+      "layer": "Actuator",
+      "source": "packages/rvc",
+      "description": "Xiaoman Dv5 voice synthesis, acoustic parameters mapping, QQ voice notes, and dual-mode CPU/GPU runner."
+    },
+    "qqbot": {
+      "id": "@tencent-connect/dsh-qqbot",
+      "name": "DSH QQBot Sovereign Fork",
+      "type": "sovereign_fork",
+      "version": "0.5.5-sovereign.1",
+      "layer": "IM",
+      "upstream": "https://github.com/tencent-connect/dsh-qqbot",
+      "fork": "https://github.com/kirigayakazima/dsh-qqbot",
+      "description": "QQ Bot IM protocol driver with mediaSender auto-target resolution, active delivery fallback, and self-contained runtime."
+    },
+    "mnemon": {
+      "id": "dsh-mnemon",
+      "name": "Mnemon Memory Suite",
+      "type": "sovereign_fork",
+      "version": "0.5.37",
+      "layer": "Memory",
+      "upstream": "https://github.com/omdsh-dev/dsh-mnemon",
+      "fork": "https://github.com/kirigayakazima/dsh-mnemon",
+      "pinnedCommit": "7cbdefc6",
+      "description": "Three-layer memory architecture (Working/Buffer/Long-Term) and native space storage."
+    },
+    "bili-scroll": {
+      "id": "dsh-bili-scroll",
+      "name": "Bili Scroll Sovereign Fork",
+      "type": "sovereign_fork",
+      "version": "2.4.0-heart.1",
+      "layer": "Habit",
+      "upstream": "https://github.com/c1overzz/dsh-bili-scroll",
+      "fork": "https://github.com/kirigayakazima/dsh-bili-scroll",
+      "description": "Bilibili duty inspection, evaluateActivity gating alignment, and 384-token contact sheet storyboard."
+    },
+    "video-storyboard": {
+      "id": "dsh-video-storyboard",
+      "name": "Video Storyboard Sovereign Fork",
+      "type": "sovereign_fork",
+      "version": "0.5.4",
+      "layer": "Sensory",
+      "upstream": "https://github.com/SAOS-3624/dsh-video-storyboard",
+      "fork": "https://github.com/kirigayakazima/dsh-video-storyboard",
+      "description": "Video frame contact sheet and visual zoom inspection tools."
+    },
+    "sticker-look": {
+      "id": "dsh-sticker-look",
+      "name": "Sticker Look Sovereign Fork",
+      "type": "sovereign_fork",
+      "version": "0.2.3",
+      "layer": "Sensory",
+      "fork": "https://github.com/kirigayakazima/dsh-sticker-look",
+      "description": "Image and sticker intent recognition with Heart observation feedback."
+    }
+  },
+  "externalTools": {
+    "vault": {
+      "name": "DSH-Vault",
+      "repo": "https://github.com/kirigayakazima/DSH-Vault",
+      "role": "Append-only encrypted disaster recovery backup system for mobile agent Xiaoman"
+    },
+    "remote-files": {
+      "name": "DSH-Remote-Files",
+      "repo": "https://github.com/kirigayakazima/DSH-Remote-Files",
+      "role": "Read-only file browser for DSH and Android/Proot over USB/mTLS"
+    }
+  }
+}

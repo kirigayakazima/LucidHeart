@@ -1,0 +1,50 @@
+# Dependencies & Build artifacts
+node_modules/
+.pnpm-store/
+dist/
+build/
+*.tgz
+*.tar.gz
+
+# Python & UV
+.venv/
+.venv*/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Sensitive & Local Private Credentials
+.env
+.env.*
+!.env.example
+credentials/
+tokens/
+*.token
+*.key
+*.pem
+private/
+local/
+
+# Large Model Weights (Keep decoupled on phone /sdcard/rvc/models/ or local D:\DSHA-Assets)
+*.onnx
+*.pth
+*.pt
+*.bin
+*.index
+*.safetensors
+assets/weights/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/

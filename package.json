@@ -1,0 +1,26 @@
+{
+  "name": "dsha-suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Heart Agent (DSHA) - Open Sovereign Multi-Agent Suite for Xiaoman & Axing",
+  "type": "module",
+  "scripts": {
+    "test": "pnpm -r --if-present test",
+    "test:heart": "pnpm --filter @dsh/heart test",
+    "test:fullawake": "pnpm --filter dsh-fullawake test",
+    "test:qq-plus": "pnpm --filter @dsh/qq-plus test",
+    "test:rvc": "pnpm --filter @dsh/rvc test"
+  },
+  "keywords": [
+    "dsh",
+    "dsha",
+    "agent",
+    "cordis",
+    "heart-protocol",
+    "fullawake",
+    "multimodal",
+    "embodiment"
+  ],
+  "author": "kirigayakazima",
+  "license": "MIT"
+}
