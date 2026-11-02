@@ -55,8 +55,9 @@ export function executePhoneSayvoice(sayvoicePath, text, acoustic, outWav, model
     if (acoustic.rate) {
       args.push('--rate', String(acoustic.rate))
     }
-    if (modelsDir) {
-      args.push('--models-dir', modelsDir)
+    const targetModelsDir = modelsDir || '/sdcard/rvc/models/feiyu-rvc-v1'
+    if (targetModelsDir) {
+      args.push('--models-dir', targetModelsDir)
     }
     if (outWav) {
       args.push('--out', outWav)
@@ -176,8 +177,11 @@ export async function runSpeak(params) {
   let profilePath = params.voiceProfile
   if (!profilePath && !mock) {
     const phoneFeiyu = '/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json'
+    const pcFeiyu = path.resolve(__dirname, '../../local/feiyu/rvc-onnx-phasefix/voice-profile.json')
     if (fs.existsSync(phoneFeiyu)) {
       profilePath = phoneFeiyu
+    } else if (fs.existsSync(pcFeiyu)) {
+      profilePath = pcFeiyu
     }
   }
 

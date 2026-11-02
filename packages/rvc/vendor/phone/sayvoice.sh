@@ -21,7 +21,14 @@ BRIGHTNESS="2.5"     # 默认高频补偿 2.5 dB
 RATE=""             # 语速调节（如 +0%, +10%, -5%）
 OUT_WAV=""
 ENGINE="auto"
-MODELS_DIR="${RVC_MODELS_DIR:-/sdcard/rvc/models/Dv5}"
+MODELS_DIR="${RVC_MODELS_DIR:-}"
+if [ -z "$MODELS_DIR" ]; then
+  if [ -d "/sdcard/rvc/models/feiyu-rvc-v1" ]; then
+    MODELS_DIR="/sdcard/rvc/models/feiyu-rvc-v1"
+  else
+    MODELS_DIR="/sdcard/rvc/models/Dv5"
+  fi
+fi
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -91,8 +98,11 @@ if [ ! -x "$SAY_BIN" ]; then
 fi
 
 RVC_SCRIPT="/sdcard/rvc/rvc_onnx.py"
-MODELS_DIR="${MODELS_DIR:-/sdcard/rvc/models/Dv5}"
-INDEX_PATH="$MODELS_DIR/Dv5.mobile.index"
+MODELS_DIR="${MODELS_DIR:-/sdcard/rvc/models/feiyu-rvc-v1}"
+INDEX_PATH="$MODELS_DIR/voice.mobile.index"
+if [ ! -f "$INDEX_PATH" ]; then
+  INDEX_PATH="$MODELS_DIR/Dv5.mobile.index"
+fi
 if [ ! -f "$INDEX_PATH" ]; then
   # 尝试查找同目录下的任意 .index
   FALLBACK_IDX=$(ls "$MODELS_DIR"/*.index 2>/dev/null | head -n 1 || true)
@@ -118,15 +128,30 @@ RATE_ARGS=()
 if [ -n "$RATE" ]; then
   RATE_ARGS=(--rate "$RATE")
 fi
-DRY_AUDIO=$(bash "$SAY_BIN" "$TEXT" "zh-CN-XiaoxiaoNeural" "$TMP_DRY" --engine "$ENGINE" "${RATE_ARGS[@]}")
+TTS_VOICE="zh-CN-XiaoyiNeural"
+if [ -f "$MODELS_DIR/voice-profile.json" ]; then
+  PROFILE_VOICE=$(grep -o '"ttsVoice"[[:space:]]*:[[:space:]]*"[^"]*"' "$MODELS_DIR/voice-profile.json" | cut -d'"' -f4 || true)
+  if [ -n "$PROFILE_VOICE" ]; then
+    TTS_VOICE="$PROFILE_VOICE"
+  fi
+fi
+DRY_AUDIO=$(bash "$SAY_BIN" "$TEXT" "$TTS_VOICE" "$TMP_DRY" --engine "$ENGINE" "${RATE_ARGS[@]}")
 
 if [ ! -f "$DRY_AUDIO" ] || [ ! -s "$DRY_AUDIO" ]; then
   echo "Error: Dry audio generation failed" >&2
   exit 1
 fi
 
+INDEX_RATIO="0.3"
+if [ -f "$MODELS_DIR/voice-profile.json" ]; then
+  PROFILE_RATIO=$(grep -o '"indexRatio"[[:space:]]*:[[:space:]]*[0-9.]*' "$MODELS_DIR/voice-profile.json" | tr -d ' "indexRatio:' || true)
+  if [ -n "$PROFILE_RATIO" ]; then
+    INDEX_RATIO="$PROFILE_RATIO"
+  fi
+fi
+
 # 步骤 2: RVC ONNX 音色转换 (预期 25~28s)
-echo "[sayvoice] 步骤 2/2: Dv5 音色转换 (预期约 25~28s, 独立工作区: ${WORK_DIR})..." >&2
+echo "[sayvoice] 步骤 2/2: RVC 音色转换 (模型: $(basename "$MODELS_DIR"), 语调: $TTS_VOICE, 预期约 25~28s, 独立工作区: ${WORK_DIR})..." >&2
 
 cd /sdcard/rvc
 if PYTHONPATH=/root/.dsh/voice/onnx-lib python3 -u "$RVC_SCRIPT" "$DRY_AUDIO" \
@@ -134,7 +159,7 @@ if PYTHONPATH=/root/.dsh/voice/onnx-lib python3 -u "$RVC_SCRIPT" "$DRY_AUDIO" \
   --output "$OUT_WAV" \
   --work_dir "$WORK_DIR" \
   --index-path "$INDEX_PATH" \
-  --index-ratio 0.75 \
+  --index-ratio "$INDEX_RATIO" \
   --protect 0.33 \
   --pitch "$PITCH" \
   --brightness "$BRIGHTNESS" \

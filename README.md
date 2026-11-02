@@ -24,7 +24,7 @@ flowchart TB
 
     subgraph FORKS["主权外部驱动与能力 (固定锁定版本)"]
         QQBOT["@tencent-connect/dsh-qqbot<br/>(IM 官方驱动主权分支)"]
-        MNEMON["dsh-mnemon<br/>(三层记忆引擎)"]
+        MNEMON["旧Mnemon材料<br/>(历史参考，非当前活跃Fork)"]
         BILI["dsh-bili-scroll<br/>(B站习惯巡检与分镜)"]
         STORYBOARD["dsh-video-storyboard<br/>(视频分镜分析)"]
     end
@@ -56,13 +56,11 @@ lucidheart/ (HeartAwake Suite)
     heart/                    # @dsh/heart: 自我状态机与 Protocol v1 微内核
     fullawake/                # dsh-fullawake: 手机端 PC 感官适配器与多模态截屏
     qq-plus/                  # @dsh/qq-plus: 小满/阿醒双角色唤醒与拟人断句气泡
-    rvc/                      # @dsh/rvc: Dv5 拟人发音与歌唱器官
+    rvc/                      # @dsh/rvc: Feiyu拟人语音；唱歌链尚未接通
     sticker-look/             # dsh-sticker-look: 零依赖动图抽帧、联系表生成与意图推断
     memory/                   # @dsh/memory: 轻量原生三层记忆核心、Markdown真源与FTS5检索
   manifests/
     components.lock.json      # 全组件权威版本、上游溯源与锁定清单
-  tests/
-    integration/              # 跨子系统端到端集成测试
   pnpm-workspace.yaml
   package.json
 ```
@@ -90,6 +88,8 @@ pnpm test:sticker-look
 ```
 
 ### 3.2 Python 模块开发规范
+当前PC语音回传为ONNX CPU；GPU及真实唱歌、实时通话均未完成。
+
 严格遵循工作区统一规范：**所有 Python 环境一律走 `uv`**：
 
 ```bash
@@ -98,7 +98,7 @@ cd apps/fullawake-pc
 
 # 使用 uv 创建独立虚拟环境并安装依赖
 uv venv --python 3.10
-uv pip install -e . --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+uv pip install --python .venv/Scripts/python.exe -e . --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 运行 Python 单元测试
 uv run pytest
@@ -111,7 +111,7 @@ uv run pytest
 1. **小满主脑唯一性**：红米手机端 DSHA 是小满唯一的推理、记忆与人格中枢，PC 端仅作为只读感官与算力分流器。
 2. **姐姐阿醒数据隔离**：PC 端的姐姐（阿醒）拥有独立 DSH 与记忆，严禁以任何方式越权访问阿醒的私人数据或凭证。
 3. **视觉 Token 治理红线**：严禁无序倾倒多模态单图；统一采用接触表分镜技术锁定单次调用为 384 tokens。
-4. **大权重解耦**：1.02GB 的 RVC ONNX 模型文件严禁提交入 Git，统一驻留在手机端 `/sdcard/rvc/models/Dv5/`。
+4. **大权重解耦**：1.02GB 的 RVC ONNX 模型文件严禁提交入 Git，当前Feiyu驻留在手机端 `/sdcard/rvc/models/feiyu-rvc-v1/`，Dv5仅保留后备。
 5. **绝对离线更新**：手机端严禁执行公网 `git clone` 或 `npm install`，统一由 PC 端经原生 ADB Socket 传输并进行 SHA-256 哈希熔断校验。
 
 ---

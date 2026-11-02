@@ -145,7 +145,7 @@ flowchart LR
   - `input_audio` (string, 必须): 原歌曲音频路径。
   - `task_name` (string, 必须): 任务名。
   - `pitch` (number, 可选): 变调半音数。
-- 启动全流程唱歌链（UVR MDX-Net 分离人声 -> RVC 音色转换 -> 伴奏重采样与限幅混音）。
+- 当前仅返回dispatched占位结果，尚未实际接入人声分离、RVC及混音执行链；不能据此宣称歌曲已生成。
 
 ---
 
@@ -154,4 +154,4 @@ flowchart LR
 ```bash
 node --test test/*.js
 ```
-所有 8 项声学映射、-2 拦截防线、静音期保护与 Heart 联动单测持续 100% 通过。
+当前覆盖声学映射、-2拦截、门控、服务晚加载、QQ结果、音频hash及PC回传；按本轮改动运行相应测试，历史测试数不是固定承诺。

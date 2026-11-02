@@ -28,7 +28,7 @@
       "id": "@dsh/qq-plus",
       "name": "QQ Plus",
       "type": "package",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "layer": "Actuator",
       "source": "packages/qq-plus",
       "description": "Dual-persona (Xiaoman/Axing) adaptive wake words, emotional typing cadence, and multi-bubble split."
@@ -46,7 +46,7 @@
       "id": "@tencent-connect/dsh-qqbot",
       "name": "DSH QQBot Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "0.5.5-sovereign.1",
+      "version": "0.5.6",
       "layer": "IM",
       "upstream": "https://github.com/tencent-connect/dsh-qqbot",
       "fork": "https://github.com/kirigayakazima/dsh-qqbot",
@@ -55,13 +55,13 @@
     "mnemon": {
       "id": "dsh-mnemon",
       "name": "Mnemon Memory Suite",
-      "type": "sovereign_fork",
+      "type": "historical_reference",
       "version": "0.5.37",
       "layer": "Memory",
       "upstream": "https://github.com/omdsh-dev/dsh-mnemon",
       "fork": "https://github.com/kirigayakazima/dsh-mnemon",
       "pinnedCommit": "7cbdefc6",
-      "description": "Three-layer memory architecture (Working/Buffer/Long-Term) and native space storage."
+      "description": "Legacy Mnemon integration reference; not a claim of current activation or sole memory authority."
     },
     "bili-scroll": {
       "id": "dsh-bili-scroll",
@@ -91,6 +91,15 @@
       "layer": "Sensory",
       "source": "packages/sticker-look",
       "description": "Pure JS zero-dependency GIF frame decoder, contact sheet storyboard generator, and Heart Protocol v1 intent observer."
+    },
+    "memory": {
+      "id": "@dsh/memory",
+      "name": "LucidMemory",
+      "type": "package",
+      "version": "0.1.0",
+      "layer": "Memory",
+      "source": "packages/memory",
+      "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."
     }
   },
   "externalTools": {
