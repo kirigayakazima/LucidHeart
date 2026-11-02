@@ -79,7 +79,7 @@ def test_mcp_call_pc_read_file_safe(client):
         "params": {
             "name": "pc_read_file",
             "arguments": {
-                "path": "projects/fullawake/README.md",
+                "path": "projects/lucidheart/apps/fullawake-pc/README.md",
                 "start_line": 1,
                 "end_line": 5,
             },

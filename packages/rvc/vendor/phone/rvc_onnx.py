@@ -377,8 +377,11 @@ def convert_audio(
     synthesis_mode: str = 'chunked',
     noise_scale: float = 1.0,
     intonation_scale: float = 1.0,
+    execution_providers = None,
 ):
     start_time = time.time()
+    if execution_providers is None:
+        execution_providers = ["CPUExecutionProvider"]
     
     if work_dir is None:
         work_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), ".rvc_work")
@@ -451,11 +454,23 @@ def convert_audio(
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = num_threads
     
+    if "CUDAExecutionProvider" in execution_providers and sys.platform == "win32":
+        try:
+            torch_lib = os.path.abspath(r"D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib")
+            if os.path.isdir(torch_lib):
+                if hasattr(os, "add_dll_directory"):
+                    os.add_dll_directory(torch_lib)
+                if torch_lib not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
+
     if progress_callback:
         progress_callback(5.0, "Loading ONNX inference runtime")
-    hubert_sess = ort.InferenceSession(hubert_path, opts, providers=["CPUExecutionProvider"])
-    rmvpe_sess = ort.InferenceSession(rmvpe_path, opts, providers=["CPUExecutionProvider"])
-    voice_sess = ort.InferenceSession(voice_path, opts, providers=["CPUExecutionProvider"])
+    hubert_sess = ort.InferenceSession(hubert_path, opts, providers=execution_providers)
+    rmvpe_sess = ort.InferenceSession(rmvpe_path, opts, providers=execution_providers)
+    voice_sess = ort.InferenceSession(voice_path, opts, providers=execution_providers)
+    actual_provider = voice_sess.get_providers()[0] if hasattr(voice_sess, 'get_providers') else 'CPUExecutionProvider'
 
     index_table = None
     if index_path and index_ratio > 0.0:
@@ -558,7 +573,8 @@ def convert_audio(
         "duration_seconds": round(duration_s, 2),
         "elapsedMs": elapsed_ms,
         "rtf": round((elapsed_ms / 1000.0) / max(0.1, duration_s), 3),
-        "chunks": num_segments
+        "chunks": num_segments,
+        "executionProvider": actual_provider,
     }
 
 def main():

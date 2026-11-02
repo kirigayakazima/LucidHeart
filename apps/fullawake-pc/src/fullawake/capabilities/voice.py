@@ -82,8 +82,11 @@ class VoiceCompute:
                     raise ValueError('VOICE_WORK_PATH_INVALID')
                 profile_file, output = work / 'profile.json', work / 'output.wav'
                 profile_file.write_text(json.dumps(profile), encoding='utf8')
-                process = await asyncio.create_subprocess_exec(str(python), str(worker), '--profile', str(profile_file),
-                    '--text', text, '--output', str(output), '--seed', '42',
+                cmd = [str(python), str(worker), '--profile', str(profile_file),
+                       '--text', text, '--output', str(output), '--seed', '42']
+                if getattr(config, 'voice_provider', None):
+                    cmd.extend(['--provider', config.voice_provider])
+                process = await asyncio.create_subprocess_exec(*cmd,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 task = asyncio.create_task(process.communicate())
                 try:

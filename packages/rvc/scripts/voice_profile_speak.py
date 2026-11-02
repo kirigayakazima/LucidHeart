@@ -29,6 +29,7 @@ def main():
     parser.add_argument('--rate', help='Edge TTS rate, e.g. +8%%; text input only')
     parser.add_argument('--intonation-scale', type=float, help='Experimental F0 contour range, 0.8..1.6; default 1')
     parser.add_argument('--seed', type=int, help='Seed latent and ORT noise for controlled auditions')
+    parser.add_argument('--provider', choices=['CPUExecutionProvider', 'CUDAExecutionProvider'], help='Execution provider')
     args = parser.parse_args()
     started = time.perf_counter()
     profile_path = args.profile.resolve()
@@ -80,19 +81,25 @@ def main():
     dry_duration = len(module.load_audio(str(dry), target_sr=16000)) / 16000
     if profile.get('synthesisMode') == 'continuous' and dry_duration >= 10:
         raise ValueError('Continuous audition currently requires a dry clip shorter than 10 seconds')
+    target_provider = args.provider or profile.get('provider', 'CPUExecutionProvider')
+    providers = [target_provider]
+    if target_provider != 'CPUExecutionProvider':
+        providers.append('CPUExecutionProvider')
     result = module.convert_audio(input_path=str(dry), models_dir=str(models), output_path=str(output),
                                   work_dir=str(output.with_suffix('.work')), pitch_change=profile.get('pitch', 0),
                                   index_path=str(models / profile['index']), index_ratio=profile.get('indexRatio', 0.3),
                                   index_method=profile.get('indexMethod', 'cosine1'), protect=profile.get('protect', 0.33),
                                   brightness=profile.get('brightness', 0), num_threads=4,
                                   synthesis_mode=profile.get('synthesisMode', 'chunked'),
-                                  noise_scale=profile.get('noiseScale', 1.0), intonation_scale=intonation_scale)
+                                  noise_scale=profile.get('noiseScale', 1.0), intonation_scale=intonation_scale,
+                                  execution_providers=providers)
     import numpy as np
     import soundfile as sf
     audio, sr = sf.read(output)
     if sr != 40000 or not np.isfinite(audio).all() or not len(audio) or float(np.max(np.abs(audio))) < 1e-5:
         raise ValueError('Output failed audio validation')
-    result.update(profileId=profile['id'], mode='profile_phone_onnx_cpu', profileSha256=digest(profile_path),
+    actual_ep = result.get('executionProvider', target_provider)
+    result.update(profileId=profile['id'], mode='profile_phone_onnx_cpu' if actual_ep == 'CPUExecutionProvider' else 'profile_pc_onnx_gpu', profileSha256=digest(profile_path),
                   runtimeSha256=digest(runtime), outputSha256=digest(output), sampleRate=sr,
                   elapsedTotalMs=round((time.perf_counter() - started) * 1000),
                   pitch=profile.get('pitch', 0), brightness=profile.get('brightness', 0),
@@ -103,7 +110,7 @@ def main():
                   peak=float(np.max(np.abs(audio))), validatedOn=sys.platform,
                   scope='PC CPU validation is not ARM64/Proot acceptance or reference audio parity')
     result.update(architecture=platform.machine(), onnxruntime=module.ort.__version__, numpy=np.__version__,
-                  torchImported='torch' in sys.modules, executionProvider='CPUExecutionProvider')
+                  torchImported='torch' in sys.modules, executionProvider=actual_ep)
     if sys.platform == 'win32':
         import ctypes
         from ctypes import wintypes

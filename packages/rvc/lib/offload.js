@@ -20,7 +20,7 @@ export function voiceContract(profile) {
 
 export function saveOffloadAudio(result, contract, outWav) {
   if (!result?.ok || result.voiceId !== contract.id || result.mode !== 'pc_onnx_offload'
-    || result.provider !== 'CPUExecutionProvider' || result.sampleRate !== 40000) throw new Error('Invalid PC voice result')
+    || !['CPUExecutionProvider', 'CUDAExecutionProvider'].includes(result.provider) || result.sampleRate !== 40000) throw new Error('Invalid PC voice result')
   for (const [name, sha] of Object.entries(contract.assets)) {
     if (result.assets?.[name] !== sha) throw new Error('PC voice model mismatch')
   }

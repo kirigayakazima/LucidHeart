@@ -20,6 +20,7 @@ class FullAwakeConfig(BaseModel):
     voice_enabled: bool = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_ENABLED') == '1')
     voice_profile: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROFILE', ''))
     voice_python: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PYTHON', ''))
+    voice_provider: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROVIDER', 'CUDAExecutionProvider'))
     voice_work_dir: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_WORK_DIR', str(Path.home() / '.fullawake' / 'voice-work')))
     voice_clients: List[str] = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_CLIENTS', '127.0.0.1,::1').split(','))
     auth_token: str = Field(

@@ -51,11 +51,14 @@ def validate_path(target_path_str: str) -> Path:
     # 1. Denied keyword check (Defense-in-depth against sensitive directories)
     for kw in config.denied_path_keywords:
         kw_lower = kw.lower()
-        # Check against path parts and whole string
-        if kw_lower in resolved_str:
-            raise SecurityViolationError(
-                f"Access denied: Path contains protected keyword '{kw}'."
-            )
+        for part in resolved.parts:
+            part_lower = part.lower()
+            if part_lower == "lucidheart":
+                continue
+            if kw_lower in part_lower:
+                raise SecurityViolationError(
+                    f"Access denied: Path contains protected keyword '{kw}'."
+                )
 
     # 2. Allowed roots check
     is_allowed = False

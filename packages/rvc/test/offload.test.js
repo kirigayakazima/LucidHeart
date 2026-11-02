@@ -36,4 +36,7 @@ test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用W
   assert.throws(() => saveOffloadAudio({ ...result, sha256: 'bad' }, contract, path.join(dir, 'bad.wav')), /checksum/)
   assert.throws(() => saveOffloadAudio({ ...result, voiceId: 'dv5' }, contract, path.join(dir, 'wrong.wav')), /Invalid/)
   assert.throws(() => saveOffloadAudio({ ...result, settings: { ...contract.settings, pitch: -4 } }, contract, path.join(dir, 'wrong2.wav')), /settings/)
+  // Verify CUDAExecutionProvider is accepted
+  const cudaResult = saveOffloadAudio({ ...result, provider: 'CUDAExecutionProvider' }, contract, path.join(dir, 'cuda.wav'))
+  assert.equal(cudaResult.offload.provider, 'CUDAExecutionProvider')
 })
