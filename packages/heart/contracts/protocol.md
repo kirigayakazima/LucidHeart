@@ -109,13 +109,23 @@ interface ActivityIntent {
   category?: string;                // 类别标识，如 "bilibili" | "fun" | "study" | "rest"
   estimatedDurationMinutes?: number;// 预计耗时（分钟）
 }
+interface ActivityContext {
+  execution?: ToolRunContext;       // 插件传入宿主 execute(args, exec) 的 exec
+}
+// evaluateActivity(intent, { execution: exec })
 ```
+
+从 Heart 0.20.1 起，可选的第二参数传递宿主执行上下文。Heart 根据当前会话最后一条已消费的用户消息来源区分 `user_request`、`autonomous`、`unknown`，不读取消息正文，也不接受模型参数中的来源声明。用户消息触发的响应任务不受自主总额/类别额度限制；安静时段与原有心境门控继续适用。定时消息、插件触发和无法识别的来源仍受自主额度限制。传入的上下文必须由插件接线，不能暴露成工具的模型可填参数。
+
+此调用只评估、不扣次。总额仍由空闲回合调度器记账，类别由 `heart_next` 记账；用户请求调用 `heart_next` 时不扣类别额度。适配器没有传执行上下文时保留旧行为。未来的跨设备任务应显式传递可验证的任务来源，不凭提示词宣称豁免。
 - **返回结果**：
 ```typescript
 interface ActivityEvaluation {
   suitable: boolean;
   reason: string;
   currentMood: string;
+  origin?: 'user_request' | 'autonomous' | 'unknown';
+  quotaApplied?: boolean;           // 成功评估时，自主配额是否参与判定
   quota?: {
     used: number;
     cap: number;

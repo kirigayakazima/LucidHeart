@@ -26,7 +26,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Local PC IP   : http://${localIp}:8765" -ForegroundColor Yellow
 Write-Host "DSH MCP SSE   : http://${localIp}:8765/sse" -ForegroundColor Yellow
 Write-Host "DSH MCP HTTP  : http://${localIp}:8765/mcp" -ForegroundColor Yellow
-Write-Host "Auth Token    : xiaoman-pc-bridge-secret-2026" -ForegroundColor Yellow
+Write-Host "Auth Token    : (hidden)" -ForegroundColor Yellow
 Write-Host "Python Runner : $pythonExe" -ForegroundColor Gray
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "Starting FullAwake Gateway..." -ForegroundColor Cyan

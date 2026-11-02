@@ -210,6 +210,29 @@ export function apply(ctx, config = {}) {
         isOnline: () => pcOnline,
         getStatus: () => lastStatus,
         checkNow: checkPCStatus,
+        async callPcRvc({ text, voice, signal }) {
+          const response = await fetch(`${gatewayUrl}/v1/voice/rvc`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ text, voice }),
+            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
+          })
+          if (!response.ok) throw new Error(`PC_RVC_HTTP_${response.status}`)
+          // Bound the audio reply before parsing, including servers without Content-Length.
+          const reader = response.body.getReader()
+          const chunks = []
+          let total = 0
+          try {
+            while (true) {
+              const { value, done } = await reader.read()
+              if (done) break
+              total += value.byteLength
+              if (total > 1500000) throw new Error('PC_RVC_RESPONSE_TOO_LARGE')
+              chunks.push(value)
+            }
+          } finally { await reader.cancel().catch(() => {}) }
+          return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        },
       })
     }
   })

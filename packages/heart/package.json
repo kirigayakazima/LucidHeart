@@ -1,6 +1,6 @@
 {
   "name": "@dsh/heart",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "description": "DSH 的「心」与「身体」：身体按宿主环境安装，心分三层（本子/事实/情节）。数据在用户主目录，插件只提供写入面。",
   "type": "module",
   "main": "lib/index.js",

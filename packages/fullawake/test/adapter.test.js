@@ -165,6 +165,7 @@ test('FullAwake Adapter: 1. 注册 4 个正式 DSH 工具与 Cordis 服务', () 
   assert.ok(pcBridge)
   assert.equal(typeof pcBridge.isOnline, 'function')
   assert.equal(typeof pcBridge.checkNow, 'function')
+  assert.equal(typeof pcBridge.callPcRvc, 'function')
 
   ctx.dispose()
 })

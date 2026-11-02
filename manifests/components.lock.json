@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-01T12:40:00+08:00",
+  "updatedAt": "2026-11-02T20:00:00+08:00",
   "components": {
     "heart": {
       "id": "@dsh/heart",
       "name": "Heart Core",
       "type": "subsystem",
-      "version": "0.20.0",
+      "version": "0.20.1",
       "layer": "Core",
       "source": "packages/heart",
       "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."
@@ -18,11 +18,11 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
-      "description": "PC sensory bridge, read-only desktop vision, multimodal attachments, and GPU compute delegation."
+      "description": "PC sensory bridge, read-only desktop vision, and opt-in CPU ONNX voice compute with audio return."
     },
     "qq-plus": {
       "id": "@dsh/qq-plus",
@@ -37,10 +37,10 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.0",
+      "version": "0.2.2",
       "layer": "Actuator",
       "source": "packages/rvc",
-      "description": "Xiaoman Dv5 voice synthesis, acoustic parameters mapping, QQ voice notes, and dual-mode CPU/GPU runner."
+      "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."
     },
     "qqbot": {
       "id": "@tencent-connect/dsh-qqbot",
@@ -67,7 +67,7 @@
       "id": "dsh-bili-scroll",
       "name": "Bili Scroll Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "2.4.0-heart.1",
+      "version": "2.4.0-heart.2",
       "layer": "Habit",
       "upstream": "https://github.com/c1overzz/dsh-bili-scroll",
       "fork": "https://github.com/kirigayakazima/dsh-bili-scroll",

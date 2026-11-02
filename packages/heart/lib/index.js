@@ -61,6 +61,7 @@ import {
 } from './dream.js'
 import { log } from './logger.js'
 import { HeartService } from './service.js'
+import { activityOrigin } from './activity-origin.js'
 
 export { HeartService } from './service.js'
 export * from '../contracts/index.js'
@@ -486,16 +487,17 @@ export function apply(ctx, config) {
     ctx.tools.register(
       defineTool({
         name: 'heart_next',
-        description: '安排下一次空闲回合（自己醒来）的间隔，6–180 分钟，并记下这次做的类别；类别额度用完会拒绝。不调用就按默认 30 分钟。',
+        description: '安排下一次空闲回合（自己醒来）的间隔，6–180 分钟。仅自主回合记类别配额，用户请求不计入；自主类别额度用完会拒绝。不调用就按默认 30 分钟。',
         parameters: {
           minutes: { type: 'number', description: '6–180 分钟' },
           category: { type: 'string', description: '类别 id，如 bilibili / fun / study / rest' },
         },
         output: textOutput,
-        async execute(args) {
+        async execute(args, exec) {
           const live = readHeartConfig(root)
+          const origin = activityOrigin(exec)
           let record = null
-          if (args.category) {
+          if (args.category && origin !== 'user_request') {
             record = recordIdleCategory(root, String(args.category), live)
             if (!record.ok) {
               const hint =
@@ -509,6 +511,8 @@ export function apply(ctx, config) {
           const tail = record ? `，记了 ${record.label} ${record.used}/${record.dailyCap}` : ''
           return {
             message: `好，${result.minutes} 分钟后再醒（${result.nextIdleAt}）${tail}`,
+            origin,
+            categoryQuotaRecorded: Boolean(record?.ok),
           }
         },
       })

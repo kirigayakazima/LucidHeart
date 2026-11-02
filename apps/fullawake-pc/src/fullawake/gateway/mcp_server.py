@@ -21,6 +21,7 @@ from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
 from fullawake.core.config import config
 from fullawake.core.session import get_session_status
+from fullawake.capabilities.voice import VoiceCompute
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -33,11 +34,12 @@ class FullAwakeMCPGateway:
         self.app = FastAPI(
             title="FullAwake Gateway",
             description="Sensory and embodiment bridge for Xiaoman (DSHA)",
-            version="0.1.0",
+            version="0.2.0",
         )
         self.capabilities: List[BaseCapability] = []
         self.tools: Dict[str, ToolDefinition] = {}
         self.sessions: Dict[str, asyncio.Queue] = {}
+        self.voice = VoiceCompute()
 
         # Configure CORS for LAN access
         self.app.add_middleware(
@@ -69,12 +71,34 @@ class FullAwakeMCPGateway:
         @app.get("/health")
         async def health():
             """Unauthenticated health check."""
-            return {"status": "ok", "service": "fullawake-pc-bridge", "version": "0.1.0"}
+            return {"status": "ok", "service": "fullawake-pc-bridge", "version": "0.2.0"}
 
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
             """Authenticated PC status summary."""
-            return get_session_status()
+            return {**get_session_status(), 'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
+
+        @app.post('/v1/voice/rvc', dependencies=[Depends(verify_token)])
+        async def voice_endpoint(request: Request):
+            if not config.voice_enabled:
+                raise HTTPException(status_code=503, detail='VOICE_DISABLED')
+            if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(status_code=403, detail='VOICE_CLIENT_NOT_ALLOWED')
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 16384:
+                    raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
+            try:
+                payload = json.loads(body)
+                if not isinstance(payload, dict):
+                    raise ValueError('VOICE_REQUEST_INVALID')
+                return await self.voice.synthesize(payload, request.is_disconnected)
+            except (ValueError, OSError, TimeoutError) as error:
+                code = str(error)
+                if not code.startswith('VOICE_'):
+                    code = 'VOICE_RUNTIME_UNAVAILABLE'
+                raise HTTPException(status_code=409 if code == 'VOICE_BUSY' else 422, detail=code)
 
         # ==========================================
         # MCP SSE Transport (Standard for DSH)
@@ -161,7 +185,7 @@ class FullAwakeMCPGateway:
                     },
                     "serverInfo": {
                         "name": "fullawake-pc-bridge",
-                        "version": "0.1.0",
+                        "version": "0.2.0",
                     },
                 },
             }
@@ -264,7 +288,7 @@ def run_server():
     """Entry point for running FullAwake Gateway."""
     import uvicorn
     print(f"[*] Starting FullAwake Gateway on {config.host}:{config.port}...")
-    print(f"[*] Auth Token: {config.auth_token}")
+    print("[*] Bearer authentication enabled (token hidden)")
     print(f"[*] Allowed Workspace Roots: {config.allowed_roots}")
     uvicorn.run(app, host=config.host, port=config.port, log_level="info")
 

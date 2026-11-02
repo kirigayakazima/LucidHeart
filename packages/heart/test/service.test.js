@@ -5,7 +5,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { HeartService } from '../lib/service.js'
 import { HEART_EVENTS } from '../contracts/index.js'
-import { ensureLayout, writeHeartConfig } from '../lib/store.js'
+import { ensureLayout, writeHeartConfig, dateOf } from '../lib/store.js'
+import { readTrigger, writeTrigger } from '../lib/trigger.js'
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'heart-service-test-'))
 
@@ -55,7 +56,7 @@ test('HeartService: 1. getSnapshot() 返回只读只查快照', () => {
 
   const snapshot = service.getSnapshot()
   assert.equal(snapshot.protocolVersion, '1.0.0')
-  assert.equal(snapshot.heartVersion, '0.20.0')
+  assert.equal(snapshot.heartVersion, '0.20.1')
   assert.equal(snapshot.device, 'phone')
   assert.equal(snapshot.mood.state, 'calm')
   assert.equal(typeof snapshot.mood.valence, 'number')
@@ -158,6 +159,45 @@ test('HeartService: 3. evaluateActivity() 评估自主活动适宜性（不承�
   const evalTired = service.evaluateActivity({ intent: 'heavy_audit', category: 'study' })
   assert.equal(evalTired.suitable, false)
   assert.equal(evalTired.reason, 'mood-tired')
+})
+
+test('user requests bypass autonomous quotas without modifying counters or other gates', async () => {
+  const root = tmpDir()
+  ensureLayout(root)
+  const config = {
+    quietFrom: '04:00', quietTo: '04:00', idleTurnDailyCap: 6,
+    idleCategories: [{ id: 'voice', label: '发声', dailyCap: 2 }],
+  }
+  const service = new HeartService(new MockCordisContext(), root, config)
+  const today = dateOf()
+  writeTrigger(root, { idleDate: today, idleCount: 6, idleCategoryDate: today, idleCategoryCounts: { voice: 2 } })
+  const before = readTrigger(root)
+  const input = { intent: 'voice_speak', category: 'voice' }
+  const context = (kind) => ({ execution: { agent: { session: { snapshotEvents: () => [
+    { type: 'user/message', data: { role: 'user', source: { kind } } },
+  ] } } } })
+  assert.equal(service.evaluateActivity(input).reason, 'daily-cap')
+  assert.equal(service.evaluateActivity(input, context('schedule')).reason, 'daily-cap')
+  // Freely supplied intent metadata cannot waive the quota.
+  assert.equal(service.evaluateActivity({ ...input, origin: 'user_request' }).reason, 'daily-cap')
+  const user = service.evaluateActivity(input, context('user'))
+  assert.equal(user.suitable, true)
+  assert.equal(user.origin, 'user_request')
+  assert.equal(user.quotaApplied, false)
+  assert.equal(user.quota.remaining, 0)
+  assert.deepEqual(readTrigger(root), before)
+  writeTrigger(root, { idleCount: 0 })
+  assert.equal(service.evaluateActivity(input, context('schedule')).reason, 'category-cap')
+  assert.equal(service.evaluateActivity(input, context('user')).suitable, true)
+  const { updateMood } = await import('../lib/mood.js')
+  assert.equal(updateMood(root, { state: 'tired', intensity: 0.5, reason: 'deep_work' }).ok, true)
+  assert.equal(service.evaluateActivity({ intent: 'heavy_audit' }, context('user')).reason, 'mood-tired')
+  const now = new Date()
+  const start = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+  const next = new Date(now.getTime() + 60000)
+  const end = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`
+  const night = new HeartService(new MockCordisContext(), root, { ...config, quietFrom: start, quietTo: end })
+  assert.equal(night.evaluateActivity(input, context('user')).reason, 'quiet-hours')
 })
 
 test('HeartService 容错防御: 外部事件监听器异常不阻断 Heart 内部运行', async () => {

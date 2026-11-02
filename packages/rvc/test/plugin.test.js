@@ -100,4 +100,60 @@ describe('@dsh/rvc Cordis Plugin & Heart Protocol v1 Integration', () => {
     assert.equal(res.reason, 'quiet-hours')
     assert.equal(ctx._observed.length, 0, '未实际发声，不应记录发声经验')
   })
+
+  test('Cordis 禁止直接服务属性时仍自动投递QQ并回流Heart，且支持晚加载', async () => {
+    const plain = createMockCtx()
+    const services = new Map()
+    const lookedUp = []
+    const ctx = new Proxy({ ...plain, get(name) { lookedUp.push(name); return services.get(name) } }, {
+      get(target, key) {
+        if (['heart', 'qqbotMediaSender', 'pcBridge', 'fullawake'].includes(key)) throw Error(`cannot get property "${key}" without inject`)
+        return Reflect.get(target, key)
+      },
+    })
+    apply(ctx, { mock: true })
+    services.set('heart', plain.heart)
+    services.set('qqbotMediaSender', plain.qqbotMediaSender)
+    services.set('pcBridge', { isOnline: () => false })
+    const result = await plain._getTool('rvc_speak').execute({ text: '服务晚加载也能正常发送' })
+    assert.equal(result.sent_to_qq, true)
+    assert.equal(result.heart_observation, 'recorded')
+    assert.equal(result.qq_delivery.status, 'sent')
+    assert.equal(plain._sentVoices.length, 1)
+    assert.equal(plain._observed.length, 1)
+    assert.deepEqual(lookedUp, ['heart', 'qqbotMediaSender', 'pcBridge'])
+  })
+
+  test('QQ发送关闭或发送失败有明确结果，不误报成功', async () => {
+    const ctx = createMockCtx()
+    apply(ctx, { mock: true, autoSendQq: false })
+    const disabled = await ctx._getTool('rvc_speak').execute({ text: '不发送' })
+    assert.equal(disabled.sent_to_qq, false)
+    assert.equal(disabled.qq_delivery.reason, 'disabled_by_config')
+    assert.equal(ctx._sentVoices.length, 0)
+    apply(ctx, { mock: true })
+    ctx.qqbotMediaSender.sendVoice = async () => { throw Error('test failure') }
+    const failed = await ctx._getTool('rvc_speak').execute({ text: '保留音频并报告发送错误' })
+    assert.equal(failed.ok, true)
+    assert.equal(failed.sent_to_qq, false)
+    assert.equal(failed.qq_delivery.status, 'failed')
+    assert.equal(failed.qq_delivery.error, 'test failure')
+    assert.equal(failed.heart_observation, 'recorded')
+  })
+
+  test('rvc_speak forwards host execution context separately from model arguments', async () => {
+    const ctx = createMockCtx()
+    const exec = { agent: { session: { events: [
+      { type: 'user/message', data: { role: 'user', source: { kind: 'user' } } },
+    ] } } }
+    ctx.heart.evaluateActivity = (intent, context) => {
+      assert.equal(context.execution, exec)
+      assert.equal(intent.origin, undefined)
+      return { suitable: true, origin: 'user_request', reason: 'ok', quotaApplied: false }
+    }
+    apply(ctx, { mock: true })
+    const result = await ctx._getTool('rvc_speak').execute({ text: '用户让我说话', origin: 'autonomous' }, exec)
+    assert.equal(result.activity_gate.origin, 'user_request')
+    assert.equal(result.activity_gate.quotaApplied, false)
+  })
 })

@@ -1,20 +1,32 @@
 # @dsh/rvc: RVC 拟人音色与 Heart 情绪自适应发音插件
 
-> **当前版本**: `0.2.0`
+> **当前版本**: `0.2.2`
 > **所属架构**: DSHA Sovereign Plugin Ecosystem  
-> **服务对象**: 小满（Dv5 大肥鱼少女音色）  
+> **服务对象**: 小满（Feiyu 新音色，保留 Dv5 后备）
 > **协议绑定**: Heart Protocol v1 (Microkernel State & Activity Gate)
+
+## 0.2.2：用户请求与自主配额分离
+
+配合 Heart 0.20.1，`rvc_speak` 将宿主执行上下文作为服务调用的第二参数传入。用户发消息后进行的语音回复不占用自主生活配额，即使自主额度是6/6也可正常合成；定时唤醒、插件自主触发或来源不明的调用保留配额限制。无需修改日额度或清空计数。安静时段及原有心境门控仍生效，结果中的 `activity_gate` 可核对来源与判定。旧 Heart 不识别第二参数，仍按旧门控处理，因此需要同时升级两个包。
+
+## 0.2.1：服务读取、QQ投递与PC音频回传
+
+Heart、`qqbotMediaSender`、`pcBridge` 每次发声均通过 `ctx.get()` 获取，不把可选服务加入强依赖。修复未声明inject的属性访问被吞成null、导致QQ投递和经验回流悄悄失效的问题；实际结果返回 `plugin_version`、`qq_delivery`、`heart_observation` 与 `offload`，发送失败保留可用音频并说明原因，遵守 `autoSendQq: false`。
+
+新音色在本地推理前优先尝试 FullAwake 0.2.0 的 `callPcRvc`。手机声明模型hash和音色设置，PC校验后合成并返回音频内容；手机校验音色、SHA、格式后在本机落盘，避免误用Windows路径。PC不可用则回退同一profile的手机推理，不换回别的声库。请求取消不会继续回退执行。
+
+首版分流使用 **PC ONNX CPU**，返回 `pc_onnx_offload`，不冒充GPU。PC网关默认不启用语音，需显式启动并授权客户端；长句仍受当前连续合成短于10秒的限制。启动和USB连接见 [FullAwake说明](../../apps/fullawake-pc/README.md)。
 
 ## 正式音色升级（0.2.0）
 
 已正式将大肥鱼声线升级为 **`feiyu-rvc-v1`（Float64 NSF 相位精度修正 ONNX 模型 + L2-8 索引）**，干声底模升级为 **`zh-CN-XiaoyiNeural`（小艺日常生活腔，语速 +6%，起伏 1.0）**。
 - **手机端**：模型部署于 `/sdcard/rvc/models/feiyu-rvc-v1`，插件自动探测并启用 `voice-profile.json`；
 - **PC 端**：`pc_sayvoice.py` 默认指向 `FeiyuVoice-RVC-v1.pth` 与小艺日常腔，支持 GPU 极速发声；
-- **回退保障**：若移除 `feiyu-rvc-v1` 目录，系统无缝自动回退至旧版 Dv5。
+- **回退保障**：显式选择的profile不存在或校验失败时明确报错；回退Dv5需要清空该配置并确认旧引擎可用，不用另一声库冒充成功。
 
 ## 可选音色扩展（0.2.0）
 
-默认继续使用原 Dv5。仅配置 `voiceProfile` 后，`rvc_speak` 才切换到配置指定的 ONNX CPU 音色；无效配置明确报错，不假装成功或静默换回另一声线。当前不支持将 CosyVoice checkpoint 当成 RVC 模型加载。
+`voiceProfile` 显式配置优先；未显式选择时，运行器可探测手机已有的Feiyu配置，再考虑旧引擎。无效配置明确报错，不假装成功或静默换回另一声线。当前不支持将 CosyVoice checkpoint 当成 RVC 模型加载。
 
 PC 验证使用包内 `vendor/phone/rvc_onnx.py`，与后续手机使用同一源码，推理无 PyTorch 依赖。`scripts/prepare_rvc_profile.py` 仅用于 PC 导出，需要独立的导出依赖；`scripts/voice_profile_speak.py` 是两端共用推理入口。
 
@@ -80,7 +92,7 @@ flowchart LR
     end
 
     subgraph Hardware ["双端计算环境"]
-        PC["PC FullAwake 桥 (GPU 极速 1~2s)"]
+        PC["PC FullAwake 桥 (当前 ONNX CPU)"]
         PHONE["手机本地 ONNX (sayvoice.sh 45~50s)"]
     end
 

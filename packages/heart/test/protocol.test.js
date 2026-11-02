@@ -12,7 +12,7 @@ import {
 
 test('Heart Protocol v1: 常量与版本号契约', () => {
   assert.equal(HEART_PROTOCOL_VERSION, '1.0.0')
-  assert.equal(HEART_CORE_VERSION, '0.20.0')
+  assert.equal(HEART_CORE_VERSION, '0.20.1')
   assert.equal(HEART_EVENTS.STATE_CHANGED, 'heart/state-changed')
   assert.equal(HEART_EVENTS.IDLE, 'heart/idle')
 })
@@ -105,7 +105,7 @@ test('Heart Protocol v1: validateSnapshot() 格式校验', () => {
 
   const validSnapshot = {
     protocolVersion: '1.0.0',
-    heartVersion: '0.20.0',
+    heartVersion: '0.20.1',
     timestamp: new Date().toISOString(),
     device: 'phone',
     memoryMode: 'legacy',

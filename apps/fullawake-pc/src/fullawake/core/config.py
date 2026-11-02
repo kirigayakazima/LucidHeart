@@ -15,8 +15,13 @@ class FullAwakeConfig(BaseModel):
     """FullAwake gateway and security configuration."""
 
     # Server settings
-    host: str = Field(default="0.0.0.0", description="Bind IP (default 0.0.0.0 for LAN access)")
+    host: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_BIND_HOST', '0.0.0.0'), description="Bind IP")
     port: int = Field(default=8765, description="Port for MCP SSE and HTTP gateway")
+    voice_enabled: bool = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_ENABLED') == '1')
+    voice_profile: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROFILE', ''))
+    voice_python: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PYTHON', ''))
+    voice_work_dir: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_WORK_DIR', str(Path.home() / '.fullawake' / 'voice-work')))
+    voice_clients: List[str] = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_CLIENTS', '127.0.0.1,::1').split(','))
     auth_token: str = Field(
         default_factory=lambda: os.environ.get("FULLAWAKE_AUTH_TOKEN", "xiaoman-pc-bridge-secret-2026"),
         description="Bearer token required for phone DSH MCP client authentication",

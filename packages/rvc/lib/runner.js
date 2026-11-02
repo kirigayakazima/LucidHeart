@@ -6,7 +6,8 @@ import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { runProfileSpeak } from './voice-profile.js'
+import { runProfileSpeak, readVoiceProfile } from './voice-profile.js'
+import { voiceContract, saveOffloadAudio } from './offload.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -182,7 +183,24 @@ export async function runSpeak(params) {
 
   if (profilePath) {
     if (mock) throw new Error('Voice profile validation requires a real worker; mock mode cannot certify a new model')
-    return runProfileSpeak({ ...params, voiceProfile: profilePath })
+    const profile = readVoiceProfile(profilePath)
+    const offload = { attempted: false, status: 'unavailable' }
+    if (typeof offloadBridge?.callPcRvc === 'function') {
+      try {
+        offload.attempted = true
+        const contract = voiceContract(profile)
+        const result = await offloadBridge.callPcRvc({ text, voice: contract, signal: params.signal })
+        const saved = saveOffloadAudio(result, contract, outWav)
+        return { ...saved, acoustic: { ...acoustic, ...saved.acoustic } }
+      } catch (error) {
+        if (params.signal?.aborted) throw error
+        offload.status = 'failed'
+        offload.error = String(error?.message || error)
+        console.warn('[@dsh/rvc] PC 新音色分流不可用，保留相同音色回退本地:', offload.error)
+      }
+    }
+    const local = await runProfileSpeak({ ...params, voiceProfile: profilePath })
+    return { ...local, offload }
   }
 
   if (mock) {

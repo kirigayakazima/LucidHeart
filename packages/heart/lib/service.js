@@ -35,6 +35,7 @@ import {
   resolveRoot,
 } from './store.js'
 import { log } from './logger.js'
+import { activityOrigin } from './activity-origin.js'
 
 export class HeartService {
   /**
@@ -192,7 +193,7 @@ export class HeartService {
    * 3. heart.evaluateActivity(intent)
    * 评估某项外部自主活动是否符合当前心境与配额，返回建议（不等于执行授权）
    */
-  evaluateActivity(intentInput) {
+  evaluateActivity(intentInput, context = {}) {
     const validated = validateActivityIntent(intentInput)
     if (!validated.valid) {
       return {
@@ -205,6 +206,8 @@ export class HeartService {
     }
 
     const { intent, category } = validated.data
+    const origin = activityOrigin(context?.execution)
+    const autonomous = origin !== 'user_request'
     const root = this.root
     const mood = readMood(root)
     const trigger = readTrigger(root)
@@ -224,6 +227,7 @@ export class HeartService {
       return {
         suitable: false,
         reason: 'quiet-hours',
+        origin,
         currentMood: mood.state,
         recommendation: `当前处于安静时段（${quietFrom} - ${quietTo}），建议静默休息，不建议执行活动。`,
       }
@@ -233,10 +237,11 @@ export class HeartService {
     const today = dateOf(now)
     const cap = Number(liveConfig.idleTurnDailyCap) || 6
     const used = trigger.idleDate === today ? Number(trigger.idleCount) || 0 : 0
-    if (used >= cap) {
+    if (autonomous && used >= cap) {
       return {
         suitable: false,
         reason: 'daily-cap',
+        origin,
         currentMood: mood.state,
         quota: { used, cap, remaining: 0 },
         recommendation: `今日空闲自主活动配额已达上限（${used}/${cap}），请休息。`,
@@ -247,10 +252,11 @@ export class HeartService {
     const remainingCategories = idleCategoryRemaining(liveConfig, counts)
     const targetCat = category ? remainingCategories.find((c) => c.id === category) : null
 
-    if (category && targetCat && targetCat.remaining <= 0) {
+    if (autonomous && category && targetCat && targetCat.remaining <= 0) {
       return {
         suitable: false,
         reason: 'category-cap',
+        origin,
         currentMood: mood.state,
         quota: { used: targetCat.used, cap: targetCat.dailyCap, remaining: 0 },
         recommendation: `类别 [${targetCat.label}] 今日配额已耗尽（${targetCat.used}/${targetCat.dailyCap}），建议切换类别或休息。`,
@@ -263,6 +269,7 @@ export class HeartService {
         return {
           suitable: false,
           reason: 'mood-tired',
+          origin,
           currentMood: mood.state,
           recommendation: '当前处于疲劳舒缓状态 (tired)，不建议进行高强度或专注型活动，建议休息或轻度活动。',
         }
@@ -272,11 +279,15 @@ export class HeartService {
     return {
       suitable: true,
       reason: 'ok',
+      origin,
+      quotaApplied: autonomous,
       currentMood: mood.state,
       quota: targetCat
         ? { used: targetCat.used, cap: targetCat.dailyCap, remaining: targetCat.remaining }
-        : { used, cap, remaining: cap - used },
-      recommendation: `当前状态 (${mood.state}) 适合进行该项活动 (${intent})。请各插件在完成时通过正规工具记账。`,
+        : { used, cap, remaining: Math.max(0, cap - used) },
+      recommendation: autonomous
+        ? `当前状态 (${mood.state}) 适合进行该项活动 (${intent})。自主活动请通过正规工具记账。`
+        : `当前活动由用户消息触发，不占用自主活动配额；安静时段与心境门控仍然适用。`,
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "lucidheart",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "LucidHeart (HeartAwake Suite) - Dual-Embodied AI Companion System for Xiaoman & Axing",
   "type": "module",

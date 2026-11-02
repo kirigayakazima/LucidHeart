@@ -3,6 +3,10 @@
 
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak, detectEnvironment } from './runner.js'
+import { getVoiceServices } from './services.js'
+import { readFileSync } from 'node:fs'
+
+const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
 let defineTool = (t) => t
 try {
@@ -38,16 +42,6 @@ const defaultOutput = {
     type: 'text',
     text: typeof value === 'string' ? value : JSON.stringify(value, null, 2),
   }],
-}
-
-function getHeart(ctx) {
-  try { return ctx?.heart || null } catch { return null }
-}
-function getMediaSender(ctx) {
-  try { return ctx?.qqbotMediaSender || null } catch { return null }
-}
-function getPcBridge(ctx) {
-  try { return ctx?.pcBridge || ctx?.fullawake || null } catch { return null }
 }
 
 export function apply(ctx, config = {}) {
@@ -97,17 +91,27 @@ export function apply(ctx, config = {}) {
         }
 
         // A. Heart 活动前置准入校验
-        const heart = getHeart(ctx)
+        // Resolve for each invocation, so services loaded/reloaded later are used.
+        const { heart, mediaSender, pcBridge: offloadBridge } = getVoiceServices(ctx)
+        let activityGate = { origin: 'unknown', reason: 'heart_unavailable' }
         if (heart && typeof heart.evaluateActivity === 'function') {
-          const evalRes = heart.evaluateActivity({
+          let evalRes
+          try { evalRes = await heart.evaluateActivity({
             intent: 'voice_speak',
             category: 'voice',
             estimatedDurationMinutes: 1,
-          })
+          }, { execution: exec }) } catch (error) {
+            return { ok: false, error_code: 'HEART_EVALUATION_FAILED',
+              error: `Heart 发声门控失败: ${error?.message || String(error)}` }
+          }
+          activityGate = { origin: evalRes?.origin || 'unknown', reason: evalRes?.reason,
+            quotaApplied: evalRes?.quotaApplied }
           if (evalRes && evalRes.suitable === false) {
             return {
               ok: false,
+              plugin_version: pluginVersion,
               blocked_by_heart: true,
+              activity_gate: activityGate,
               reason: evalRes.reason,
               message: `[Heart 门控] 当前时段或设备状态 (${evalRes.reason}) 建议保持静音，已自动降级为文本回复。`,
             }
@@ -124,7 +128,6 @@ export function apply(ctx, config = {}) {
           : { ...latestAcoustic, ...(args.pitch !== undefined ? { pitch: args.pitch } : {}) }
 
         // C. 执行声音转换 (跨端分流与执行)
-        const offloadBridge = getPcBridge(ctx)
         let res
         try {
           res = await runSpeak({
@@ -147,19 +150,33 @@ export function apply(ctx, config = {}) {
 
         // D. QQ 语音消息自动投递 (若在 QQ 对话中且启用了发送)
         let qqSent = false
-        if (args.send_to_qq !== false && res.audioPath) {
-          const mediaSender = getMediaSender(ctx)
-          if (mediaSender && typeof mediaSender.sendVoice === 'function') {
-            try {
-              await mediaSender.sendVoice(undefined, { localPath: res.audioPath })
+        const qqDelivery = { requested: args.send_to_qq !== false && config.autoSendQq !== false,
+          status: 'skipped', reason: config.autoSendQq === false ? 'disabled_by_config' : 'disabled_by_request' }
+        if (qqDelivery.requested) {
+          try {
+            if (!res.audioPath) qqDelivery.reason = 'audio_path_missing'
+            else if (!mediaSender || typeof mediaSender.sendVoice !== 'function') {
+              qqDelivery.reason = 'qq_media_service_unavailable'
+              console.warn('[@dsh/rvc] 已生成语音，但 qqbotMediaSender 尚不可用，未自动投递')
+            } else {
+              const delivered = await mediaSender.sendVoice(undefined, { localPath: res.audioPath })
+              if (delivered === false || delivered?.ok === false || delivered?.success === false) {
+                throw new Error(delivered?.error || 'QQ sender reported delivery failure')
+              }
               qqSent = true
-            } catch (err) {
-              console.warn('[@dsh/rvc] QQ 语音发送告警:', err.message)
+              qqDelivery.status = 'sent'
+              qqDelivery.reason = 'sent'
             }
+          } catch (err) {
+            qqDelivery.status = 'failed'
+            qqDelivery.reason = 'qq_send_failed'
+            qqDelivery.error = String(err?.message || err)
+            console.warn('[@dsh/rvc] QQ 语音发送告警:', qqDelivery.error)
           }
         }
 
         // E. 发声经验回流心智 (heart.observe)
+        let heartObservation = 'service_unavailable'
         if (heart && typeof heart.observe === 'function') {
           try {
             await heart.observe({
@@ -178,18 +195,25 @@ export function apply(ctx, config = {}) {
               summary: `通过 RVC 合成发声 (${res.mode}, 音高 ${acoustic.pitch})`,
               timestamp: new Date().toISOString(),
             })
+            heartObservation = 'recorded'
           } catch (err) {
+            heartObservation = 'failed'
             console.warn('[@dsh/rvc] Heart 上报告警:', err.message)
           }
         }
 
         return {
           ok: true,
+          plugin_version: pluginVersion,
           message: '语音合成完成',
           audio_file: res.audioPath,
           duration_ms: res.durationMs,
           mode: res.mode,
+          offload: res.offload || { attempted: false, status: 'not_applicable' },
           sent_to_qq: qqSent,
+          qq_delivery: qqDelivery,
+          heart_observation: heartObservation,
+          activity_gate: activityGate,
           acoustic: {
             pitch: acoustic.pitch,
             pitch_name: acoustic.pitchName,
