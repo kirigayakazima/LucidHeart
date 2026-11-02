@@ -4,6 +4,8 @@
 
 Heart 0.20.2 adds local runtime evidence that automatically resumes on plugin load. Bounded sample and fatal-event files are independent of the 500-line pulse window. Fatal exceptions retain their normal nonzero exit behavior; no host restart, shell watchdog, model invocation or outgoing message is added. Five new regression tests cover real child-process failure, reload cleanup, rotation, privacy and write failures.
 
+Phone acceptance confirmed repeated samples at approximately 60-second intervals under the same host PID after loading 0.20.2. This establishes sampler operation, not long-term host stability or the cause of earlier disconnects.
+
 Android bridge authentication was separately repaired on the user's device by restoring two legacy L2S credential aliases to independent native files. This manual device repair is not a plugin feature or background repair task. The device accepted authenticated requests afterward while continuing to reject unauthenticated requests.
 
 ## 0.2.2 — 2026-11-02
