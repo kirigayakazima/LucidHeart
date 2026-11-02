@@ -10,6 +10,6 @@ Components: Heart 0.20.1, RVC 0.2.2, FullAwake adapter/PC gateway 0.2.0.
 - Separate autonomous activity quotas from responses to user messages using host session provenance. Keep autonomous limits and existing quiet-hours/mood gates; never reset the autonomous ledger to make a user task pass.
 - Pin the Bili sovereign fork to 2.4.0-heart.2, which contains child-process callback exception isolation and optional Heart service lookup.
 
-Validation: 189 Heart/RVC/FullAwake JavaScript tests, 3 targeted PC voice tests. Real phone acceptance of PC synthesis, QQ voice delivery and Heart observation succeeded on the preceding RVC 0.2.1 build. The quota correction requires Heart 0.20.1 together with RVC 0.2.2; phone acceptance is tracked separately from automated tests.
+Validation: 189 Heart/RVC/FullAwake JavaScript tests, 3 targeted PC voice tests. Real phone acceptance of PC synthesis, QQ voice delivery and Heart observation succeeded on RVC 0.2.1. After installing Heart 0.20.1 and RVC 0.2.2, the user confirmed a further voice message was delivered with `activity_gate.origin: user_request` and `quotaApplied: false`. Counter preservation and autonomous denials are covered by regression tests.
 
 Current PC offload reports `pc_onnx_offload` and `CPUExecutionProvider`. GPU acceleration is not part of this release. Voice weights remain external to all source and npm packages.
