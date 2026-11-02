@@ -13,7 +13,7 @@ LucidHeart 采用 **统一主源码 Monorepo (HeartAwake Suite) + 主权外部�
 ```mermaid
 flowchart TB
     subgraph SUITE["LucidHeart Monorepo (HeartAwake Suite)"]
-        HEART["packages/heart<br/>(Heart Core 微内核 0.20.1)"]
+        HEART["packages/heart<br/>(Heart Core 微内核 0.20.2)"]
         FULLAWAKE["packages/fullawake<br/>(FullAwake 手机客户端桥 0.2.0)"]
         PC_APP["apps/fullawake-pc<br/>(FullAwake PC 网关)"]
         QQ_PLUS["packages/qq-plus<br/>(QQ 双向拟人交互 0.2.2)"]

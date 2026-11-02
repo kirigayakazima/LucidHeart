@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.20.2] - 2026-11-02
+
+- 本地运行诊断随 Heart 加载自动启动，不依赖手动 nohup 或自主唤醒开关；每60秒记录当前宿主PID、运行时长、RSS、heap及Linux MemAvailable。
+- 独立记录加载/卸载、正常退出和致命异常；使用 `uncaughtExceptionMonitor` 保留原有崩溃退出行为，不吞异常、不自动重启。记录错误类别与本地调用位置，不记录错误消息正文、工具入参、环境变量或对话。
+- `logs/runtime.jsonl` 每份最多2MiB、保留两份轮转；`logs/runtime-faults.jsonl` 每份256KiB、保留一份轮转。现有pulse.log继续作为500行近期节律窗口。
+- 可用 `runtimeDiagnostics: false` 关闭；卸载时清理定时器和进程监听器。新增真实子进程崩溃、重载恢复、轮转、脱敏及写失败回归。
+
 ## [0.20.1] - 2026-11-02
 
 - 自主活动配额与用户消息触发的任务分离：`evaluateActivity(intent, { execution: exec })` 从宿主会话元数据识别来源，用户响应不受自主日总额和类别额度限制，静音期及心境门控继续适用。

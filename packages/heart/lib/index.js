@@ -62,6 +62,7 @@ import {
 import { log } from './logger.js'
 import { HeartService } from './service.js'
 import { activityOrigin } from './activity-origin.js'
+import { installRuntimeDiagnostics } from './runtime-diagnostics.js'
 
 export { HeartService } from './service.js'
 export * from '../contracts/index.js'
@@ -120,6 +121,8 @@ export const Config = z.object({
   idleTurnMaxMinutes: z.number().default(180),
   /** 每天最多几次空闲回合。 */
   idleTurnDailyCap: z.number().default(6),
+  /** 本地运行采样和崩溃证据，有界轮转；随插件加载自动恢复，不调用模型。 */
+  runtimeDiagnostics: z.boolean().default(true),
 })
 
 const textOutput = {
@@ -154,6 +157,9 @@ export function apply(ctx, config) {
     ensureLayout(root, { explicit: config.body })
     migrate(root)
   })
+  if (config.runtimeDiagnostics !== false) {
+    ctx.effect(() => installRuntimeDiagnostics(root))
+  }
 
   // 注册 Heart 0.20.0 微内核服务 (Cordis Service)
   const service = new HeartService(ctx, root, config)

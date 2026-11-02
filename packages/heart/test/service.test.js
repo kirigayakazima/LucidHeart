@@ -56,7 +56,7 @@ test('HeartService: 1. getSnapshot() 返回只读只查快照', () => {
 
   const snapshot = service.getSnapshot()
   assert.equal(snapshot.protocolVersion, '1.0.0')
-  assert.equal(snapshot.heartVersion, '0.20.1')
+  assert.equal(snapshot.heartVersion, '0.20.2')
   assert.equal(snapshot.device, 'phone')
   assert.equal(snapshot.mood.state, 'calm')
   assert.equal(typeof snapshot.mood.valence, 'number')

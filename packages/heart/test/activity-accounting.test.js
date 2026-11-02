@@ -15,7 +15,7 @@ test('heart_next preserves exhausted autonomous counts for human tasks and still
   writeTrigger(root, { idleDate: today, idleCount: 6, idleCategoryDate: today, idleCategoryCounts: { study: 2 } })
   const tools = new Map()
   apply({ effect: (fn) => fn(), tools: { register: (tool) => tools.set(tool.name, tool) } }, {
-    root, injectPrompt: false, pulse: false,
+    root, injectPrompt: false, pulse: false, runtimeDiagnostics: false,
   })
   const tool = tools.get('heart_next')
   const exec = (kind) => ({ agent: { session: { events: [
