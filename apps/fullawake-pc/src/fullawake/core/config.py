@@ -15,7 +15,7 @@ class FullAwakeConfig(BaseModel):
     """FullAwake gateway and security configuration."""
 
     # Server settings
-    host: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_BIND_HOST', '0.0.0.0'), description="Bind IP")
+    host: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_BIND_HOST', '0.0.0.0').strip(), description="Bind IP")
     port: int = Field(default=8765, description="Port for MCP SSE and HTTP gateway")
     voice_enabled: bool = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_ENABLED') == '1')
     voice_profile: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROFILE', ''))

@@ -20,7 +20,7 @@ export const inject = ['tools']
 
 export const Config = z
   ? z.object({
-      gatewayUrl: z.string().default('http://192.168.1.3:8765').description('FullAwake PC Gateway URL'),
+      gatewayUrl: z.string().default('http://127.0.0.1:28765').description('FullAwake PC Gateway URL'),
       authToken: z.string().default('xiaoman-pc-bridge-secret-2026').description('Bearer Token'),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
     })
@@ -63,7 +63,7 @@ const snapshotOutput = {
 }
 
 export function apply(ctx, config = {}) {
-  const gatewayUrl = String(config.gatewayUrl || process.env.FULLAWAKE_GATEWAY_URL || 'http://192.168.1.3:8765').replace(/\/+$/, '')
+  const gatewayUrl = String(config.gatewayUrl || process.env.FULLAWAKE_GATEWAY_URL || 'http://127.0.0.1:28765').replace(/\/+$/, '')
   const authToken = String(config.authToken || process.env.FULLAWAKE_AUTH_TOKEN || 'xiaoman-pc-bridge-secret-2026').trim()
   const pollIntervalSeconds = Math.max(10, Number(config.pollIntervalSeconds) || 30)
 
