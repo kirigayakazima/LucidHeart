@@ -11,7 +11,8 @@ import json
 import logging
 import uuid
 from typing import Any, Dict, List, Optional
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query, status
+from starlette.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
@@ -34,7 +35,7 @@ class FullAwakeMCPGateway:
         self.app = FastAPI(
             title="FullAwake Gateway",
             description="Sensory and embodiment bridge for Xiaoman (DSHA)",
-            version="0.2.0",
+            version="0.2.1",
         )
         self.capabilities: List[BaseCapability] = []
         self.tools: Dict[str, ToolDefinition] = {}
@@ -71,7 +72,7 @@ class FullAwakeMCPGateway:
         @app.get("/health")
         async def health():
             """Unauthenticated health check."""
-            return {"status": "ok", "service": "fullawake-pc-bridge", "version": "0.2.0"}
+            return {"status": "ok", "service": "fullawake-pc-bridge", "version": "0.2.1"}
 
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
@@ -87,7 +88,7 @@ class FullAwakeMCPGateway:
             body = bytearray()
             async for chunk in request.stream():
                 body.extend(chunk)
-                if len(body) > 16384:
+                if len(body) > 12 * 1024 * 1024:
                     raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
             try:
                 payload = json.loads(body)
@@ -95,10 +96,66 @@ class FullAwakeMCPGateway:
                     raise ValueError('VOICE_REQUEST_INVALID')
                 return await self.voice.synthesize(payload, request.is_disconnected)
             except (ValueError, OSError, TimeoutError) as error:
+                logger.exception("Voice synthesis exception: %s", error)
                 code = str(error)
                 if not code.startswith('VOICE_'):
                     code = 'VOICE_RUNTIME_UNAVAILABLE'
                 raise HTTPException(status_code=409 if code == 'VOICE_BUSY' else 422, detail=code)
+
+        @app.post('/v1/voice/separate', dependencies=[Depends(verify_token)])
+        async def voice_separate_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a')):
+            if not config.voice_enabled:
+                raise HTTPException(status_code=503, detail='VOICE_DISABLED')
+            if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(status_code=403, detail='VOICE_CLIENT_NOT_ALLOWED')
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 60 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
+            try:
+                return await self.voice.separate(task, bytes(body), format)
+            except (ValueError, OSError, TimeoutError) as error:
+                logger.exception("Voice separation exception: %s", error)
+                code = str(error)
+                if not code.startswith('VOICE_'):
+                    code = 'VOICE_SEPARATION_FAILED'
+                raise HTTPException(status_code=422, detail=code)
+
+        @app.get('/v1/voice/download/{task}/{stem}', dependencies=[Depends(verify_token)])
+        async def voice_download_endpoint(task: str, stem: str):
+            file_path = self.voice.get_separated_file(task, stem)
+            if not file_path or not file_path.is_file():
+                raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
+            return FileResponse(str(file_path), media_type="audio/wav")
+
+        @app.post('/v1/voice/sing', dependencies=[Depends(verify_token)])
+        async def voice_sing_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a'), pitch: int = Query(0)):
+            if not config.voice_enabled:
+                raise HTTPException(status_code=503, detail='VOICE_DISABLED')
+            if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(status_code=403, detail='VOICE_CLIENT_NOT_ALLOWED')
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 60 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
+            try:
+                return await self.voice.process_singing_pipeline(task, bytes(body), format, pitch)
+            except (ValueError, OSError, TimeoutError) as error:
+                logger.exception("Voice singing pipeline exception: %s", error)
+                code = str(error)
+                if not code.startswith('VOICE_'):
+                    code = 'VOICE_SINGING_FAILED'
+                raise HTTPException(status_code=422, detail=code)
+
+        @app.get('/v1/voice/sing/download/{task}', dependencies=[Depends(verify_token)])
+        async def voice_sing_download_endpoint(task: str):
+            file_path = self.voice.get_singing_song_file(task)
+            if not file_path or not file_path.is_file():
+                raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
+            media_type = "audio/mpeg" if file_path.suffix.lower() == ".mp3" else "audio/wav"
+            return FileResponse(str(file_path), media_type=media_type, filename=file_path.name)
 
         # ==========================================
         # MCP SSE Transport (Standard for DSH)
@@ -185,7 +242,7 @@ class FullAwakeMCPGateway:
                     },
                     "serverInfo": {
                         "name": "fullawake-pc-bridge",
-                        "version": "0.2.0",
+                        "version": "0.2.1",
                     },
                 },
             }

@@ -4,9 +4,11 @@
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak, detectEnvironment } from './runner.js'
 import { getVoiceServices } from './services.js'
-import { readFileSync } from 'node:fs'
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawn } from 'node:child_process'
 
-const pluginVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const pluginVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
 let defineTool = (t) => t
 try {
@@ -62,7 +64,8 @@ export function apply(ctx, config = {}) {
       name: 'rvc_speak',
       output: defaultOutput,
       description:
-        '使用小满的专属大肥鱼 (Dv5) 少女音色进行拟人语音合成。' +
+        '使用已配置的专属音色进行拟人语音合成（当前默认 Feiyu）。' +
+        '连续模式的长语音自动按停顿分段变声并合并，无需为了十秒上限删减文字。' +
         '系统会自动根据小满当前的 Heart 心情状态（开朗/平静/疲惫）自适应调整音高 (255Hz 或 210Hz)、高频通透度与语速。' +
         '若在 QQ 会话中且启用了 send_to_qq，生成的音频会自动以原生 QQ 语音条格式送达。',
       parameters: {
@@ -85,6 +88,7 @@ export function apply(ctx, config = {}) {
         },
       },
       async execute(args, exec) {
+        if (exec?.signal?.aborted) return { ok: false, cancelled: true, sent_to_qq: false, heart_observation: 'cancelled', plugin_version: pluginVersion };
         const text = String(args.text || '').trim()
         if (!text) {
           return { ok: false, error: '发音文本不能为空' }
@@ -142,12 +146,18 @@ export function apply(ctx, config = {}) {
           })
           if (res.acoustic) acoustic = res.acoustic
         } catch (err) {
+          if (exec?.signal?.aborted) return { ok: false, cancelled: true, sent_to_qq: false, heart_observation: 'cancelled', plugin_version: pluginVersion };
           return {
             ok: false,
             error: `语音合成执行失败: ${err.message}`,
           }
         }
 
+        if (exec?.signal?.aborted) {
+          return { ok: false, cancelled: true, plugin_version: pluginVersion,
+            audio_file: res.audioPath, sent_to_qq: false, heart_observation: 'cancelled',
+            message: '本轮已取消，生成的语音未自动投递。' }
+        }
         // D. QQ 语音消息自动投递 (若在 QQ 对话中且启用了发送)
         let qqSent = false
         const qqDelivery = { requested: args.send_to_qq !== false && config.autoSendQq !== false,
@@ -159,7 +169,12 @@ export function apply(ctx, config = {}) {
               qqDelivery.reason = 'qq_media_service_unavailable'
               console.warn('[@dsh/rvc] 已生成语音，但 qqbotMediaSender 尚不可用，未自动投递')
             } else {
-              const delivered = await mediaSender.sendVoice(undefined, { localPath: res.audioPath })
+              const hasSessionResolver = typeof mediaSender.resolveTargetForSession === 'function'
+              const target = hasSessionResolver ? mediaSender.resolveTargetForSession(exec?.agent?.id) : undefined
+              if (hasSessionResolver && !target) {
+                throw new Error('No QQ target for the actual execution session; refusing to guess the latest peer')
+              }
+              const delivered = await mediaSender.sendVoice(target, { localPath: res.audioPath })
               if (delivered === false || delivered?.ok === false || delivered?.success === false) {
                 throw new Error(delivered?.error || 'QQ sender reported delivery failure')
               }
@@ -230,30 +245,114 @@ export function apply(ctx, config = {}) {
     defineTool({
       name: 'rvc_sing',
       output: defaultOutput,
-      description: '将一首完整歌曲转换为小满 Dv5 大肥鱼音色（自动伴奏分离、人声音色替换与立体声混音）。',
+      description: '启动完整唱歌转换链（UVR 人声分离 → RVC PC极速分流变声 → 伴奏混音），并在后台异步生成歌曲。如果处于 QQ 会话中，制作完成后会自动发送成曲语音。',
       parameters: {
         input_audio: {
           type: 'string',
-          description: '待转换的原歌曲或人声音频路径',
+          description: '待转换的原歌曲或人声音频路径（例如 /sdcard/rvc/yinghuacao.m4a 或相对歌名）',
           required: true,
         },
         task_name: {
           type: 'string',
-          description: '任务标识名（英文字符与数字）',
+          description: '任务标识名（英文字符与数字，例如 yinghuacao）',
           required: true,
         },
         pitch: {
           type: 'number',
-          description: '整曲变调半音数（默认 0，男歌转女声建议 +12）',
+          description: '音高调整（0 为元气少女，-4 为沉稳日常，严禁传 -2；默认为 0）',
         },
       },
-      async execute(args) {
+      async execute(args, exec) {
+        const { mediaSender, pcBridge } = getVoiceServices(ctx)
+        const taskName = String(args.task_name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
+        if (!taskName) return { ok: false, error: 'task_name 必须包含有效英文字符或数字' }
+        let pitch = Number(args.pitch) || 0
+        if (pitch === -2) pitch = -4
+        if (pitch !== 0 && pitch !== -4) pitch = 0
+
+        let inputAudio = String(args.input_audio || '').trim()
+        const candidates = [
+          inputAudio,
+          path.resolve('/sdcard/rvc', inputAudio),
+          path.resolve('/sdcard/rvc', `${taskName}.m4a`),
+          path.resolve('/sdcard/rvc', `${taskName}.mp3`),
+          path.resolve('/sdcard/rvc', `${taskName}.wav`),
+        ]
+        let resolvedInput = null
+        for (const cand of candidates) {
+          if (cand && fs.existsSync(cand) && fs.statSync(cand).isFile()) {
+            resolvedInput = cand
+            break
+          }
+        }
+        if (!resolvedInput) {
+          return {
+            ok: false,
+            task_name: taskName,
+            status: 'file_not_found',
+            error: `未找到原曲音频文件: ${inputAudio}。请确保文件已存放在 /sdcard/rvc/ 目录下。`,
+          }
+        }
+
+        const scriptCandidates = [
+          '/sdcard/rvc/sing-chain.sh',
+          path.resolve(new URL('../vendor/phone/sing-chain.sh', import.meta.url).pathname),
+        ]
+        let scriptPath = null
+        for (const sp of scriptCandidates) {
+          if (sp && fs.existsSync(sp)) {
+            scriptPath = sp
+            break
+          }
+        }
+        if (!scriptPath) {
+          return {
+            ok: false,
+            task_name: taskName,
+            status: 'script_not_found',
+            error: '未找到唱歌流水线脚本 sing-chain.sh',
+          }
+        }
+
+        const isPcOnline = pcBridge && typeof pcBridge.isOnline === 'function' ? pcBridge.isOnline() : false
+        const outDir = `/sdcard/rvc/out/sing_${taskName}`
+        const outSong = `${outDir}/song_${taskName}.mp3`
+
+        let target = undefined
+        if (mediaSender && typeof mediaSender.resolveTargetForSession === 'function') {
+          target = mediaSender.resolveTargetForSession(exec?.agent?.id)
+        }
+
+        const child = spawn('bash', [scriptPath, resolvedInput, taskName, String(pitch)], {
+          detached: true,
+          stdio: 'ignore',
+        })
+        child.unref()
+
+        child.on('close', async (code) => {
+          if (code === 0 && fs.existsSync(outSong)) {
+            console.log(`[@dsh/rvc] 唱歌任务 ${taskName} 已完成，产物: ${outSong}`)
+            if (mediaSender && typeof mediaSender.sendVoice === 'function' && target) {
+              try {
+                await mediaSender.sendVoice(target, { localPath: outSong })
+                console.log(`[@dsh/rvc] 歌曲 ${taskName} 已自动投递至 QQ`)
+              } catch (err) {
+                console.warn(`[@dsh/rvc] 歌曲 ${taskName} QQ 投递失败:`, err.message)
+              }
+            }
+          } else {
+            console.warn(`[@dsh/rvc] 唱歌任务 ${taskName} 退出码: ${code}`)
+          }
+        })
+
         return {
           ok: true,
-          task_name: args.task_name,
-          pitch: args.pitch || 0,
+          task_name: taskName,
           status: 'dispatched',
-          notice: '唱歌任务已启动，正在执行人声分离、Dv5 转换与混音...',
+          input_audio: resolvedInput,
+          mode: isPcOnline ? 'pc_offload' : 'phone_local',
+          expected_output: outSong,
+          notice: `唱歌流水线已在后台启动（${isPcOnline ? '已接通 PC FullAwake 算力分流加速' : 'PC 离线，正在以手机本地 ONNX 慢速运行'}）。成曲后将保存在 ${outSong}，制作完成后会自动发送到当前 QQ 聊天。`,
         }
       },
     })

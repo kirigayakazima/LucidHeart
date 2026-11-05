@@ -46,7 +46,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', required=True, type=Path)
     parser.add_argument('--output-dir', required=True, type=Path, help='Must not exist')
-    parser.add_argument('--text', default=DEFAULT_TEXT, help='Keep each dry clip shorter than 10 seconds')
+    parser.add_argument('--text', default=DEFAULT_TEXT, help='Spoken text; continuous runtime splits long audio at pauses')
     parser.add_argument('--dry-input', type=Path, help='Existing +0%% dry audio for exactly this text')
     parser.add_argument('--reference-audio', type=Path, help='Copy an already accepted WAV unchanged')
     parser.add_argument('--presets', type=Path, default=Path(__file__).with_name('voice_audition_presets.json'))

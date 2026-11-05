@@ -1,51 +1,21 @@
-# FullAwake (全觉)
+# FullAwake PC
 
-FullAwake 是为手机端小满（DSHA）构建的 PC 端感官与具身能力扩展矩阵（Body & Sensor Gateway）。
+本地源码0.2.1。小满的主脑/Heart/Memory仍在手机，阿醒独立；PC网关不读取阿醒私有DSH数据，不充当另一份小满。当前PC运行版本须查/health，源码或端口存在不证明已重载。
 
-## 核心设计理念
+## 现有能力
 
-1. **唯一主脑**：小满的人格、情绪（Heart）、长期记忆（Mnemon）与 QQ 交互永久驻留在手机端。
-2. **PC 身体外设**：PC 端作为外设感知节点，通过标准 MCP（Model Context Protocol）协议向手机提供视觉、文件和操作能力。
-3. **姐姐阿醒数据隔离**：PC 上的姐姐阿醒保留完全独立的 DSH 与 Heart 数据，FullAwake 底层策略引擎严格禁止越界访问阿醒的任何私有目录与会话。
-4. **安全只读先行 (v0.1)**：第一阶段仅开放受控只读感知，所有高危动作均受安全网关拦截。
+pc_status、pc_list_windows、pc_snapshot、pc_read_file受控只读感官；文件白名单/拒绝目录/大小限制按core策略。截图字节保存为宿主attachment后才可能成为模型图像，完整路径需端到端验收，工具文本说成功不够。
 
-## v0.1 能力清单
+POST /v1/voice/rvc为单独显式开启的语音计算，Bearer加客户端IP校验，固定本地worker，只接受文本/固定音色hash/白名单设置，不接受任意路径/命令/解释器。单任务，断连/超时终止子进程，临时目录受控。
 
-- `pc_status`: 检测 PC 是否在线、当前交互桌面状态、分辨率与能力清单。
-- `pc_list_windows`: 列出 Windows 当前可见顶层窗口（标题、进程名、坐标、窗口句柄 ID）。
-- `pc_snapshot`: 拍摄指定窗口或全屏画面，经压缩适配小满多模态视觉 Prompt。
-- `pc_read_file`: 在受限白名单工作区内读取文件，支持行范围与大小限制。
+0.2.1音频上限8MiB、PC超时290秒；手机适配器0.2.1流式JSON上限12MiB/超时300秒。RVC0.2.4在完整TTS后分段变声并合并，PC文本最多200字符。40kHz WAV内容/hash/实际provider回传，手机验证后发送QQ，PC不代报送达。
 
-## v0.2 可选语音算力
+CPU回传有手机实测；源码支持可选CUDA参数并有实验，尚不能据此宣称GPU常驻或新手机GPU全链验收。调用仍按请求启动worker，不是实时推理服务器。
 
-新增 `POST /v1/voice/rvc`，默认关闭，沿用Bearer鉴权，并额外限制客户端IP。只接受短文本、固定音色ID/资产hash及有界声学设置；执行PC本地配置的RVC worker，不接受远程命令或路径。一次只运行一个任务，超时/断连会终止推理子进程，临时文件在核验过的工作目录内清理。
+## 启动与配置
 
-PC返回40k WAV内容、SHA和实际CPU运行方式；手机校验并落盘后由RVC投递QQ。PC不读取手机的记忆/人格，不访问阿醒的DSH数据。当前方式是 `pc_onnx_offload` / CPUExecutionProvider，尚未将此接口接到GPU。
+从Suite根使用apps/fullawake-pc/scripts/start_voice_gateway.ps1 -Background；默认PC回环8765。USB工具scripts/connect_usb.py建立手机回环28765→PC8765，手机gatewayUrl对应http://127.0.0.1:28765。双方authToken保留本地配置，不输出。USB断开/ADB重启后需重建隧道，不改防火墙。
 
-从仓库目录启动，使用本项目uv环境和现有RVC uv环境：
+Python环境和依赖统一本项目uv .venv与清华源；声库/语音运行环境外置。当前启动脚本也可使用机器已配置的解释器/推理库，须按实际指纹验证，不能从目录存在推断环境可重现。网关重启短暂中断能力，不重启手机App。
 
-```powershell
-& ./apps/fullawake-pc/scripts/start_voice_gateway.ps1 -Background
-```
-
-默认绑定PC回环地址。连接已授权USB设备后，建立独立的反向TCP通道：
-
-```powershell
-uv run --no-project python apps/fullawake-pc/scripts/connect_usb.py --serial <ADB设备序列号>
-```
-
-手机 FullAwake 的 `gatewayUrl` 设置为 `http://127.0.0.1:28765`，保留双方匹配的 `authToken`，由手机Proot侧更新配置并热重载。PC端口8765、手机回环端口28765，不占用手机已有8765服务。USB断开/ADB重启后重新执行connect_usb；它拒绝覆盖另一个已有映射。USB不通时RVC回退手机，普通局域网方式仍可按实际IP配置。
-
-如需LAN，应显式传 `-BindAddress <PC局域网IP> -VoiceClients <手机IP>,127.0.0.1`，配置自己的Bearer token，并在本机按实际网络策略开放受限端口；不要把LAN未通误判成合成失败。启动脚本不更改防火墙、不创建开机计划、不输出token。PC重启后需重新启动网关。
-
-可使用 `-VoiceProfile` 和 `-VoicePython` 指定受控本地配置/解释器；环境变量为 `FULLAWAKE_VOICE_ENABLED`、`FULLAWAKE_VOICE_PROFILE`、`FULLAWAKE_VOICE_PYTHON`、`FULLAWAKE_VOICE_CLIENTS`、`FULLAWAKE_VOICE_WORK_DIR`。模型完全独立于代码包，客户端模型hash不同会拒绝分流，不能默默换音色。
-
-## 启动方式
-
-```powershell
-# 1. 运行网关
-.\scripts\start_gateway.ps1
-
-# 2. 运行测试
-.\scripts\run_tests.ps1
-```
+测试用tests/test_voice.py、tests/test_mcp_gateway.py等，在隔离环境运行；不得把测试客户端的HTTP200当生产QQ验收。新增provider保留身份/路径限制、限并发和真实回执。

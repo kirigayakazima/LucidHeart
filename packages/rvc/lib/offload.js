@@ -27,10 +27,10 @@ export function saveOffloadAudio(result, contract, outWav) {
   for (const [key, value] of Object.entries(contract.settings)) {
     if (result.settings?.[key] !== value) throw new Error('PC voice settings mismatch')
   }
-  if (typeof result.audioBase64 !== 'string' || result.audioBase64.length > 1400000
+  if (typeof result.audioBase64 !== 'string' || result.audioBase64.length > 11184812
     || !/^[A-Za-z0-9+/]+={0,2}$/.test(result.audioBase64)) throw new Error('Invalid PC audio encoding')
   const data = Buffer.from(result.audioBase64, 'base64')
-  if (data.length <= 44 || data.length > 1048576 || data.toString('ascii', 0, 4) !== 'RIFF'
+  if (data.length <= 44 || data.length > 8388608 || data.toString('ascii', 0, 4) !== 'RIFF'
     || data.toString('ascii', 8, 12) !== 'WAVE'
     || createHash('sha256').update(data).digest('hex') !== result.sha256) throw new Error('PC audio checksum/format mismatch')
   const output = outWav || path.join(os.homedir(), '.dsh', 'audio', `pc_voice_${randomUUID()}.wav`)

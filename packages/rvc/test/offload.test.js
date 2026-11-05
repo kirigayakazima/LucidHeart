@@ -39,4 +39,13 @@ test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用W
   // Verify CUDAExecutionProvider is accepted
   const cudaResult = saveOffloadAudio({ ...result, provider: 'CUDAExecutionProvider' }, contract, path.join(dir, 'cuda.wav'))
   assert.equal(cudaResult.offload.provider, 'CUDAExecutionProvider')
+  // A 20s 40kHz PCM16 reply exceeded the previous 1MiB/base64 limits.
+  const long = Buffer.alloc(1600044)
+  long.write('RIFF', 0); long.write('WAVE', 8)
+  const longResult = { ...result, audioBase64: long.toString('base64'),
+    sha256: createHash('sha256').update(long).digest('hex') }
+  const saved = saveOffloadAudio(longResult, contract, path.join(dir, 'long.wav'))
+  assert.equal(fs.statSync(saved.audioPath).size, long.length)
+  const oversized = Buffer.alloc(8388609)
+  assert.throws(() => saveOffloadAudio({ ...result, audioBase64: oversized.toString('base64') }, contract, path.join(dir, 'oversized.wav')), /encoding|checksum/)
 })

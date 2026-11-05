@@ -3,6 +3,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -14,10 +15,22 @@ DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio':
             'protect': .33, 'ttsVoice': 'zh-CN-XiaoxiaoNeural', 'ttsRate': '+0%',
             'synthesisMode': 'chunked', 'noiseScale': 1., 'intonationScale': 1.}
 
+MAX_AUDIO_BYTES = 8 * 1024 * 1024
+
+
+def read_voice_audio(output):
+    # Bound before reading; the reply is private generated audio, never a client path.
+    if not 44 < output.stat().st_size <= MAX_AUDIO_BYTES:
+        raise ValueError('VOICE_AUDIO_INVALID')
+    audio = output.read_bytes()
+    if not 44 < len(audio) <= MAX_AUDIO_BYTES or audio[:4] != b'RIFF' or audio[8:12] != b'WAVE':
+        raise ValueError('VOICE_AUDIO_INVALID')
+    return audio
+
 
 def prepare_profile(request):
     # Profile/Python paths are local administrator configuration, never request data.
-    if set(request) != {'text', 'voice'}:
+    if set(request) not in ({'text', 'voice'}, {'audioBase64', 'voice'}):
         raise ValueError('VOICE_REQUEST_INVALID')
     profile_path = Path(config.voice_profile).resolve(strict=True)
     profile = json.loads(profile_path.read_text(encoding='utf-8-sig'))
@@ -43,18 +56,33 @@ def prepare_profile(request):
         value = settings[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
             raise ValueError('VOICE_SETTINGS_INVALID')
-    if settings['synthesisMode'] != 'continuous' or settings['indexMethod'] != 'l2-8':
+    if settings['synthesisMode'] not in ('continuous', 'chunked') or settings['indexMethod'] not in ('l2-8', 'cosine1'):
         raise ValueError('VOICE_SETTINGS_INVALID')
-    text = request.get('text')
-    if not isinstance(text, str) or not text.strip() or len(text) > 200:
-        raise ValueError('VOICE_TEXT_INVALID')
+    if 'text' in request:
+        text = request.get('text')
+        if not isinstance(text, str) or not text.strip() or len(text) > 200:
+            raise ValueError('VOICE_TEXT_INVALID')
+        audio_bytes = None
+    else:
+        text = None
+        raw_b64 = request.get('audioBase64')
+        if not isinstance(raw_b64, str) or not 44 < len(raw_b64) <= 12 * 1024 * 1024:
+            raise ValueError('VOICE_AUDIO_INVALID')
+        if not re.fullmatch(r'[A-Za-z0-9+/=]+', raw_b64):
+            raise ValueError('VOICE_AUDIO_INVALID')
+        try:
+            audio_bytes = base64.b64decode(raw_b64, validate=True)
+        except Exception:
+            raise ValueError('VOICE_AUDIO_INVALID')
+        if not 44 < len(audio_bytes) <= MAX_AUDIO_BYTES or audio_bytes[:4] != b'RIFF' or audio_bytes[8:12] != b'WAVE':
+            raise ValueError('VOICE_AUDIO_INVALID')
     # Effective parameters follow the phone's chosen profile, without copying its
     # paths, ttsCommand, credentials or Python environment onto the PC.
     profile['modelsDir'] = str((profile_path.parent / profile['modelsDir']).resolve(strict=True))
     profile.pop('ttsCommand', None)
     profile.pop('pythonPath', None)
     profile.update(settings)
-    return profile, text
+    return profile, text, audio_bytes
 
 
 class VoiceCompute:
@@ -66,8 +94,14 @@ class VoiceCompute:
             raise ValueError('VOICE_DISABLED')
         if self.busy:
             raise ValueError('VOICE_BUSY')
-        profile, text = prepare_profile(request)
-        python = Path(config.voice_python).resolve(strict=True)
+        profile, text, audio_bytes = prepare_profile(request)
+        python_candidate = Path(config.voice_python)
+        uv_python = Path(r"C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe")
+        if uv_python.is_file():
+            python = uv_python.resolve()
+        else:
+            python = python_candidate.resolve(strict=True)
+
         worker = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'scripts' / 'voice_profile_speak.py'
         if not python.is_file() or not worker.is_file():
             raise ValueError('VOICE_RUNTIME_UNAVAILABLE')
@@ -83,20 +117,37 @@ class VoiceCompute:
                 profile_file, output = work / 'profile.json', work / 'output.wav'
                 profile_file.write_text(json.dumps(profile), encoding='utf8')
                 cmd = [str(python), str(worker), '--profile', str(profile_file),
-                       '--text', text, '--output', str(output), '--seed', '42']
+                       '--output', str(output), '--seed', '42']
+                if text is not None:
+                    cmd.extend(['--text', text])
+                else:
+                    input_dry = work / 'input_dry.wav'
+                    input_dry.write_bytes(audio_bytes)
+                    cmd.extend(['--input', str(input_dry)])
                 if getattr(config, 'voice_provider', None):
                     cmd.extend(['--provider', config.voice_provider])
+                worker_env = dict(os.environ)
+                torch_lib = r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib'
+                worker_env['PATH'] = torch_lib + os.pathsep + worker_env.get('PATH', '')
+                worker_env['PYTHONPATH'] = r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages;D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages'
                 process = await asyncio.create_subprocess_exec(*cmd,
+                    env=worker_env,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 task = asyncio.create_task(process.communicate())
                 try:
                     while not task.done():
                         await asyncio.wait({task}, timeout=.25)
-                        if time.monotonic() - started > 110 or (disconnected and await disconnected()):
+                        if time.monotonic() - started > 290 or (disconnected and await disconnected()):
                             raise TimeoutError('VOICE_TIMEOUT_OR_DISCONNECTED')
                     stdout, stderr = await task
                     if process.returncode:
-                        # Return classified error, never subprocess logs/profile paths.
+                        import logging
+                        logging.getLogger('fullawake.gateway').error(
+                            "Worker failed with returncode %d.\nSTDOUT:\n%s\nSTDERR:\n%s",
+                            process.returncode,
+                            stdout.decode('utf8', 'replace'),
+                            stderr.decode('utf8', 'replace')
+                        )
                         raise ValueError('VOICE_SYNTHESIS_FAILED')
                 finally:
                     if process.returncode is None:
@@ -105,9 +156,7 @@ class VoiceCompute:
                     if not task.done():
                         await task
                 result = json.loads(output.with_suffix('.result.json').read_text(encoding='utf8'))
-                audio = output.read_bytes()
-                if not 44 < len(audio) <= 1024 * 1024 or audio[:4] != b'RIFF' or audio[8:12] != b'WAVE':
-                    raise ValueError('VOICE_AUDIO_INVALID')
+                audio = read_voice_audio(output)
                 return {'ok': True, 'voiceId': profile['id'], 'assets': request['voice']['assets'],
                         'settings': request['voice']['settings'], 'audioBase64': base64.b64encode(audio).decode('ascii'),
                         'sha256': hashlib.sha256(audio).hexdigest(), 'sampleRate': result['sampleRate'],
@@ -116,3 +165,264 @@ class VoiceCompute:
                         'acoustic': {'pitch': result['pitch'], 'brightness': result['brightness'], 'rate': result['ttsRate']}}
         finally:
             self.busy = False
+
+    def get_separated_file(self, task: str, stem: str):
+        import re
+        clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
+        root = Path(config.voice_work_dir).resolve() / "separated" / clean_task
+        if stem in ("vocals", "vocal"):
+            candidate = root / "vocals.wav"
+        elif stem in ("accompaniment", "no_vocals", "inst", "bgm"):
+            candidate = root / "no_vocals.wav"
+            if not candidate.is_file():
+                candidate = root / "accompaniment.wav"
+        else:
+            return None
+        return candidate if candidate.is_file() else None
+
+    async def separate(self, task: str, audio_bytes: bytes, audio_format: str = "m4a") -> dict:
+        if not config.voice_enabled:
+            raise ValueError('VOICE_DISABLED')
+        if not audio_bytes or len(audio_bytes) < 100:
+            raise ValueError('VOICE_AUDIO_EMPTY')
+        if len(audio_bytes) > 60 * 1024 * 1024:
+            raise ValueError('VOICE_AUDIO_TOO_LARGE')
+
+        import re
+        clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
+        if not clean_task:
+            raise ValueError('VOICE_TASK_INVALID')
+
+        root = Path(config.voice_work_dir).resolve() / "separated"
+        task_dir = root / clean_task
+        task_dir.mkdir(parents=True, exist_ok=True)
+
+        clean_fmt = re.sub(r'[^a-zA-Z0-9]', '', audio_format).lower() or 'm4a'
+        in_file = task_dir / f"input.{clean_fmt}"
+        in_file.write_bytes(audio_bytes)
+
+        python = Path(r"C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe")
+        if not python.is_file():
+            python = Path(config.voice_python)
+
+        out_demucs_dir = task_dir / "out"
+        out_demucs_dir.mkdir(parents=True, exist_ok=True)
+
+        cmd = [
+            str(python), "-m", "demucs.separate",
+            "-n", "htdemucs",
+            "--two-stems", "vocals",
+            "-o", str(out_demucs_dir),
+            str(in_file),
+        ]
+        env = dict(os.environ)
+        env["PYTHONPATH"] = r"D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages"
+
+        started = time.monotonic()
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await process.communicate()
+        elapsed = time.monotonic() - started
+
+        if process.returncode != 0:
+            import logging
+            logging.getLogger('fullawake.gateway').error(
+                "Demucs separation failed with returncode %d.\nSTDOUT:\n%s\nSTDERR:\n%s",
+                process.returncode,
+                stdout.decode('utf8', 'replace'),
+                stderr.decode('utf8', 'replace')
+            )
+            raise ValueError('VOICE_SEPARATION_FAILED')
+
+        found_voc = list(out_demucs_dir.rglob("vocals.wav"))
+        found_bgm = list(out_demucs_dir.rglob("no_vocals.wav"))
+        if not found_voc or not found_bgm:
+            raise ValueError('VOICE_SEPARATION_OUTPUT_MISSING')
+
+        target_voc = task_dir / "vocals.wav"
+        target_bgm = task_dir / "no_vocals.wav"
+        if found_voc[0].resolve() != target_voc.resolve():
+            target_voc.write_bytes(found_voc[0].read_bytes())
+        if found_bgm[0].resolve() != target_bgm.resolve():
+            target_bgm.write_bytes(found_bgm[0].read_bytes())
+
+        return {
+            "ok": True,
+            "task": clean_task,
+            "elapsedSeconds": round(elapsed, 2),
+            "vocalsUrl": f"/v1/voice/download/{clean_task}/vocals",
+            "accompanimentUrl": f"/v1/voice/download/{clean_task}/accompaniment",
+        }
+
+    def get_singing_song_file(self, task: str):
+        import re
+        clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
+        root = Path(config.voice_work_dir).resolve() / "singing" / clean_task
+        candidates = [
+            root / f"song_{clean_task}.mp3",
+            root / "song.mp3",
+            root / f"song_{clean_task}.wav",
+        ]
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    async def process_singing_pipeline(self, task: str, audio_bytes: bytes, audio_format: str = "m4a", pitch: int = 0) -> dict:
+        if not config.voice_enabled:
+            raise ValueError('VOICE_DISABLED')
+        if not audio_bytes or len(audio_bytes) < 100:
+            raise ValueError('VOICE_AUDIO_EMPTY')
+        if len(audio_bytes) > 60 * 1024 * 1024:
+            raise ValueError('VOICE_AUDIO_TOO_LARGE')
+
+        import re
+        import logging
+        logger = logging.getLogger('fullawake.gateway')
+
+        clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
+        if not clean_task:
+            raise ValueError('VOICE_TASK_INVALID')
+
+        pitch = int(pitch)
+        if pitch == -2:
+            pitch = -4
+        if pitch not in (0, -4):
+            pitch = 0
+
+        root = Path(config.voice_work_dir).resolve() / "singing" / clean_task
+        root.mkdir(parents=True, exist_ok=True)
+
+        clean_fmt = re.sub(r'[^a-zA-Z0-9]', '', audio_format).lower() or 'm4a'
+        in_file = root / f"input.{clean_fmt}"
+        in_file.write_bytes(audio_bytes)
+
+        python = Path(r"C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe")
+        if not python.is_file():
+            python = Path(config.voice_python)
+
+        worker_env = dict(os.environ)
+        torch_lib = r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib'
+        worker_env['PATH'] = torch_lib + os.pathsep + worker_env.get('PATH', '')
+        worker_env['PYTHONPATH'] = r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages;D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages;D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone'
+
+        started = time.monotonic()
+        vocals_wav = root / "vocals.wav"
+        bgm_wav = root / "no_vocals.wav"
+
+        # Stage 1: Demucs Separation on GPU
+        if not vocals_wav.is_file() or not bgm_wav.is_file():
+            logger.info("[Singing] Stage 1: Running Demucs GPU separation for %s...", clean_task)
+            out_demucs_dir = root / "demucs_out"
+            out_demucs_dir.mkdir(parents=True, exist_ok=True)
+            cmd_sep = [
+                str(python), "-m", "demucs.separate",
+                "-n", "htdemucs",
+                "--two-stems", "vocals",
+                "-o", str(out_demucs_dir),
+                str(in_file),
+            ]
+            proc_sep = await asyncio.create_subprocess_exec(
+                *cmd_sep,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=worker_env,
+            )
+            stdout_sep, stderr_sep = await proc_sep.communicate()
+            if proc_sep.returncode != 0:
+                logger.error("Singing Demucs failed: %s", stderr_sep.decode('utf8', 'replace')[-500:])
+                raise ValueError('VOICE_SEPARATION_FAILED')
+            found_voc = list(out_demucs_dir.rglob("vocals.wav"))
+            found_bgm = list(out_demucs_dir.rglob("no_vocals.wav"))
+            if not found_voc or not found_bgm:
+                raise ValueError('VOICE_SEPARATION_OUTPUT_MISSING')
+            vocals_wav.write_bytes(found_voc[0].read_bytes())
+            bgm_wav.write_bytes(found_bgm[0].read_bytes())
+
+        t_sep = time.monotonic() - started
+        logger.info("[Singing] Stage 1 completed in %.2fs", t_sep)
+
+        # Stage 2: RVC Full-Song GPU Conversion
+        logger.info("[Singing] Stage 2: Running RVC GPU conversion for %s (pitch=%d)...", clean_task, pitch)
+        t_rvc_start = time.monotonic()
+        voc_new_wav = root / "voc_new.wav"
+        profile_path = Path(config.voice_profile).resolve(strict=True)
+        models_dir = str(profile_path.parent)
+        index_path = str(profile_path.parent / "voice.mobile.index")
+
+        rvc_script = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone' / 'rvc_onnx.py'
+        if not rvc_script.is_file():
+            rvc_script = Path(r'D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone\rvc_onnx.py')
+
+        cmd_rvc = [
+            str(python), "-u", str(rvc_script),
+            str(vocals_wav),
+            "--models_dir", models_dir,
+            "--output", str(voc_new_wav),
+            "--work_dir", str(root / ".rvc_work"),
+            "--pitch", str(pitch),
+            "--segment_seconds", "15",
+            "--threads", "4",
+            "--provider", "CUDAExecutionProvider",
+        ]
+        if Path(index_path).is_file():
+            cmd_rvc.extend(["--index-path", index_path, "--index-ratio", "0.3"])
+
+        proc_rvc = await asyncio.create_subprocess_exec(
+            *cmd_rvc,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=worker_env,
+        )
+        stdout_rvc, stderr_rvc = await proc_rvc.communicate()
+        if proc_rvc.returncode != 0 or not voc_new_wav.is_file():
+            logger.error("Singing RVC failed: %s", stderr_rvc.decode('utf8', 'replace')[-500:])
+            raise ValueError('VOICE_RVC_CONVERSION_FAILED')
+
+        t_rvc = time.monotonic() - t_rvc_start
+        logger.info("[Singing] Stage 2 completed in %.2fs", t_rvc)
+
+        # Stage 3: Mixing to final MP3
+        logger.info("[Singing] Stage 3: Mixing to MP3 for %s...", clean_task)
+        t_mix_start = time.monotonic()
+        final_mp3 = root / f"song_{clean_task}.mp3"
+        mix_script = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone' / 'mix.py'
+        if not mix_script.is_file():
+            mix_script = Path(r'D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone\mix.py')
+
+        cmd_mix = [
+            str(python), str(mix_script),
+            str(voc_new_wav), str(bgm_wav),
+            str(final_mp3),
+        ]
+        proc_mix = await asyncio.create_subprocess_exec(
+            *cmd_mix,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=worker_env,
+        )
+        stdout_mix, stderr_mix = await proc_mix.communicate()
+        if proc_mix.returncode != 0 or not final_mp3.is_file():
+            logger.error("Singing mix failed: %s", stderr_mix.decode('utf8', 'replace')[-500:])
+            raise ValueError('VOICE_MIX_FAILED')
+
+        t_mix = time.monotonic() - t_mix_start
+        total_elapsed = time.monotonic() - started
+        logger.info("[Singing] All stages completed in %.2fs (sep=%.1fs, rvc=%.1fs, mix=%.1fs)", total_elapsed, t_sep, t_rvc, t_mix)
+
+        return {
+            "ok": True,
+            "task": clean_task,
+            "elapsedTotalSeconds": round(total_elapsed, 2),
+            "stageSeconds": {
+                "separation": round(t_sep, 2),
+                "rvc_gpu": round(t_rvc, 2),
+                "mixing": round(t_mix, 2),
+            },
+            "downloadUrl": f"/v1/voice/sing/download/{clean_task}",
+            "mode": "pc_gpu_pipeline",
+        }

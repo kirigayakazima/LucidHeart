@@ -259,15 +259,7 @@ export async function runSpeak(params) {
       return await executePcSayvoice(text, acoustic, outWav)
     }
 
-    const mockOut = outWav || path.resolve(process.cwd(), `out_dv5_${Date.now()}.wav`)
-    return {
-      ok: true,
-      audioPath: mockOut,
-      durationMs: 120,
-      acoustic,
-      mode: 'pc_dev_stub',
-      logs: 'PC local dev stub - completed.',
-    }
+    throw new Error('PC语音运行环境未就绪，未生成音频；请配置已验收的voiceProfile或真实执行器。')
   }
 
   throw new Error('未检测到可用的 RVC 推理引擎（sayvoice.sh 未就绪且无 PC 算力桥）')

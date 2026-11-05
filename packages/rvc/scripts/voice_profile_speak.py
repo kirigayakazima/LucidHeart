@@ -79,8 +79,8 @@ def main():
         module.np.random.seed(args.seed)
         module.ort.set_seed(args.seed)
     dry_duration = len(module.load_audio(str(dry), target_sr=16000)) / 16000
-    if profile.get('synthesisMode') == 'continuous' and dry_duration >= 10:
-        raise ValueError('Continuous audition currently requires a dry clip shorter than 10 seconds')
+    # The vocoder's 1000-frame bound is per segment, not per utterance.
+    # convert_audio now plans pause-aware segments while reusing model sessions.
     target_provider = args.provider or profile.get('provider', 'CPUExecutionProvider')
     providers = [target_provider]
     if target_provider != 'CPUExecutionProvider':
@@ -101,7 +101,7 @@ def main():
     actual_ep = result.get('executionProvider', target_provider)
     result.update(profileId=profile['id'], mode='profile_phone_onnx_cpu' if actual_ep == 'CPUExecutionProvider' else 'profile_pc_onnx_gpu', profileSha256=digest(profile_path),
                   runtimeSha256=digest(runtime), outputSha256=digest(output), sampleRate=sr,
-                  elapsedTotalMs=round((time.perf_counter() - started) * 1000),
+                  elapsedTotalMs=round((time.perf_counter() - started) * 1000), dryDurationSeconds=dry_duration,
                   pitch=profile.get('pitch', 0), brightness=profile.get('brightness', 0),
                   indexMethod=profile.get('indexMethod', 'cosine1'), indexRatio=profile.get('indexRatio', 0.3),
                   synthesisMode=profile.get('synthesisMode', 'chunked'), noiseScale=profile.get('noiseScale', 1.0),

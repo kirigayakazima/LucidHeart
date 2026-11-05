@@ -359,6 +359,79 @@ def synthesize_segment(voice_sess, phone: np.ndarray, pitch: np.ndarray, pitchf:
     out = acc / np.maximum(wsum, 1e-6)
     return out[:expected].astype(np.float32)
 
+def plan_speech_segments(audio16k: np.ndarray, max_seconds: float = 8.0):
+    """Partition on 10ms boundaries, preferring real >=80ms pauses.
+
+    Centers <=8s plus 0.5s context on either side stay below the continuous
+    vocoder's 1000-frame bound. No samples/pauses are removed or duplicated.
+    Short utterances keep the accepted single-forward path unchanged.
+    """
+    audio = np.asarray(audio16k)
+    if audio.ndim != 1 or not len(audio) or not np.isfinite(audio).all():
+        raise ValueError('Speech input must be finite, nonempty mono audio')
+    if not np.isfinite(max_seconds) or not 2 <= max_seconds <= 8:
+        raise ValueError('Speech segment centers must be within 2..8 seconds')
+    hop, context = 160, 8000
+    size = int(max_seconds * 100) * hop
+    if len(audio) <= size:
+        return [{'start_16k': 0, 'end_16k': len(audio), 'ctx_start_16k': 0,
+                 'ctx_end_16k': len(audio), 'boundary': 'end'}]
+    frames = np.pad(audio, (0, (-len(audio)) % hop)).reshape(-1, hop)
+    energy = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
+    threshold = max(0.001, min(0.008, float(np.percentile(energy, 90)) * 0.04))
+    quiet = energy <= threshold
+    spans, start = [], 0
+    while start < len(audio):
+        limit = min(len(audio), start + size)
+        end, boundary = limit, 'end'
+        if limit < len(audio):
+            # Prefer the latest usable pause, without producing tiny fragments.
+            low = start // hop + min(300, size // hop // 2)
+            high = limit // hop
+            candidates = []
+            run_start = None
+            for frame in range(low, high):
+                if quiet[frame] and run_start is None:
+                    run_start = frame
+                if run_start is not None and (not quiet[frame] or frame == high - 1):
+                    stop = frame if not quiet[frame] else frame + 1
+                    if stop - run_start >= 8:
+                        candidates.append((run_start + stop) // 2)
+                    run_start = None
+            if candidates:
+                end, boundary = candidates[-1] * hop, 'pause'
+            else:
+                # No audible pause: low-energy 50ms region in the final 2s.
+                low = max(low, high - 200)
+                smooth = np.convolve(energy, np.ones(5) / 5, mode='same')
+                cut = low + int(np.argmin(smooth[low:high + 1]))
+                end, boundary = cut * hop, 'low_energy'
+        spans.append({'start_16k': start, 'end_16k': end,
+                      'ctx_start_16k': max(0, start - context),
+                      'ctx_end_16k': min(len(audio), end + context), 'boundary': boundary})
+        start = end
+    return spans
+
+
+def crop_speech_segment(wav, seg, total_samples):
+    """Keep exactly the center, including the final fractional 10ms frame."""
+    first = (seg['start_16k'] - seg['ctx_start_16k']) * 5 // 2
+    count = round(seg['end_16k'] * 2.5) - round(seg['start_16k'] * 2.5)
+    if len(wav) < first + count:
+        raise ValueError('Continuous segment output is incomplete; refusing to lose speech')
+    result = np.array(wav[first:first + count], dtype=np.float32, copy=True)
+    # Independent phases are never cross-faded over voiced audio. A tiny ramp
+    # suppresses clicks at joins, retaining the original timeline and pauses.
+    fade = min(200, len(result) // 2)  # 5ms at 40kHz
+    if fade:
+        ramp = np.linspace(0, 1, fade, dtype=np.float32)
+        if seg['start_16k']:
+            result[:fade] *= ramp
+        if seg['end_16k'] < total_samples:
+            result[-fade:] *= ramp[::-1]
+    return result
+
+
 def convert_audio(
     input_path: str,
     models_dir: str,
@@ -378,6 +451,8 @@ def convert_audio(
     noise_scale: float = 1.0,
     intonation_scale: float = 1.0,
     execution_providers = None,
+    pc_offload: bool = False,
+    pc_url: str = "http://127.0.0.1:28765",
 ):
     start_time = time.time()
     if execution_providers is None:
@@ -411,7 +486,8 @@ def convert_audio(
     total_audio_len_16k = len(audio16k)
     duration_s = total_audio_len_16k / 16000.0
     
-    # Calculate segments (15s per segment with 0.5s overlap/context)
+    # Continuous speech uses pause-aware bounded centers, shared model sessions,
+    # and one phase trajectory per segment. Legacy Dv5 chunked mode is unchanged.
     segment_samples_16k = int(segment_duration * 16000)
     context_samples_16k = int(0.5 * 16000)
     
@@ -431,6 +507,13 @@ def convert_audio(
             "out_file": os.path.join(chunks_dir, f"chunk_{len(segments):04d}.wav")
         })
         start = end
+
+    speech_split = False
+    if synthesis_mode == 'continuous':
+        segments = plan_speech_segments(audio16k)
+        speech_split = len(segments) > 1
+        for idx, seg in enumerate(segments):
+            seg.update(index=idx, out_file=os.path.join(chunks_dir, f'chunk_{idx:04d}.wav'))
         
     num_segments = len(segments)
     
@@ -445,7 +528,9 @@ def convert_audio(
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 old_m = json.load(f)
-                if old_m.get("input") == os.path.abspath(input_path) and old_m.get("total_segments") == num_segments:
+                # Continuous segments have a new boundary plan and must never
+                # reuse legacy cache entries for the same input filename.
+                if synthesis_mode != 'continuous' and old_m.get("input") == os.path.abspath(input_path) and old_m.get("total_segments") == num_segments:
                     manifest["completed"] = old_m.get("completed", [])
         except Exception:
             pass
@@ -491,34 +576,71 @@ def convert_audio(
             continue
             
         seg_audio16k = audio16k[seg["ctx_start_16k"] : seg["ctx_end_16k"]]
+        if speech_split and seg['ctx_end_16k'] == total_audio_len_16k:
+            # Hubert's receptive field otherwise loses the last few frames.
+            # Padding is context only; exact center cropping removes it later.
+            seg_audio16k = np.pad(seg_audio16k, (0, 640))
         
-        # Step A: Hubert features
-        phone = extract_hubert_features(hubert_sess, seg_audio16k)
-        phone_orig = phone.copy()
-        if index_table is not None and index_ratio > 0.0:
-            phone = apply_index(phone, index_table, index_ratio, batch_size=128 if index_method == 'l2-8' else 500, method=index_method)
-        
-        # Step B: RMVPE pitch
-        target_frames = phone.shape[0]
-        pitchf, pitch = extract_rmvpe_pitch(rmvpe_sess, seg_audio16k, target_frames, pitch_change, intonation_scale)
-        
-        # Consonant protection: blend unvoiced frames with original Hubert features
-        if protect < 0.5 and index_table is not None and index_ratio > 0.0:
-            pitchff = np.where(pitchf[:len(phone)] > 0, 1.0, protect).reshape(-1, 1).astype(np.float32)
-            phone = phone * pitchff + phone_orig * (1.0 - pitchff)
-        
-        # Step C: Synthesize voice at 40kHz (OLA)
-        seg_wav = synthesize_segment(voice_sess, phone, pitch, pitchf, mode=synthesis_mode, noise_scale=noise_scale)
-        
-        # Slice out the valid center region (without context padding)
-        hop_size_40k = 400
-        hop_size_16k = 160
-        ctx_leading_frames = (seg["start_16k"] - seg["ctx_start_16k"]) // hop_size_16k
-        center_frames = (seg["end_16k"] - seg["start_16k"]) // hop_size_16k
-        
-        v_start = ctx_leading_frames * hop_size_40k
-        v_end = v_start + center_frames * hop_size_40k
-        valid_seg_wav = seg_wav[v_start : min(len(seg_wav), v_end)]
+        valid_seg_wav = None
+        if pc_offload:
+            try:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                if script_dir not in sys.path:
+                    sys.path.insert(0, script_dir)
+                from pc_offload import convert_via_pc, wav_bytes_to_audio
+                prof_json = os.path.join(models_dir, "voice-profile.json")
+                if os.path.exists(prof_json):
+                    pc_wav = convert_via_pc(
+                        seg_audio16k,
+                        voice_profile_path=prof_json,
+                        gateway_url=pc_url,
+                        pitch=int(pitch_change)
+                    )
+                    if pc_wav is not None:
+                        arr, sr = wav_bytes_to_audio(pc_wav)
+                        if sr == 40000:
+                            hop_size_40k = 400
+                            hop_size_16k = 160
+                            ctx_leading_frames = (seg["start_16k"] - seg["ctx_start_16k"]) // hop_size_16k
+                            center_frames = (seg["end_16k"] - seg["start_16k"]) // hop_size_16k
+                            v_start = ctx_leading_frames * hop_size_40k
+                            v_end = v_start + center_frames * hop_size_40k
+                            valid_seg_wav = arr[v_start : min(len(arr), v_end)]
+                            if speech_split:
+                                valid_seg_wav = crop_speech_segment(arr, seg, total_audio_len_16k)
+            except Exception as e:
+                print(f"[pc_offload] Chunk {idx} offload error: {e}, falling back to local ONNX", flush=True)
+
+        if valid_seg_wav is None:
+            # Step A: Hubert features
+            phone = extract_hubert_features(hubert_sess, seg_audio16k)
+            phone_orig = phone.copy()
+            if index_table is not None and index_ratio > 0.0:
+                phone = apply_index(phone, index_table, index_ratio, batch_size=128 if index_method == 'l2-8' else 500, method=index_method)
+            
+            # Step B: RMVPE pitch
+            target_frames = phone.shape[0]
+            pitchf, pitch = extract_rmvpe_pitch(rmvpe_sess, seg_audio16k, target_frames, pitch_change, intonation_scale)
+            
+            # Consonant protection: blend unvoiced frames with original Hubert features
+            if protect < 0.5 and index_table is not None and index_ratio > 0.0:
+                pitchff = np.where(pitchf[:len(phone)] > 0, 1.0, protect).reshape(-1, 1).astype(np.float32)
+                phone = phone * pitchff + phone_orig * (1.0 - pitchff)
+            
+            # Step C: Synthesize voice at 40kHz (OLA)
+            seg_wav = synthesize_segment(voice_sess, phone, pitch, pitchf, mode=synthesis_mode, noise_scale=noise_scale)
+            
+            # Slice out the valid center region (without context padding)
+            hop_size_40k = 400
+            hop_size_16k = 160
+            ctx_leading_frames = (seg["start_16k"] - seg["ctx_start_16k"]) // hop_size_16k
+            center_frames = (seg["end_16k"] - seg["start_16k"]) // hop_size_16k
+            
+            v_start = ctx_leading_frames * hop_size_40k
+            v_end = v_start + center_frames * hop_size_40k
+            valid_seg_wav = seg_wav[v_start : min(len(seg_wav), v_end)]
+            if speech_split:
+                valid_seg_wav = crop_speech_segment(seg_wav, seg, total_audio_len_16k)
         
         # Save chunk immediately to disk
         save_wav(out_f, valid_seg_wav, 40000)
@@ -575,6 +697,10 @@ def convert_audio(
         "rtf": round((elapsed_ms / 1000.0) / max(0.1, duration_s), 3),
         "chunks": num_segments,
         "executionProvider": actual_provider,
+        "segmentation": {'strategy': 'pause-aware-v1' if synthesis_mode == 'continuous' else 'legacy-fixed',
+                         'split': speech_split, 'segments': [
+                             {key: seg[key] for key in ('start_16k', 'end_16k', 'ctx_start_16k', 'ctx_end_16k', 'boundary')}
+                             for seg in segments] if synthesis_mode == 'continuous' else []},
     }
 
 def main():
@@ -596,6 +722,9 @@ def main():
     parser.add_argument("--brightness", type=float, default=0.0, help="High-frequency boost in dB (default 0.0=disabled, recommended 2.0~3.0)")
     parser.add_argument("--clean", action="store_true", help="Clean up intermediate chunks after completion")
     parser.add_argument("--json", action="store_true", help="Print only JSON result at end")
+    parser.add_argument("--pc_offload", action="store_true", help="Offload chunk inference to PC FullAwake Gateway")
+    parser.add_argument("--pc_url", default="http://127.0.0.1:28765", help="PC FullAwake Gateway URL")
+    parser.add_argument("--provider", choices=["CPUExecutionProvider", "CUDAExecutionProvider"], default=None, help="ONNX execution provider")
     args = parser.parse_args()
 
     def on_progress(percent, msg):
@@ -621,6 +750,9 @@ def main():
             synthesis_mode=args.synthesis_mode,
             noise_scale=args.noise_scale,
             intonation_scale=args.intonation_scale,
+            pc_offload=args.pc_offload,
+            pc_url=args.pc_url,
+            execution_providers=[args.provider, "CPUExecutionProvider"] if args.provider else None,
         )
         if args.json:
             print(json.dumps(res))

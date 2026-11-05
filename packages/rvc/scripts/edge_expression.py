@@ -138,8 +138,6 @@ async def render_plan(plan, voice, directory):
         records.append({**part, 'file': source.name, 'sha256': sha(source), 'trim': trim,
                         'speechSamples': len(audio), 'insertedSilenceSamples': gap_samples})
     combined = np.concatenate(chunks)
-    if len(combined) >= 10 * SAMPLE_RATE:
-        raise ValueError('Combined dry audio must be shorter than 10 seconds for the current RVC mode')
     return combined, records
 
 
