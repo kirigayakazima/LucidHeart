@@ -31,7 +31,18 @@ if (-not (Test-Path -LiteralPath $VoiceProfile) -or -not (Test-Path -LiteralPath
     throw 'Voice profile or its uv Python environment is unavailable.'
 }
 $rvcSitePackages = Join-Path (Split-Path -Parent $SuiteDir) 'rvc/.venv310/Lib/site-packages'
-$env:PYTHONPATH = "$($ProjectDir)\src;$($rvcSitePackages);$($env:PYTHONPATH)"
+$gpuSitePackages = Join-Path (Split-Path -Parent $SuiteDir) 'rvc/.venv-gpu/Lib/site-packages'
+$torchLib = Join-Path $rvcSitePackages 'torch/lib'
+
+$pythonPathEntries = @("$($ProjectDir)\src")
+if (Test-Path -LiteralPath $gpuSitePackages) {
+    $pythonPathEntries += $gpuSitePackages
+}
+$pythonPathEntries += $rvcSitePackages
+$env:PYTHONPATH = ($pythonPathEntries -join ';') + ";$($env:PYTHONPATH)"
+if (Test-Path -LiteralPath $torchLib) {
+    $env:PATH = "$($torchLib);$($env:PATH)"
+}
 $env:FULLAWAKE_BIND_HOST = $BindAddress
 $env:PYTHONUTF8 = '1'
 $env:FULLAWAKE_VOICE_ENABLED = '1'
@@ -47,7 +58,8 @@ if ($Background) {
     $batScript = Join-Path $runDir 'run_gateway.bat'
     $batContent = @"
 @echo off
-set "PYTHONPATH=$($ProjectDir)\src;$($rvcSitePackages);%PYTHONPATH%"
+set "PATH=$($torchLib);%PATH%"
+set "PYTHONPATH=$($pythonPathEntries -join ';');%PYTHONPATH%"
 set "FULLAWAKE_BIND_HOST=$BindAddress"
 set "FULLAWAKE_VOICE_ENABLED=1"
 set "FULLAWAKE_VOICE_PROFILE=$($env:FULLAWAKE_VOICE_PROFILE)"
