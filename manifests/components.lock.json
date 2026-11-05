@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-02T20:05:00+08:00",
+  "updatedAt": "2026-11-04",
   "components": {
     "heart": {
       "id": "@dsh/heart",
       "name": "Heart Core",
       "type": "subsystem",
-      "version": "0.20.2",
+      "version": "0.21.1",
       "layer": "Core",
       "source": "packages/heart",
       "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."
@@ -18,7 +18,7 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
@@ -28,7 +28,7 @@
       "id": "@dsh/qq-plus",
       "name": "QQ Plus",
       "type": "package",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "layer": "Actuator",
       "source": "packages/qq-plus",
       "description": "Dual-persona (Xiaoman/Axing) adaptive wake words, emotional typing cadence, and multi-bubble split."
@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.2",
+      "version": "0.2.4",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."
@@ -46,7 +46,7 @@
       "id": "@tencent-connect/dsh-qqbot",
       "name": "DSH QQBot Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "0.5.6",
+      "version": "0.5.7",
       "layer": "IM",
       "upstream": "https://github.com/tencent-connect/dsh-qqbot",
       "fork": "https://github.com/kirigayakazima/dsh-qqbot",
@@ -96,7 +96,7 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."

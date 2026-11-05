@@ -1,6 +1,6 @@
 {
   "name": "lucidheart",
-  "version": "0.2.3",
+  "version": "0.3.2",
   "private": true,
   "description": "LucidHeart (HeartAwake Suite) - Dual-Embodied AI Companion System for Xiaoman & Axing",
   "type": "module",
@@ -11,7 +11,8 @@
     "test:qq-plus": "pnpm --filter @dsh/qq-plus test",
     "test:rvc": "pnpm --filter @dsh/rvc test",
     "test:sticker-look": "pnpm --filter dsh-sticker-look test",
-    "test:memory": "pnpm --filter @dsh/memory test"
+    "test:memory": "pnpm --filter @dsh/memory test",
+    "test:memory-shape": "node --test tools/memory-shape/test/*.test.mjs"
   },
   "keywords": [
     "lucidheart",

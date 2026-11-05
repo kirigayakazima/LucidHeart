@@ -1,6 +1,6 @@
 {
   "name": "@dsh/qq-plus",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "QQ 机器人增强插件：集成群聊入站唤醒门控（小满/阿醒双角色自适应）与出站消息拟人化断句打字节奏，支持 Heart Protocol v1 状态感知联动。",
   "type": "module",
   "main": "lib/index.js",
@@ -45,5 +45,8 @@
   "license": "MIT",
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

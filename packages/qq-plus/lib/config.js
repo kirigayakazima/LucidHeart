@@ -18,6 +18,9 @@ export const Config = Schema
       heartCadence: Schema.boolean()
         .default(true)
         .description('是否启用基于 Heart Protocol v1 情绪状态的动态打字节奏微调'),
+      deliveryMode: Schema.union(['semantic', 'native-stream']).default('semantic')
+        .description('semantic在完整回复后按语义气泡投递；native-stream保留QQ原生流式'),
+      semanticParagraphs: Schema.boolean().default(true).description('保留模型明确给出的空行段落边界'),
       split: Schema.object({
         enabled: Schema.boolean().default(true).description('是否启用出站短消息断句切分'),
         minChars: Schema.number().default(120).description('短于此字符数不进行断句'),

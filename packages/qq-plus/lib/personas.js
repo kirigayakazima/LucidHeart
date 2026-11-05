@@ -2,6 +2,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { optionalService } from './services.js'
 
 /** 小满（妹妹·常驻红米手机）画像预设 */
 export const XIAOMAN_PROFILE = Object.freeze({
@@ -135,7 +136,7 @@ export function resolvePersonaConfig(ctx, userConfig = {}) {
   // 2. 第二层：Heart 服务契约快照探针
   if (!personaId || personaId === 'auto') {
     try {
-      const heartDevice = ctx?.heart?.getSnapshot?.()?.device
+      const heartDevice = optionalService(ctx, 'heart')?.getSnapshot?.()?.device
       if (heartDevice === 'phone') {
         personaId = 'xiaoman'
       } else if (heartDevice === 'win') {
@@ -206,6 +207,9 @@ export function resolvePersonaConfig(ctx, userConfig = {}) {
     wakeWords: cleanWakeWords,
     split: splitConfig,
     heartCadence: userConfig.heartCadence ?? baseProfile.heartCadence,
+    deliveryMode: ['semantic', 'native-stream'].includes(localOverride.deliveryMode ?? userConfig.deliveryMode)
+      ? (localOverride.deliveryMode ?? userConfig.deliveryMode) : 'semantic',
+    semanticParagraphs: localOverride.semanticParagraphs ?? userConfig.semanticParagraphs ?? true,
     source: personaId,
   }
 }

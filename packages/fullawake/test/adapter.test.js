@@ -311,3 +311,35 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   ctx2.dispose()
   assert.equal(host.tools.size, 0)
 })
+
+test('FullAwake long audio reply is bounded while streaming, cancellation remains effective', async () => {
+  let mode = 'long'
+  const server = http.createServer((req, res) => {
+    req.resume()
+    if (req.url !== '/v1/voice/rvc') { res.end('{"online":true}'); return }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    if (mode === 'long') res.end(JSON.stringify({ audioBase64: 'a'.repeat(2200000) }))
+    else if (mode === 'oversized') res.end('a'.repeat(12 * 1024 * 1024 + 1))
+    else res.write('{') // Keep the response body open until caller aborts.
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const host = new MockCordisHost()
+  const ctx = host.createContext('dsh-fullawake')
+  apply(ctx, { gatewayUrl: `http://127.0.0.1:${server.address().port}` })
+  try {
+    const bridge = host.services.get('pcBridge')
+    const reply = await bridge.callPcRvc({ text: '长句', voice: {} })
+    assert.equal(reply.audioBase64.length, 2200000)
+    mode = 'oversized'
+    await assert.rejects(bridge.callPcRvc({ text: '长句', voice: {} }), /RESPONSE_TOO_LARGE/)
+    mode = 'pending'
+    const controller = new AbortController()
+    const pending = bridge.callPcRvc({ text: '取消', voice: {}, signal: controller.signal })
+    const timer = setTimeout(() => controller.abort(), 50)
+    try { await assert.rejects(pending, /abort/i) } finally { clearTimeout(timer) }
+  } finally {
+    ctx.dispose()
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
+})

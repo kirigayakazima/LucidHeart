@@ -63,6 +63,7 @@ import { log } from './logger.js'
 import { HeartService } from './service.js'
 import { activityOrigin } from './activity-origin.js'
 import { installRuntimeDiagnostics } from './runtime-diagnostics.js'
+import { buildExpressionPolicy } from './expression.js'
 
 export { HeartService } from './service.js'
 export * from '../contracts/index.js'
@@ -123,6 +124,9 @@ export const Config = z.object({
   idleTurnDailyCap: z.number().default(6),
   /** 本地运行采样和崩溃证据，有界轮转；随插件加载自动恢复，不调用模型。 */
   runtimeDiagnostics: z.boolean().default(true),
+  expressionEnabled: z.boolean().default(true),
+  expressionMode: z.union(['auto', 'casual', 'support', 'task', 'deep']).default('auto'),
+  expressionExamples: z.boolean().default(true),
 })
 
 const textOutput = {
@@ -132,6 +136,20 @@ const textOutput = {
     properties: { message: { type: 'string', required: true } },
   },
   render: (_args, value) => [{ type: 'text', text: value.message }],
+}
+
+// heart_next reports quota provenance as well as display text. Keep the object
+// closed, but declare its optional metadata (blocked branches only return message).
+const nextOutput = {
+  ...textOutput,
+  schema: {
+    ...textOutput.schema,
+    properties: {
+      ...textOutput.schema.properties,
+      origin: { type: 'string', enum: ['user_request', 'autonomous', 'unknown'] },
+      categoryQuotaRecorded: { type: 'boolean' },
+    },
+  },
 }
 
 function trace(root, msg) {
@@ -498,7 +516,7 @@ export function apply(ctx, config) {
           minutes: { type: 'number', description: '6–180 分钟' },
           category: { type: 'string', description: '类别 id，如 bilibili / fun / study / rest' },
         },
-        output: textOutput,
+        output: nextOutput,
         async execute(args, exec) {
           const live = readHeartConfig(root)
           const origin = activityOrigin(exec)
@@ -802,6 +820,11 @@ export function apply(ctx, config) {
         order: 55,
         text: () => buildSelfSection(root, config),
       })
+      ctx.systemPrompt.section({
+        name: 'heart:expression',
+        order: 56,
+        text: () => buildExpressionPolicy({ ...config, ...readHeartConfig(root) }).text,
+      })
       trace(root, 'prompt:registered voice=50 mood=52 self=55')
     } catch (error) {
       trace(root, 'prompt:error ' + String((error && error.message) || error))
@@ -970,8 +993,13 @@ export function registerRoutes(ctx, root, config, state = {}) {
       const categories = idleCategoryRemaining(live, counts)
       const totalCap = Number(live.idleTurnDailyCap) || 6
       const totalUsed = tr.idleDate === today ? Number(tr.idleCount) || 0 : 0
+      const expression = buildExpressionPolicy({ ...config, ...live })
+      let conversation = null
+      try { conversation = ctx.get?.('qqbotSender')?.conversationDiagnostics?.() || null } catch {}
       sendJson(res, 200, {
         ...s,
+        expression: { version: expression.version, enabled: expression.enabled, mode: expression.mode, chars: expression.chars },
+        conversation,
         pulse: readPulse(root, { limit: 12 }),
         sense: readSense(root),
         trigger: tr,

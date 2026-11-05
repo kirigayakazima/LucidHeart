@@ -7,7 +7,7 @@ export function splitForQQ(text, options = {}) {
   if (!normalized) return []
 
   const minChars = options.minChars ?? 120
-  if (normalized.length < minChars) {
+  if (normalized.length < minChars && !(options.semanticParagraphs && /\n\s*\n/.test(normalized))) {
     return [normalized]
   }
 
@@ -77,7 +77,7 @@ export function splitForQQ(text, options = {}) {
   for (const atom of atoms) {
     if (!currentSeg) {
       currentSeg = atom
-    } else if (currentSeg.length + atom.length <= targetChars) {
+    } else if (currentSeg.length + atom.length <= targetChars && !(options.semanticParagraphs && /\n\s*\n$/.test(currentSeg))) {
       currentSeg += atom
     } else {
       segments.push(currentSeg)

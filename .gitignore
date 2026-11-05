@@ -8,6 +8,7 @@ dist/
 build/
 *.tgz
 *.tar.gz
+*.json.gz
 
 # Python & UV
 .venv/

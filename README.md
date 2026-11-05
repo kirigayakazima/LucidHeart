@@ -1,122 +1,22 @@
-# LucidHeart (HeartAwake Suite)
+# LucidHeart / HeartAwake Suite
 
-> **Sovereign Dual-Embodied AI Companion System for Xiaoman (妹妹·小满 · 手机端) & Axing (姐姐·阿醒 · PC端)**  
-> 运行双端：`Redmi 23049RAD8C` (Android 17 / Proot Ubuntu) ⟷ `Windows 11 PC`  
-> 核心原则：**Sovereign Fork & Heart Protocol v1** (纯离线闭包封包 + 原生 ADB Socket 推送)
+自研核心源码monorepo：packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake}，PC节点apps/fullawake-pc，只读工具tools/memory-shape。当前Suite0.3.2是组合源码/发行版本，不是DSH宿主或手机loaded证明。
 
----
+| 模块 | 当前源码 | 职责 |
+|---|---|---|
+| Heart | 0.21.1 | 状态/节律/门控/原则/表达策略，Protocol1.0.0 |
+| Memory | 0.1.1 | journal、FTS与薄适配；来源/提交可靠性仍需下一阶段 |
+| QQ Plus | 0.3.0 | 双角色、完整回复语义气泡、按目标取消 |
+| RVC | 0.2.4 | Feiyu语音、停顿分段长句、QQ自动投递与同声库回退 |
+| FullAwake手机/PC | 0.2.1 | 受控PC感官/语音计算与音频回传；非通用远控 |
+| Sticker Look | 0.2.3 | 动图抽帧、接触表和按需细节 |
 
-## 1. 架构总览与生态矩阵
+小满主脑/私有记忆在手机，阿醒独立。Memory不是PC算力桥的人格副本。模型资产、环境、凭据和私人local不打进npm包或提交公开仓库。真实唱歌、GPU常驻、实时音视频、完整ContextPolicy及数字生活协调尚未完成。
 
-LucidHeart 采用 **统一主源码 Monorepo (HeartAwake Suite) + 主权外部驱动 Fork + 独立安全工具** 架构：
+当前事实、加载状态、测试边界与手机安装步骤统一维护在研发工作区docs/STATUS.md和docs/handoff/CURRENT.md；该工作区不是本仓库的父级公开内容。可独立阅读各package README/协议与manifests/components.lock.json，不能把manifest当实时探针。
 
-```mermaid
-flowchart TB
-    subgraph SUITE["LucidHeart Monorepo (HeartAwake Suite)"]
-        HEART["packages/heart<br/>(Heart Core 微内核 0.20.2)"]
-        FULLAWAKE["packages/fullawake<br/>(FullAwake 手机客户端桥 0.2.0)"]
-        PC_APP["apps/fullawake-pc<br/>(FullAwake PC 网关)"]
-        QQ_PLUS["packages/qq-plus<br/>(QQ 双向拟人交互 0.2.2)"]
-        RVC["packages/rvc<br/>(Feiyu 拟人音色器官 0.2.2)"]
-        STICKER["packages/sticker-look<br/>(自研表情包与动图抽帧 0.2.3)"]
-        MEMORY["packages/memory<br/>(LucidMemory 专属记忆核心 0.1.0)"]
-    end
+PC开发用pnpm和项目uv环境（安装用清华源）；手机只接受PC闭包发行、SHA校验和Build190原生事务安装，禁止公网git/npm和手工node_modules链接。新增工具实际SDK输出校验必跑。不要为语音测试改自主6/6。
 
-    subgraph FORKS["主权外部驱动与能力 (固定锁定版本)"]
-        QQBOT["@tencent-connect/dsh-qqbot<br/>(IM 官方驱动主权分支)"]
-        MNEMON["旧Mnemon材料<br/>(历史参考，非当前活跃Fork)"]
-        BILI["dsh-bili-scroll<br/>(B站习惯巡检与分镜)"]
-        STORYBOARD["dsh-video-storyboard<br/>(视频分镜分析)"]
-    end
+本轮237项检查/CPU长语音证据及上一轮表达验证是已跑快照，不是泛化性能/自然度分数；文档整理未重跑生产测试。代码更改后按影响范围重新测，真实手机/用户听感另验。旧发行件和其校验单不随README整理重写。
 
-    subgraph TOOLS["独立高安全工具 (物理隔离维护)"]
-        VAULT["DSH-Vault<br/>(小满加密灾备与备份系统)"]
-        REMOTE["DSH-Remote-Files<br/>(双端只读文件浏览器)"]
-    end
-
-    HEART <== Heart Protocol v1 ==> FULLAWAKE
-    HEART <== 门控与情绪节奏 ==> QQ_PLUS
-    HEART <== 声学映射 ==> RVC
-    HEART <== 意图感知回流 ==> STICKER
-    HEART <== 经验检索与记忆流 ==> MEMORY
-    FULLAWAKE <== MCP / HTTP ==> PC_APP
-    QQ_PLUS <== 发送包装 ==> QQBOT
-    RVC <== 语音条直发 ==> QQBOT
-```
-
----
-
-## 2. 目录布局
-
-```text
-lucidheart/ (HeartAwake Suite)
-  apps/
-    fullawake-pc/             # PC 端感官与算力分流网关 (Python / FastAPI / uv)
-  packages/
-    heart/                    # @dsh/heart: 自我状态机与 Protocol v1 微内核
-    fullawake/                # dsh-fullawake: 手机端 PC 感官适配器与多模态截屏
-    qq-plus/                  # @dsh/qq-plus: 小满/阿醒双角色唤醒与拟人断句气泡
-    rvc/                      # @dsh/rvc: Feiyu拟人语音；唱歌链尚未接通
-    sticker-look/             # dsh-sticker-look: 零依赖动图抽帧、联系表生成与意图推断
-    memory/                   # @dsh/memory: 轻量原生三层记忆核心、Markdown真源与FTS5检索
-  manifests/
-    components.lock.json      # 全组件权威版本、上游溯源与锁定清单
-  pnpm-workspace.yaml
-  package.json
-```
-
----
-
-## 3. 开发与测试指南
-
-### 3.1 Node.js 模块开发
-使用 `pnpm` 管理工作区依赖与多包脚本：
-
-```bash
-# 安装工作区依赖
-pnpm install
-
-# 运行所有子系统单元测试
-pnpm test
-
-# 分别运行各模块测试
-pnpm test:heart
-pnpm test:fullawake
-pnpm test:qq-plus
-pnpm test:rvc
-pnpm test:sticker-look
-```
-
-### 3.2 Python 模块开发规范
-当前PC语音回传为ONNX CPU；GPU及真实唱歌、实时通话均未完成。
-
-严格遵循工作区统一规范：**所有 Python 环境一律走 `uv`**：
-
-```bash
-# 进入 PC 网关目录
-cd apps/fullawake-pc
-
-# 使用 uv 创建独立虚拟环境并安装依赖
-uv venv --python 3.10
-uv pip install --python .venv/Scripts/python.exe -e . --index-url https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 运行 Python 单元测试
-uv run pytest
-```
-
----
-
-## 4. 关键设计原则
-
-1. **小满主脑唯一性**：红米手机端 DSHA 是小满唯一的推理、记忆与人格中枢，PC 端仅作为只读感官与算力分流器。
-2. **姐姐阿醒数据隔离**：PC 端的姐姐（阿醒）拥有独立 DSH 与记忆，严禁以任何方式越权访问阿醒的私人数据或凭证。
-3. **视觉 Token 治理红线**：严禁无序倾倒多模态单图；统一采用接触表分镜技术锁定单次调用为 384 tokens。
-4. **大权重解耦**：1.02GB 的 RVC ONNX 模型文件严禁提交入 Git，当前Feiyu驻留在手机端 `/sdcard/rvc/models/feiyu-rvc-v1/`，Dv5仅保留后备。
-5. **绝对离线更新**：手机端严禁执行公网 `git clone` 或 `npm install`，统一由 PC 端经原生 ADB Socket 传输并进行 SHA-256 哈希熔断校验。
-
----
-
-## 5. 许可证与署名
-
-- 本项目源码采用 [MIT License](LICENSE)。
-- 外部依赖与主权分支保留各上游原作者版权声明，详见各子目录及组件清单。
+[Memory Shape工具](tools/memory-shape/README.md)、[Heart协议](packages/heart/contracts/protocol.md)、[Memory当前契约](packages/memory/README.md)、[RVC实现](packages/rvc/README.md)、[FullAwake PC](apps/fullawake-pc/README.md)。

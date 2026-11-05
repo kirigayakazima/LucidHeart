@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>小满 · 记忆形状</title>
+<style>
+:root { color-scheme: dark; font-family: system-ui, 'Microsoft YaHei', sans-serif; background:#0b1420; color:#e5edf3 }
+* { box-sizing:border-box } body { margin:0; padding:32px; max-width:1700px; margin-inline:auto }
+header { display:flex; justify-content:space-between; align-items:center; gap:24px; margin-bottom:22px }
+.eyebrow { letter-spacing:3px; color:#70c7bd; font-size:11px } h1 { font-size:30px; font-weight:550; margin:10px 0 }
+p { color:#a5b6c6; line-height:1.7; margin:8px 0 } button, select, input { font:inherit; color:inherit; background:#162536; border:1px solid #30465c; border-radius:8px; padding:10px 12px }
+button, label.upload { cursor:pointer } button:hover, label.upload:hover { border-color:#74cbbf }
+label.upload { background:#244a48; border:1px solid #538d85; padding:11px 18px; border-radius:8px; display:inline-block }
+#file { display:none } .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px }
+#search { flex:1; min-width:160px } .badge { padding:5px 10px; border:1px solid #395365; color:#96b7c9; border-radius:20px; font-size:12px }
+.layout { display:grid; grid-template-columns:minmax(0, 1fr) 310px; gap:16px } .panel { border:1px solid #25394d; background:#101c2a; border-radius:14px; overflow:hidden }
+.chart-head { padding:16px 20px; display:flex; justify-content:space-between; gap:12px; align-items:center; border-bottom:1px solid #233649 }
+.legend { display:flex; gap:15px; color:#a5b6c6; font-size:12px; flex-wrap:wrap }.dot { width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:5px }
+svg { display:block; width:100%; min-height:380px; touch-action:pan-y } .node { cursor:pointer; outline:none }.node:focus circle { stroke:#fff; stroke-width:3 }
+.side { padding:22px; min-height:480px } h2 { font-size:17px; font-weight:550; margin:0 0 16px } #detail { white-space:pre-wrap; overflow-wrap:anywhere; color:#cedae4; line-height:1.8; font-size:13px }
+#status, #meta { font-size:12px; color:#92acbd; line-height:1.7; overflow-wrap:anywhere } #status { margin-bottom:15px; min-height:21px }.note { border-top:1px solid #25394d; padding-top:16px; margin-top:24px; font-size:12px }
+footer { margin-top:16px; color:#819bad; font-size:12px; line-height:1.7 } .warn { color:#efba82!important }
+@media(max-width:850px) { body { padding:18px } header { align-items:flex-start; flex-direction:column; gap:8px }.layout { grid-template-columns:1fr }.side { min-height:240px } h1 { font-size:26px } }
+</style>
+<header>
+  <div><div class="eyebrow">LUCIDHEART / MEMORY OBSERVATORY</div><h1>小满的记忆，有了形状。</h1><p>看见来源、轻重和孤点。当前事实与旧日记分层呈现。</p></div>
+  <div><label class="upload" for="file">打开记忆快照</label> <button id="demo">看示例</button><input id="file" type="file" accept=".json,application/json"></div>
+</header>
+<div class="toolbar">
+  <select id="layer" aria-label="来源层"><option value="all">所有来源</option><option value="current">当前记忆库</option><option value="legacy">Heart 旧档案</option><option value="principles">自我原则</option><option value="dream">Dream 候选与经验</option><option value="archive">另一份存档库</option></select>
+  <select id="via" aria-label="记录来源"><option value="all">所有记录方式</option><option value="chat">对话 chat</option><option value="self">自主 self</option><option value="unknown">来源未标注</option></select>
+  <input id="search" type="search" placeholder="找一段经历、一个词……" aria-label="搜索记忆"><span class="badge">只读 · 本地快照</span>
+</div>
+<div id="status" role="status">选择导出的 JSON。文件只在此页面内读取，不上传。</div>
+<div class="layout">
+  <div class="panel"><div class="chart-head"><span id="count">还没有快照</span><div class="legend"><span><i class="dot" style="background:#69d3bf"></i>对话</span><span><i class="dot" style="background:#f2ba79"></i>自主</span><span><i class="dot" style="background:#889db5"></i>未知</span></div></div><svg id="sky" viewBox="0 0 1100 760" role="img" aria-label="记忆来源分组图"></svg></div>
+  <aside class="panel side"><h2>从一颗记忆开始</h2><div id="detail">点击一个点，查看原文、来源和评分依据。
+
+大小表示展示权重；虚线表示候选。连线表示相同来源或分类，不代表因果或语义相似。</div><div class="note"><div id="meta">尚未加载</div><p>高分不等于事实正确。旧档案、候选和存档库不会因此变成当前事实。</p></div></aside>
+</div>
+<footer>这是观察窗口，不参与实际召回、不回写记忆。情节按工程半衰期显示淡化，事实与原则不随时间淡化；没有证据时保留“未知”。导出文件含私人记忆，请勿提交到公开仓库。</footer>
+<!-- MEMORY_SHAPE_SNAPSHOT -->
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const NS = 'http://www.w3.org/2000/svg';
+const colors = { chat:'#69d3bf', self:'#f2ba79', unknown:'#889db5' };
+const labels = { current:'当前库', legacy:'Heart 旧档案', principles:'自我原则', dream:'Dream', archive:'存档库' };
+let data = null;
+function svg(tag, attrs, parent) { const el=document.createElementNS(NS,tag); for(const [k,v] of Object.entries(attrs)) el.setAttribute(k,v); parent.appendChild(el); return el; }
+function validate(d) {
+  if (d?.schemaVersion!==1 || !Array.isArray(d.nodes) || d.nodes.length>10000 || !Array.isArray(d.groups) || d.groups.length>20000 || !Array.isArray(d.edges) || d.edges.length>20000) throw Error('不是支持的记忆快照，或超过首版容量');
+  const ids = new Set();
+  for(const n of d.nodes) {
+    if(!n || typeof n.id!=='string' || ids.has(n.id) || typeof n.text!=='string' || n.text.length>100000 || typeof n.layer!=='string' || typeof n.via!=='string' || !Number.isFinite(n.weight)) throw Error('记忆节点格式有误');
+    ids.add(n.id);
+  }
+  for(const g of d.groups) if(!g || typeof g.id!=='string' || ids.has(g.id) || !Array.isArray(g.members) || g.members.some(id=>!ids.has(id))) throw Error('来源分组格式有误');
+  return d;
+}
+function inspect(n) {
+  $('detail').textContent = n.text+'\n\n'+[
+    '来源层：'+(labels[n.layer]||n.layer), '类别：'+n.type+' / '+n.status,
+    '记录方式：'+n.via, '时间：'+(n.t||n.date||'未知'), '会话来源：'+(n.src||n.session||'未知'),
+    '作用域：'+n.scope, '重要性：'+(n.score?.importance??'未知'),
+    '可信度：'+(n.score?.confidence??'未记录'), '保留权重：'+(n.score?.retention?.toFixed(3)??'未知'),
+    '展示权重：'+n.weight.toFixed(3), '评分说明：'+(n.score?.reasons||[]).join('；'),
+    '文件：'+(n.origin?.file||'示例'), '原始位置：'+(n.origin?.line||'—'),
+  ].join('\n');
+}
+function render() {
+  $('sky').replaceChildren(); if(!data) return;
+  const term=$('search').value.trim().toLowerCase();
+  const matches=data.nodes.filter(n=>($('layer').value==='all'||n.layer===$('layer').value)&&($('via').value==='all'||n.via===$('via').value)&&(!term||n.text.toLowerCase().includes(term)));
+  const nodes=matches.slice(0,2000), visible=new Set(nodes.map(n=>n.id));
+  $('count').textContent=matches.length+' 条记忆'+(matches.length>2000?' · 显示前 2000 条，请筛选':'');
+  const bins=new Map();
+  for(const n of nodes) {
+    const key=n.layer+' / '+n.via;
+    if(!bins.has(key)) bins.set(key,[]); bins.get(key).push(n);
+  }
+  const positions=new Map(), columns=Math.min(3,Math.max(1,bins.size)), rows=Math.ceil(bins.size/columns)||1;
+  let index=0;
+  for(const [key,items] of bins) {
+    const cx=1100/columns*(index%columns+.5), cy=760/rows*(Math.floor(index/columns)+.53);
+    const width=1100/columns, height=760/rows;
+    svg('rect',{x:cx-width*.47,y:cy-height*.46,width:width*.94,height:height*.9,rx:18,fill:'#122131',stroke:'#20374a'},$('sky'));
+    const label=svg('text',{x:cx-width*.41,y:cy-height*.34,fill:'#92acbd','font-size':12},$('sky'));
+    const [layer,via]=key.split(' / '); label.textContent=(labels[layer]||layer)+' · '+via+' · '+items.length;
+    items.forEach((n,i)=>{
+      const angle=i*2.39996323, radius=Math.sqrt((i+.5)/items.length);
+      positions.set(n.id,{x:cx+Math.cos(angle)*radius*width*.37,y:cy+Math.sin(angle)*radius*height*.3+12});
+    }); index++;
+  }
+  // Draw shared-metadata hubs at the centroid of visible members, not all pair combinations.
+  for(const group of data.groups) {
+    const members=group.members.filter(id=>visible.has(id)); if(members.length<2) continue;
+    const center=members.reduce((p,id)=>({x:p.x+positions.get(id).x/members.length,y:p.y+positions.get(id).y/members.length}),{x:0,y:0});
+    for(const id of members) {const p=positions.get(id);svg('line',{x1:p.x,y1:p.y,x2:center.x,y2:center.y,stroke:group.type==='same-src'?'#50877f':'#455c7a','stroke-opacity':.26,'stroke-width':.8},$('sky'));}
+  }
+  const connected=new Set(data.edges.map(e=>e.source));
+  for(const n of nodes) {
+    const p=positions.get(n.id), g=svg('g',{class:'node',tabindex:0,role:'button','aria-label':n.text.slice(0,60)},$('sky'));
+    svg('circle',{cx:p.x,cy:p.y,r:3+Math.max(0,Math.min(1,n.weight))*6,fill:colors[n.via]||colors.unknown,'fill-opacity':n.status==='candidate'?.35:.9,stroke:connected.has(n.id)?'#bdd4df':'#f4e9cb','stroke-width':connected.has(n.id)?.6:1.6,'stroke-dasharray':n.status==='candidate'?'2 2':'none'},g);
+    const title=svg('title',{},g);title.textContent=n.text;
+    g.addEventListener('click',()=>inspect(n));g.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inspect(n);}});
+  }
+  if(!nodes.length) {const t=svg('text',{x:50,y:80,fill:'#92acbd','font-size':18},$('sky'));t.textContent='这个筛选范围内，还没有记忆。';}
+}
+function load(d,name) {
+  data=validate(d); $('detail').textContent='点击一个记忆点查看。当前选中详情已清空。';
+  $('status').textContent=name+' · '+(d.generatedAt||'时间未知')+(d.complete===false?' · 有读取缺口，请查看导出 warnings':'');
+  $('status').className=d.complete===false?'warn':'';
+  $('meta').textContent='当前库：'+(d.authority?.memoryDir||'示例')+'\n选择依据：'+(d.authority?.selection||'示例')+'\n完整图孤点：'+(d.summary?.isolated??'未知')+'\n评分仅预览，相关性尚未评估。';
+  render();
+}
+$('file').addEventListener('change',async e=>{
+  try { const f=e.target.files[0];if(!f)return;if(f.size>32*1024*1024)throw Error('文件超过 32 MB，请缩小导出范围');load(JSON.parse(await f.text()),f.name); }
+  catch(error){$('status').textContent='无法打开：'+error.message;$('status').className='warn';}
+  e.target.value='';
+});
+for(const id of ['layer','via','search']) $(id).addEventListener('input',render);
+$('demo').addEventListener('click',()=>{
+  const cases=[['principles','self','principle','recorded-principle','先听完，再接话。'],['legacy','chat','episodic','historical','一起看了一段关于海洋的视频。'],['legacy','self','episodic','historical','自己醒着时整理了今天的随笔。'],['legacy','self','episodic','historical','接着上次的随笔，记下一个问题。'],['current','unknown','preference','active','示例：喜欢清淡一点的茶。'],['dream','unknown','insight','candidate','示例候选：先给结果，再补解释。']];
+  const nodes=cases.map(([layer,via,type,status,text],i)=>({id:'demo-'+i,layer,via,type,status,text,weight:type==='principle'?1:.5,scope:'xiaoman_private',score:{reasons:['synthetic-demo']}}));
+  load({schemaVersion:1,nodes,groups:[{id:'demo-group',type:'same-src',members:['demo-2','demo-3']}],edges:[{source:'demo-2',target:'demo-group'},{source:'demo-3',target:'demo-group'}],summary:{isolated:4}},'合成示例 · 不是真实记忆');
+});
+const embedded=document.getElementById('memory-shape-snapshot');
+if(embedded){try{load(JSON.parse(embedded.textContent),'本机私人快照');}catch(error){$('status').textContent='内嵌快照格式错误：'+error.message;}}
+</script>
+</html>

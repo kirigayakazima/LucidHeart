@@ -36,6 +36,7 @@ import {
 } from './store.js'
 import { log } from './logger.js'
 import { activityOrigin } from './activity-origin.js'
+import { buildExpressionPolicy } from './expression.js'
 
 export class HeartService {
   /**
@@ -107,6 +108,11 @@ export class HeartService {
 
     this._lastSnapshot = snapshot
     return snapshot
+  }
+
+  /** Optional extension; Protocol v1 state and permission methods are unchanged. */
+  getExpressionPolicy() {
+    return buildExpressionPolicy({ ...this.config, ...readHeartConfig(this.root) })
   }
 
   /**

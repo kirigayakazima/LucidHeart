@@ -43,6 +43,9 @@ const textOutput = {
 export function apply(ctx, config = {}) {
   const dataDir = config.dataDir || process.env.DSH_MEMORY_DATA_DIR || `${process.env.HOME || process.env.USERPROFILE}/.dsh/memory`;
   const memory = new MemoryService({ dataDir });
+  const scope = config.scope || (process.platform === 'win32' ? 'axing_private' : 'xiaoman_private');
+  if (!types.MemoryScopes.includes(scope)) { memory.close(); throw new Error('Invalid memory scope'); }
+  if (typeof ctx.effect === 'function') ctx.effect(() => () => memory.close());
 
   // 1. 注册核心工具：memory_recall
   if (ctx.tools && typeof ctx.tools.register === 'function') {
@@ -64,6 +67,7 @@ export function apply(ctx, config = {}) {
       output: textOutput,
       async execute(args) {
         const result = memory.recall(String(args.query || ''), {
+          scope,
           limit: Number(args.limit) || 3,
           maxTokens: config.recallMaxTokens || 250,
         });
@@ -84,7 +88,9 @@ export function apply(ctx, config = {}) {
       output: textOutput,
       async execute(args) {
         const entry = memory.inspect(String(args.id || ''));
-        if (!entry) return { message: `未找到 ID 为 ${args.id} 的记忆条目。` };
+        if (!entry || entry.status !== 'active' || !(entry.scope === scope || entry.scope === 'shared')) {
+          return { message: '未找到当前范围内可用的记忆条目。' };
+        }
         return {
           message: `【记忆详情 ${entry.id}】\n- 内容: ${entry.content}\n- 分类: ${entry.kind}\n- 范围: ${entry.scope}\n- 置信度: ${entry.confidence}\n- 生效时间: ${entry.validFrom}\n- 来源证据: ${entry.source?.evidenceText || '无'}\n- 状态: ${entry.status}`,
         };
@@ -104,7 +110,7 @@ export function apply(ctx, config = {}) {
         const entry = memory.remember({
           content: String(args.content || ''),
           kind: args.kind || 'fact',
-          scope: config.scope || 'xiaoman_private',
+          scope,
           confidence: 1.0,
           confirmed: true,
         });
