@@ -40,7 +40,7 @@ test('runtime samples rotate within a fixed budget and disposer removes timer/li
   const before = process.listenerCount('uncaughtExceptionMonitor')
   const stop = installRuntimeDiagnostics(dir, { intervalMs: 2, maxBytes: 600 })
   assert.equal(process.listenerCount('uncaughtExceptionMonitor'), before + 1)
-  await new Promise(resolve => setTimeout(resolve, 80))
+  await new Promise(resolve => setTimeout(resolve, 180))
   stop()
   stop()
   assert.equal(process.listenerCount('uncaughtExceptionMonitor'), before)
