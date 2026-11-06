@@ -1,6 +1,6 @@
 # @dsh/memory
 
-本地源码 0.1.1。Core 独立于 DSH，适配器提供 `memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
+本地源码 0.1.2。Core 独立于 DSH，适配器提供 `memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
 
 ## 当前存储和接口
 

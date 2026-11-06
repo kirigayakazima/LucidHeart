@@ -96,7 +96,7 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."
