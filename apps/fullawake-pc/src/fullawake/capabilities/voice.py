@@ -133,7 +133,10 @@ class VoiceCompute:
         except (FFmpegError, ValueError, IndexError):
             return AUDIO_UNCLEAR
 
-        segments, info = self.asr_model.transcribe(samples, beam_size=1, vad_filter=True)
+        asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '小满，大肥鱼，清羽，阿醒，满宝，妹妹，姐姐')
+        segments, info = self.asr_model.transcribe(
+            samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
+        )
         transcript = ''.join(segment.text for segment in segments).strip()
         if not transcript:
             return AUDIO_UNCLEAR
