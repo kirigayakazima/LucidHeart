@@ -22,7 +22,7 @@ from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
 from fullawake.core.config import config
 from fullawake.core.session import get_session_status
-from fullawake.capabilities.voice import VoiceCompute
+from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, VoiceCompute
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -78,6 +78,23 @@ class FullAwakeMCPGateway:
         async def pc_status_endpoint():
             """Authenticated PC status summary."""
             return {**get_session_status(), 'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
+
+        @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])
+        async def voice_asr_endpoint(request: Request):
+            if not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(status_code=403, detail='VOICE_CLIENT_NOT_ALLOWED')
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_AUDIO_BYTES:
+                    return AUDIO_UNCLEAR
+            if not body:
+                return AUDIO_UNCLEAR
+            try:
+                return await asyncio.to_thread(self.voice.transcribe, bytes(body))
+            except (ImportError, OSError, RuntimeError) as error:
+                logger.warning('ASR runtime unavailable: %s', error)
+                raise HTTPException(status_code=503, detail='ASR_UNAVAILABLE') from error
 
         @app.post('/v1/voice/rvc', dependencies=[Depends(verify_token)])
         async def voice_endpoint(request: Request):

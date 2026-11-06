@@ -377,6 +377,24 @@ test('scheduleNextIdle：写 nextIdleAt，夹在 min–max', () => {
   assert.equal(high.minutes, 180)
 })
 
+test('空闲额度按时段释放，未用额度顺延，当日最多六次', () => {
+  const decide = (time, idleCount) => shouldTriggerIdle({
+    next: { sinceMsgMin: 60 },
+    triggerState: { idleDate: '2026-10-21', idleCount },
+    now: new Date(time),
+  })
+  assert.equal(decide('2026-10-21T07:59:00', 0).reason, 'quiet-hours')
+  assert.equal(decide('2026-10-21T08:00:00', 0).ok, true)
+  assert.equal(decide('2026-10-21T11:59:00', 2).reason, 'bucket-cap')
+  assert.equal(decide('2026-10-21T12:00:00', 2).ok, true)
+  assert.equal(decide('2026-10-21T17:59:00', 3).ok, true)
+  assert.equal(decide('2026-10-21T17:59:00', 4).reason, 'bucket-cap')
+  assert.equal(decide('2026-10-21T18:00:00', 4).ok, true)
+  assert.equal(decide('2026-10-21T22:59:00', 6).reason, 'daily-cap')
+  assert.equal(decide('2026-10-21T23:00:00', 0).reason, 'quiet-hours')
+  assert.equal(decide('2026-10-22T08:00:00', 6).ok, true)
+})
+
 test('类别额度：记一次、用完拒绝、跨日清零', () => {
   const root = tmp()
   const config = {
@@ -439,7 +457,7 @@ test('maybeTrigger：空闲时起一轮，记录配额，间隔内不再触发',
     idleTurnDailyCap: 3,
     idleTurnGapMinutes: 60,
   }
-  const testNow = new Date('2026-10-21T14:00:00.000Z')
+  const testNow = new Date('2026-10-21T14:00:00')
   const prev = { presence: 'nearby', at: new Date(testNow.getTime() - 60000).toISOString() }
   const next = { presence: 'away', sinceMsgMin: 40 }
 
@@ -452,7 +470,24 @@ test('maybeTrigger：空闲时起一轮，记录配额，间隔内不再触发',
   assert.equal(state.lastEvent, 'idle')
   assert.equal(state.idleCount, 1)
   assert.ok(state.lastIdleTurnAt)
+  assert.equal(state.nextIdleAt, new Date('2026-10-21T15:20:00').toISOString())
+
+  scheduleNextIdle(root, 6, config, testNow)
+  const triggerState = readTrigger(root)
+  assert.equal(shouldTriggerIdle({ next, triggerState, config, now: new Date('2026-10-21T15:19:00') }).reason, 'not-due')
+  assert.equal(shouldTriggerIdle({ next, triggerState, config, now: new Date('2026-10-21T15:20:00') }).ok, true)
 
   // 间隔内再次调用 -> 不触发
   assert.equal(await maybeTrigger(ctx, root, prev, next, config, new Date(testNow.getTime() + 60000)), false)
+})
+
+test('桶内动态退避至少一小时', () => {
+  const next = { sinceMsgMin: 90 }
+  const triggerState = {
+    idleDate: '2026-10-21',
+    idleCount: 1,
+    lastIdleTurnAt: new Date('2026-10-21T18:00:00').toISOString(),
+  }
+  assert.equal(shouldTriggerIdle({ next, triggerState, now: new Date('2026-10-21T18:59:00') }).reason, 'not-due')
+  assert.equal(shouldTriggerIdle({ next, triggerState, now: new Date('2026-10-21T19:00:00') }).ok, true)
 })

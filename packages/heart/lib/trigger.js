@@ -105,12 +105,29 @@ export function shouldTriggerReturned({ prev, next, triggerState, config = {}, s
   return { ok: true, awayDuration }
 }
 
-/**
- * 空闲自主回合：他有一阵没说话时，允许模型自己起一轮。
- * 下一次什么时候醒由模型用 heart_next(minutes) 决定；没决定就按兜底间隔。
- * 条件：距上次消息 >= idleTurnMinMinutes；到了 nextIdleAt（或首次阈值）；
- *       不在安静时段；当日次数未超上限。
- */
+const IDLE_BUCKET_END_HOURS = [12, 18, 23]
+
+function idleBucket(now) {
+  const hour = now.getHours()
+  return hour >= 8 ? IDLE_BUCKET_END_HOURS.findIndex((end) => hour < end) : -1
+}
+
+function idleRhythmAt(at, bucket, available) {
+  const end = new Date(at)
+  end.setHours(IDLE_BUCKET_END_HOURS[bucket], 0, 0, 0)
+  if (available > 1) {
+    // 当前这一拍也占一个位置，用开拍时的余额把余下机会分散在桶内。
+    const interval = Math.max(60 * 60000, (end - at) / available)
+    return Math.min(at.getTime() + interval, end.getTime())
+  }
+  if (bucket === 2) {
+    end.setDate(end.getDate() + 1)
+    end.setHours(8)
+  }
+  return end.getTime()
+}
+
+/** 空闲自主回合：消息静默达到阈值，且当前作息时段与排程均允许时触发。 */
 export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakState = {}, now = new Date() }) {
   if (config.idleTurns === false) {
     return { ok: false, reason: 'disabled' }
@@ -128,26 +145,10 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
     }
   }
 
-  const dueAt = triggerState.nextIdleAt ? new Date(triggerState.nextIdleAt) : null
-  if (dueAt && !Number.isNaN(dueAt.getTime())) {
-    if (now.getTime() < dueAt.getTime()) {
-      return {
-        ok: false,
-        reason: 'not-due',
-        nextIdleAt: dueAt.toISOString(),
-        diffMin: Math.ceil((dueAt.getTime() - now.getTime()) / 60000),
-      }
-    }
-  } else {
-    const initial = Number(config.idleTurnMinutes) || 30
-    if (since < initial) {
-      return { ok: false, reason: 'too-soon', since, initial }
-    }
-  }
-
   const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
   const quietTo = speakState?.quietTo || config.quietTo || '08:00'
-  if (inQuietHours(now, quietFrom, quietTo)) {
+  const bucket = idleBucket(now)
+  if (bucket === -1 || inQuietHours(now, quietFrom, quietTo)) {
     return { ok: false, reason: 'quiet-hours' }
   }
 
@@ -158,13 +159,33 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
     return { ok: false, reason: 'daily-cap', used, cap }
   }
 
+  // 每到一桶释放两次额度，减去当日已用次数即包含前桶的结转。
+  const bucketRemaining = Math.min(cap, (bucket + 1) * 2) - used
+  if (bucketRemaining <= 0) {
+    return { ok: false, reason: 'bucket-cap' }
+  }
+
+  const lastIdle = new Date(triggerState.lastIdleTurnAt)
+  const rhythmAt = triggerState.idleDate === today && dateOf(lastIdle) === today && idleBucket(lastIdle) === bucket
+    ? idleRhythmAt(lastIdle, bucket, bucketRemaining + 1)
+    : 0
+  const due = Math.max(Date.parse(triggerState.nextIdleAt) || 0, rhythmAt)
+  const dueAt = due ? new Date(due).toISOString() : null
+  if (now.getTime() < due) {
+    return { ok: false, reason: 'not-due', nextIdleAt: dueAt, diffMin: Math.ceil((due - now.getTime()) / 60000) }
+  }
+  const initial = Number(config.idleTurnMinutes) || 30
+  if (!dueAt && since < initial) {
+    return { ok: false, reason: 'too-soon', since, initial }
+  }
+
   const { counts } = idleCategoryState(triggerState, now)
   const remaining = idleCategoryRemaining(config, counts)
   if (remaining.length && remaining.every((c) => c.remaining <= 0)) {
     return { ok: false, reason: 'category-cap', remaining }
   }
 
-  return { ok: true, since, dueAt: dueAt ? dueAt.toISOString() : null, minMinutes, cap, remaining }
+  return { ok: true, since, dueAt, minMinutes, cap, used, remaining, nextRhythmAt: idleRhythmAt(now, bucket, bucketRemaining) }
 }
 
 /** 今天各类别已用次数；跨日自动清零。 */
@@ -237,13 +258,12 @@ export function formatIdlePrompt(idleMinutes, now = new Date(), config = {}, rem
   const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`
   const min = Number(config.idleTurnMinMinutes) || 6
   const max = Number(config.idleTurnMaxMinutes) || 180
-  const fallback = Number(config.idleTurnDefaultMinutes) || 30
   const left = remaining
     .filter((c) => c.remaining > 0)
     .map((c) => `${c.label}(${c.id}) ${c.used}/${c.dailyCap}`)
     .join('、')
   const leftLine = left ? `今天还能做：${left}。` : ''
-  return `【感知】他有一阵没说话了（${idleMinutes} 分钟，现在 ${timeStr}），你一个人。想干点什么就干，不用等指令；${leftLine}做完用 heart_next(下次 ${min}–${max} 分钟, 类别id) 记一笔并排下一次，这个类别用完了就换一个或休息；不排就 ${fallback} 分钟后再看。做完记一句就行，不用汇报过程。`
+  return `【感知】他有一阵没说话了（${idleMinutes} 分钟，现在 ${timeStr}），你一个人。想干点什么就干，不用等指令；${leftLine}做完用 heart_next(下次 ${min}–${max} 分钟, 类别id) 记一笔并排下一次，实际唤醒还要等节律允许。这个类别用完了就换一个或休息。做完记一句就行，不用汇报过程。`
 }
 
 /**
@@ -286,7 +306,7 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
     const idlePayload = {
       sinceMsgMin: idle.since,
       availableCategories: (idle.remaining || []).map((c) => c.id),
-      quotaRemaining: (idle.cap || 6) - (triggerState.idleCount || 0),
+      quotaRemaining: idle.cap - idle.used,
     }
     if (service && typeof service.notifyIdle === 'function') {
       service.notifyIdle(idlePayload)
@@ -323,17 +343,14 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
       })
       trace(dir, 'trigger:returned to=' + agent.id + ' away=' + returned.awayDuration + 'm')
     } else {
-      const today = dateOf(now)
-      const count =
-        (triggerState.idleDate === today ? Number(triggerState.idleCount) || 0 : 0) + 1
+      const count = idle.used + 1
       const fallbackMinutes = Number(config.idleTurnDefaultMinutes) || 30
       writeTrigger(dir, {
         lastEvent: 'idle',
         lastIdleTurnAt: now.toISOString(),
-        idleDate: today,
+        idleDate: dateOf(now),
         idleCount: count,
-        // 兜底；模型如果在回合里调 heart_next，会把它覆盖成自己的判断
-        nextIdleAt: new Date(now.getTime() + fallbackMinutes * 60000).toISOString(),
+        nextIdleAt: new Date(Math.max(now.getTime() + fallbackMinutes * 60000, idle.nextRhythmAt)).toISOString(),
       })
       trace(
         dir,

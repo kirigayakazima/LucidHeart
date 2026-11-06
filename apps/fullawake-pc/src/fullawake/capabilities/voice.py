@@ -2,11 +2,14 @@
 import asyncio
 import base64
 import hashlib
+import io
 import json
 import os
+from functools import cached_property
 from pathlib import Path
 import tempfile
 import time
+import wave
 
 from fullawake.core.config import config
 
@@ -16,6 +19,27 @@ DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio':
             'synthesisMode': 'chunked', 'noiseScale': 1., 'intonationScale': 1.}
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
+ASR_SAMPLE_RATE = 16000
+AUDIO_UNCLEAR = {'ok': False, 'error': 'AUDIO_UNCLEAR', 'text': ''}
+
+
+def silk_as_wav(audio: bytes) -> io.BytesIO:
+    import pilk
+
+    with tempfile.TemporaryDirectory(prefix='fullawake-asr-') as folder:
+        source = Path(folder) / 'input.silk'
+        pcm = Path(folder) / 'decoded.pcm'
+        source.write_bytes(audio)
+        duration = pilk.decode(str(source), str(pcm), pcm_rate=ASR_SAMPLE_RATE)
+        if duration <= 0:
+            raise ValueError('Invalid Silk audio')
+        samples = pcm.read_bytes()
+    wav = io.BytesIO()
+    with wave.open(wav, 'wb') as output:
+        output.setparams((1, 2, ASR_SAMPLE_RATE, 0, 'NONE', 'not compressed'))
+        output.writeframes(samples)
+    wav.seek(0)
+    return wav
 
 
 def read_voice_audio(output):
@@ -88,6 +112,33 @@ def prepare_profile(request):
 class VoiceCompute:
     def __init__(self):
         self.busy = False
+
+    @cached_property
+    def asr_model(self):
+        from faster_whisper import WhisperModel
+
+        model_dir = os.environ.get('FULLAWAKE_ASR_MODEL_DIR')
+        if not model_dir or not Path(model_dir).is_dir():
+            raise RuntimeError('FULLAWAKE_ASR_MODEL_DIR must point to a local model')
+        return WhisperModel(model_dir, device='cuda', compute_type='float16', local_files_only=True)
+
+    def transcribe(self, audio: bytes):
+        from av.error import FFmpegError
+        from faster_whisper.audio import decode_audio
+
+        try:
+            is_silk = audio.startswith((b'#!SILK_V3', b'\x02#!SILK_V3'))
+            source = silk_as_wav(audio) if is_silk else io.BytesIO(audio)
+            samples = decode_audio(source, sampling_rate=ASR_SAMPLE_RATE)
+        except (FFmpegError, ValueError, IndexError):
+            return AUDIO_UNCLEAR
+
+        segments, info = self.asr_model.transcribe(samples, beam_size=1, vad_filter=True)
+        transcript = ''.join(segment.text for segment in segments).strip()
+        if not transcript:
+            return AUDIO_UNCLEAR
+        return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),
+                'language': info.language}
 
     async def synthesize(self, request, disconnected=None):
         if not config.voice_enabled:

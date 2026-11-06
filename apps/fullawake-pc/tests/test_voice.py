@@ -76,6 +76,24 @@ def test_large_output_rejected_before_read():
         read_voice_audio(Oversized())
 
 
+def test_asr_loopback_accepts_binary_without_token(monkeypatch):
+    monkeypatch.setattr(config, 'voice_clients', ['testclient'])
+
+    def transcribe(audio):
+        assert audio == b'RIFF-test'
+        return {'ok': True, 'text': '听到了', 'duration': 3.2, 'language': 'zh'}
+
+    monkeypatch.setattr(gateway.voice, 'transcribe', transcribe)
+    client = TestClient(gateway.app)
+    response = client.post('/v1/voice/asr', content=b'RIFF-test', headers={'Content-Type': 'audio/wav'})
+    assert response.status_code == 200
+    assert response.json() == {'ok': True, 'text': '听到了', 'duration': 3.2, 'language': 'zh'}
+    assert client.post('/v1/voice/asr', content=b'').json() == {
+        'ok': False, 'error': 'AUDIO_UNCLEAR', 'text': '',
+    }
+
+
+
 def test_audio_base64_payload(voice_setup):
     raw_wav = b'RIFF' + bytes(4) + b'WAVE' + bytes(100)
     audio_req = {

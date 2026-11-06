@@ -39,6 +39,7 @@ if (Test-Path -LiteralPath $gpuSitePackages) {
     $pythonPathEntries += $gpuSitePackages
 }
 $pythonPathEntries += $rvcSitePackages
+$pythonPathEntries += (Join-Path $ProjectDir '.venv/Lib/site-packages')
 $env:PYTHONPATH = ($pythonPathEntries -join ';') + ";$($env:PYTHONPATH)"
 if (Test-Path -LiteralPath $torchLib) {
     $env:PATH = "$($torchLib);$($env:PATH)"
@@ -52,6 +53,9 @@ $env:FULLAWAKE_VOICE_CLIENTS = $VoiceClients -join ','
 $runDir = Join-Path $SuiteDir 'local/fullawake'
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 $env:FULLAWAKE_VOICE_WORK_DIR = Join-Path $runDir 'voice-work'
+if (-not $env:FULLAWAKE_ASR_MODEL_DIR) {
+    $env:FULLAWAKE_ASR_MODEL_DIR = Join-Path $runDir 'faster-whisper-base'
+}
 if ($Background) {
     $stdoutFile = Join-Path $runDir 'gateway.stdout.log'
     $stderrFile = Join-Path $runDir 'gateway.stderr.log'
@@ -66,6 +70,7 @@ set "FULLAWAKE_VOICE_PROFILE=$($env:FULLAWAKE_VOICE_PROFILE)"
 set "FULLAWAKE_VOICE_PYTHON=$($env:FULLAWAKE_VOICE_PYTHON)"
 set "FULLAWAKE_VOICE_CLIENTS=$($env:FULLAWAKE_VOICE_CLIENTS)"
 set "FULLAWAKE_VOICE_WORK_DIR=$($env:FULLAWAKE_VOICE_WORK_DIR)"
+set "FULLAWAKE_ASR_MODEL_DIR=$($env:FULLAWAKE_ASR_MODEL_DIR)"
 set "PYTHONUTF8=1"
 cd /d "$ProjectDir"
 "$pythonExe" -m fullawake.gateway.mcp_server > "$stdoutFile" 2> "$stderrFile"
