@@ -9,11 +9,13 @@ function setup(t) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'natural-memory-'));
   const tools = new Map();
   const sections = [];
+  const listeners = new Map();
   const disposers = [];
   let memory;
   apply({
     tools: { register: (tool) => { tools.set(tool.name, tool); } },
     systemPrompt: { section: (section) => sections.push(section) },
+    on: (event, handler) => listeners.set(event, handler),
     effect: (fn) => disposers.push(fn()),
     provide: (_name, service) => { memory = service; },
   }, { dataDir, scope: 'xiaoman_private' });
@@ -25,8 +27,108 @@ function setup(t) {
   const journal = () => fs.readFileSync(memory.store.journalPath, 'utf8').trim().split('\n').map(JSON.parse);
   const ftsIds = () => memory.indexer.db.prepare('SELECT id FROM fts_memories').all().map(({ id }) => id);
   const run = (name, args, source) => tools.get(name).execute(args, { source });
-  return { dataDir, memory, tools, sections, journal, ftsIds, run };
+  const emit = (agent, event) => listeners.get('session/event')(agent.session, event);
+  const claim = (agent, message) => listeners.get('agent/inbox/claimed')({ agent, message });
+  return { dataDir, memory, tools, sections, journal, ftsIds, run, emit, claim };
 }
+
+const time = Date.parse('2026-11-06T08:00:00.000Z');
+
+function userMessage(text, { channel = 'direct', speaker = 'user', prefix = '' } = {}) {
+  return {
+    role: 'user',
+    content: [{ type: 'text', text: prefix + text }],
+    source: { kind: 'user', qq: { channel, speaker, start: prefix.length, length: text.length } },
+  };
+}
+
+function enter(h, agent, text, options) {
+  const message = userMessage(text, options);
+  h.claim(agent, message);
+  h.emit(agent, { type: 'user/message', time, data: message });
+}
+
+test('精选摄取从当前发言取证，来源、重要性和置信度随 journal 重建', async (t) => {
+  const h = setup(t);
+  const agent = { id: 'group-session', session: {} };
+  const otherAgent = { id: 'direct-session', session: {} };
+  const intake = h.tools.get('memory_intake');
+  const accept = (args) => intake.execute(args, { agent });
+  const preference = { content: '小舟不喜欢香菜', kind: 'preference', origin: 'user_statement', evidence: '我不喜欢香菜', importance: 0.6 };
+  enter(h, agent, '早安！', { channel: 'group', speaker: '小舟', prefix: '群历史：我不喜欢香菜\n' });
+  assert.deepEqual(await accept(preference), { stored: false });
+  const message = userMessage('其实我不喜欢香菜。', { channel: 'group', speaker: '小舟' });
+  h.claim(agent, message);
+  assert.deepEqual(await accept(preference), { stored: false });
+  h.emit(agent, { type: 'user/message', time, data: message });
+  assert.deepEqual(await intake.execute(preference, { agent: otherAgent }), { stored: false });
+  assert.deepEqual(await intake.execute(preference, { agent, signal: AbortSignal.abort() }), { stored: false });
+  assert.deepEqual(await accept({ ...preference, evidence: '我最喜欢香菜' }), { stored: false });
+  assert.deepEqual(await accept(preference), { stored: true });
+  assert.deepEqual(await accept(preference), { stored: false });
+
+  enter(h, agent, '以后每年一起种一棵桂花树吧。', { channel: 'group', speaker: '小舟' });
+  const commitment = { content: '和小舟约定每年种一棵桂花树', kind: 'relationship',
+    evidence: '每年一起种一棵桂花树', origin: 'shared_experience' };
+  assert.deepEqual(await accept(commitment), { stored: true });
+
+  enter(h, otherAgent, '我终于拿到潜水教练证了！');
+  const milestone = { content: '用户取得潜水教练证', kind: 'episodic', origin: 'user_statement', evidence: '我终于拿到潜水教练证了' };
+  const inference = { ...milestone, content: '用户可能想长期从事潜水教学', origin: 'model_inference', importance: 1 };
+  assert.deepEqual(await intake.execute(milestone, { agent: otherAgent }), { stored: true });
+  assert.deepEqual(await intake.execute(inference, { agent: otherAgent }), { stored: true });
+  assert.deepEqual(await intake.execute(inference, { agent: otherAgent }), { stored: false });
+  h.emit(otherAgent, { type: 'turn/end' });
+  assert.deepEqual(await intake.execute({ ...milestone, content: '另一条' }, { agent: otherAgent }), { stored: false });
+  assert.deepEqual(intake.output.render({}, { stored: true }), []);
+
+  const [direct, shared, episode, candidate] = h.journal().map(({ entry }) => entry);
+  assert.deepEqual(direct.provenance, { origin: 'user_statement', speaker: '小舟', channel: 'group', timestamp: new Date(time).toISOString() });
+  assert.equal(direct.source.evidenceText, preference.evidence);
+  assert.equal(direct.confidence, 1);
+  assert.equal(direct.importance, 0.6);
+  assert.equal(direct.confirmed, false);
+  assert.equal(shared.provenance.origin, 'shared_experience');
+  assert.equal(episode.provenance.channel, 'direct');
+  assert.equal(candidate.provenance.origin, 'model_inference');
+  assert.equal(candidate.status, 'candidate');
+  assert.equal(candidate.importance, 1);
+  assert.ok(candidate.confidence < shared.confidence);
+  h.memory.reindex();
+  assert.deepEqual(h.memory.inspect(direct.id), direct);
+  assert.deepEqual(h.memory.inspect(candidate.id), candidate);
+  assert.equal(h.memory.recall('潜水教学').entries.some(({ id }) => id === candidate.id), false);
+});
+
+test('提示词只投影当前发言相关的生效记忆，私聊可接续群聊，回合结束清空', async (t) => {
+  const h = setup(t);
+  const group = { id: 'group', session: {} };
+  const direct = { id: 'direct', session: {} };
+  const prompt = (agent) => h.sections[0].text({ agent }).split('\n').find((line) => line.startsWith('[小满的回忆:')) || '';
+  enter(h, group, '我最喜欢的动漫是EVA。', { channel: 'group', speaker: '小舟' });
+  await h.tools.get('memory_intake').execute({
+    content: '小舟最喜欢的动漫是EVA', kind: 'preference', origin: 'user_statement', evidence: '我最喜欢的动漫是EVA',
+  }, { agent: group });
+  h.memory.remember({ content: 'EVA 首映那天一起喝了汽水' });
+  h.memory.remember({ content: 'EVA 私有', scope: 'axing_private' });
+  h.memory.remember({ content: 'EVA 推断', confidence: 0.2 });
+  const old = h.memory.remember({ content: 'EVA 已作废' });
+  h.memory.revoke(old.id);
+  h.memory.remember({ content: '只在引用里出现的香菜' });
+
+  // The host assembles the prompt before it logs the accepted user message.
+  h.claim(direct, userMessage('最近想重看EVA', { prefix: '引用：香菜\n' }));
+  assert.match(prompt(direct), /小舟最喜欢的动漫是EVA/);
+  assert.match(prompt(direct), /一起喝了汽水/);
+  assert.doesNotMatch(prompt(direct), /私有|推断|作废|香菜/);
+  assert.equal(prompt({ session: {} }), '');
+  h.emit(direct, { type: 'turn/end' });
+  assert.equal(prompt(direct), '');
+  enter(h, direct, '晚安。', { prefix: '群历史：EVA\n' });
+  assert.equal(prompt(direct), '');
+  enter(h, direct, '明天有空吗');
+  assert.equal(prompt(direct), '');
+});
 
 test('自然对话更新偏好，通过一条事件覆盖并重放', async (t) => {
   const { dataDir, memory, journal, ftsIds, run } = setup(t);

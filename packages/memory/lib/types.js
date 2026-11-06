@@ -28,6 +28,16 @@ export const MemoryScopes = ['xiaoman_private', 'axing_private', 'shared'];
  */
 export const MemoryStatuses = ['candidate', 'active', 'superseded', 'revoked'];
 
+export const MemoryOrigins = ['user_statement', 'shared_experience', 'model_inference'];
+
+/**
+ * @typedef {Object} MemoryProvenance
+ * @property {'user_statement'|'shared_experience'|'model_inference'} origin
+ * @property {string} speaker
+ * @property {'direct'|'group'} channel
+ * @property {string} timestamp ISO timestamp
+ */
+
 /**
  * 生成规范化的记忆唯一 ID
  * @param {string} kind
@@ -52,5 +62,15 @@ export function validateMemoryEntry(entry) {
   if (!entry.content || typeof entry.content !== 'string') return false;
   if (typeof entry.confidence !== 'number' || entry.confidence < 0 || entry.confidence > 1) return false;
   if (!MemoryStatuses.includes(entry.status)) return false;
+  if (entry.importance !== undefined &&
+      !(Number.isFinite(entry.importance) && entry.importance >= 0 && entry.importance <= 1)) return false;
+  if (entry.provenance !== undefined) {
+    const source = entry.provenance;
+    if (!source || !MemoryOrigins.includes(source.origin) ||
+        typeof source.speaker !== 'string' || !source.speaker.trim() ||
+        !['direct', 'group'].includes(source.channel) ||
+        typeof source.timestamp !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(source.timestamp) ||
+        !Number.isFinite(Date.parse(source.timestamp))) return false;
+  }
   return true;
 }

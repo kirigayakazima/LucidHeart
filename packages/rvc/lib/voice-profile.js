@@ -19,12 +19,18 @@ export function readVoiceProfile(filename) {
   return profile
 }
 
-export async function runProfileSpeak({ voiceProfile, profilePython, text, acoustic, outWav, signal }) {
+async function runWorker({ voiceProfile, profilePython, text, acoustic, outWav, signal, input, dryOnly }) {
   const filename = path.resolve(voiceProfile)
   const profile = readVoiceProfile(filename)
   const output = outWav || path.join(os.homedir(), '.dsh', 'audio', `voice_profile_${randomUUID()}.wav`)
   const python = profilePython || (process.platform === 'win32' ? 'python' : 'python3')
-  const args = [worker, '--profile', filename, '--text', text, '--output', path.resolve(output)]
+  const args = [worker, '--profile', filename, '--output', path.resolve(output)]
+  if (input) args.push('--input', input)
+  else args.push('--text', text)
+  if (!input && acoustic?.rate !== undefined) args.push(`--rate=${acoustic.rate}`)
+  if (acoustic?.pitch !== undefined) args.push('--pitch', String(acoustic.pitch))
+  if (acoustic?.brightness !== undefined) args.push('--brightness', String(acoustic.brightness))
+  if (dryOnly) args.push('--dry-only')
   const result = await new Promise((resolve, reject) => {
     const env = profile.pythonPath
       ? { ...process.env, PYTHONPATH: [profile.pythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
@@ -44,8 +50,19 @@ export async function runProfileSpeak({ voiceProfile, profilePython, text, acous
       } catch (error) { reject(new Error(`Voice profile output validation failed: ${error.message}`)) }
     })
   })
+  return { output, result, profile }
+}
+
+export async function renderDryVoice(params) {
+  const { result } = await runWorker({ ...params, dryOnly: true })
+  return result.punctuationSeconds
+}
+
+export async function runProfileSpeak(params) {
+  const { output, result, profile } = await runWorker(params)
   return { ok: true, audioPath: path.resolve(output), durationMs: result.elapsedTotalMs,
     mode: result.mode, profileId: profile.id, validation: result,
-    acoustic: { ...acoustic, pitch: result.pitch, brightness: result.brightness,
-      rate: result.ttsRate || '+0%', intonationScale: result.intonationScale ?? 1 } }
+    acoustic: { ...params.acoustic, pitch: result.pitch, brightness: result.brightness,
+      rate: result.ttsRate ?? params.acoustic?.rate ?? profile.ttsRate ?? '+0%',
+      intonationScale: result.intonationScale ?? 1 } }
 }

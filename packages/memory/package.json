@@ -1,6 +1,6 @@
 {
   "name": "@dsh/memory",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "LucidHeart Sovereign Memory Core - Local-First, Markdown Ground Truth, Built-in SQLite FTS5 Indexing & Token Budgeting",
   "type": "module",
   "main": "lib/index.js",

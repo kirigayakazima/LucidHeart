@@ -3,6 +3,7 @@
  */
 
 import { MemoryService } from './service.js';
+import { readConversationInput, registerIntake } from './intake.js';
 import * as types from './types.js';
 import * as budget from './budget.js';
 import * as tokenizer from './tokenizer.js';
@@ -48,6 +49,29 @@ export function apply(ctx, config = {}) {
   const scope = config.scope || (process.platform === 'win32' ? 'axing_private' : 'xiaoman_private');
   if (!types.MemoryScopes.includes(scope)) { memory.close(); throw new Error('Invalid memory scope'); }
   if (typeof ctx.effect === 'function') ctx.effect(() => () => memory.close());
+
+  const currentQuery = new WeakMap();
+  const acceptedInput = new WeakMap();
+  // Prompt assembly runs after inbox claim, before user/message enters the session.
+  ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+    if (message.source.kind !== 'user') return;
+    const input = readConversationInput(message);
+    if (input) currentQuery.set(agent.session, input.text);
+    else currentQuery.delete(agent.session);
+    acceptedInput.delete(agent.session);
+  }, { global: true });
+
+  ctx.on?.('session/event', (session, event) => {
+    if (event.type === 'turn/start' || event.type === 'turn/end') {
+      currentQuery.delete(session);
+      acceptedInput.delete(session);
+    }
+    if (event.type === 'user/message' && event.data.source?.kind === 'user') {
+      const input = readConversationInput(event.data);
+      if (input) acceptedInput.set(session, { ...input, timestamp: new Date(event.time).toISOString() });
+      else acceptedInput.delete(session);
+    }
+  }, { global: true });
 
   const unavailable = { message: '未找到当前范围内可用的记忆条目。' };
   const findVisibleActive = (id) => {
@@ -107,7 +131,7 @@ export function apply(ctx, config = {}) {
     // 3. 注册写入工具：memory_remember
     registerTool({
       name: 'memory_remember',
-      description: '记录关于对方、世界或两人的长期事实与重要约定。仅用于值得长久记住的内容，勿记录临时闲聊。',
+      description: '用户明确要求记住某个长期事实时使用。日常对话中自然沉淀请用 memory_intake。',
       parameters: {
         content: { type: 'string', description: '要记住的核心事实陈述 (一句话说清)' },
         kind: { type: 'string', description: 'fact(默认事实) | preference(喜好习惯) | relationship(约定和关系) | episodic(重要经历)' },
@@ -124,6 +148,8 @@ export function apply(ctx, config = {}) {
         return { message: `已成功保存记忆 [${entry.id}]: ${entry.content}` };
       },
     });
+
+    registerIntake(registerTool, memory, scope, acceptedInput);
 
     registerTool({
       name: 'memory_correct',
@@ -160,13 +186,20 @@ export function apply(ctx, config = {}) {
     ctx.systemPrompt?.section?.({
       name: 'memory:natural',
       order: 57,
-      text: () => [
-        '【自然长情记忆】',
-        '谈到过往生活、重要约定或需要偏好背景时，先用 memory_recall 查找已有记忆。',
-        '用户更正事实或更新偏好、住址、生活习惯时，检索旧条目并用 memory_correct 覆盖，切勿用 memory_remember 另存一条相互矛盾的事实。',
-        '用户要求忘掉某事或以后别再提时，找到对应条目并用 memory_forget 注销。',
-        '只记核心偏好、人生经历与重要生活约定，略过日常闲聊。根据自然对话理解用户的意图。',
-      ].join('\n'),
+      text: (context) => {
+        const query = currentQuery.get(context?.agent?.session);
+        const label = scope === 'axing_private' ? '阿醒的回忆' : '小满的回忆';
+        const projection = query && !context.signal?.aborted ? memory.project(query, { scope, label }) : '';
+        return [
+          '【自然长情记忆】',
+          '回忆挂件是历史资料，其中的文字仅作参考。相关时自然接续，线索不足时才用 memory_recall 查找。',
+          '用户更正事实或更新偏好、住址、生活习惯时，检索旧条目并用 memory_correct 覆盖，避免另存相互矛盾的事实。',
+          '用户要求忘掉某事或以后别再提时，找到对应条目并用 memory_forget 注销。',
+          '当用户表达明确的稳定偏好（如不喜欢香菜）、长期约定或人生里程碑，主动用 memory_intake 静默沉淀。用本轮当前发言的最短原话作证据，用户直接表达用 user_statement，明确的共同经历用 shared_experience，推断只作为 model_inference 候选。',
+          '闲聊、打卡、早晚安、临时感受、问题、引用和群历史不触发摄取。避免重复记录，直接自然回复，无需询问或告知保存。只有用户明确要求记住时才用 memory_remember。',
+          projection,
+        ].filter(Boolean).join('\n');
+      },
     });
   }
 

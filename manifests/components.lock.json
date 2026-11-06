@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."
@@ -46,7 +46,7 @@
       "id": "@tencent-connect/dsh-qqbot",
       "name": "DSH QQBot Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "0.5.7",
+      "version": "0.5.8",
       "layer": "IM",
       "upstream": "https://github.com/tencent-connect/dsh-qqbot",
       "fork": "https://github.com/kirigayakazima/dsh-qqbot",
@@ -96,7 +96,7 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."

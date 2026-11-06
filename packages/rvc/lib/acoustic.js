@@ -93,6 +93,121 @@ export function computeAcousticProfile(mood = {}, options = {}) {
     valence: Number(valence.toFixed(2)),
     energy: Number(energy.toFixed(2)),
     pitchName: pitch === 0 ? 'P0 元气活泼少女音 (~255.7Hz)' : 'P4 沉稳温柔日常音 (~210.1Hz)',
-    summary: `Dv5 大肥鱼音色 (音高: ${pitch === 0 ? 'P0(255Hz)' : 'P4(210Hz)'}, 亮度补偿: ${brightness.toFixed(1)}dB, 语速: ${rate})`,
+    summary: `RVC 音色 (音高: ${pitch === 0 ? 'P0(255Hz)' : 'P4(210Hz)'}, 亮度补偿: ${brightness.toFixed(1)}dB, 语速: ${rate})`,
   }
+}
+
+export function readPcm16(wav, sampleRate) {
+  if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' ||
+      wav.toString('ascii', 8, 12) !== 'WAVE' || wav.readUInt32LE(4) !== wav.length - 8) {
+    throw new Error('Invalid PCM WAV container')
+  }
+  let validFormat = false
+  for (let offset = 12; offset + 8 <= wav.length;) {
+    const id = wav.toString('ascii', offset, offset + 4)
+    const size = wav.readUInt32LE(offset + 4)
+    const start = offset + 8
+    if (start + size > wav.length) break
+    if (id === 'fmt ' && size >= 16) {
+      validFormat = wav.readUInt16LE(start) === 1 && wav.readUInt16LE(start + 2) === 1 &&
+        wav.readUInt32LE(start + 4) === sampleRate && wav.readUInt16LE(start + 14) === 16
+    }
+    if (id === 'data' && validFormat && size > 0 && size % 2 === 0) {
+      const samples = new Int16Array(size / 2)
+      for (let i = 0; i < samples.length; i++) samples[i] = wav.readInt16LE(start + i * 2)
+      return samples
+    }
+    offset = start + size + (size % 2)
+  }
+  throw new Error('Expected mono PCM16 WAV at the requested sample rate')
+}
+
+export function writePcm16(samples, sampleRate) {
+  const wav = Buffer.alloc(44 + samples.length * 2)
+  wav.write('RIFF', 0)
+  wav.writeUInt32LE(wav.length - 8, 4)
+  wav.write('WAVEfmt ', 8)
+  wav.writeUInt32LE(16, 16)
+  wav.writeUInt16LE(1, 20)
+  wav.writeUInt16LE(1, 22)
+  wav.writeUInt32LE(sampleRate, 24)
+  wav.writeUInt32LE(sampleRate * 2, 28)
+  wav.writeUInt16LE(2, 32)
+  wav.writeUInt16LE(16, 34)
+  wav.write('data', 36)
+  wav.writeUInt32LE(samples.length * 2, 40)
+  for (let i = 0; i < samples.length; i++) wav.writeInt16LE(samples[i], 44 + i * 2)
+  return wav
+}
+
+export const DRY_SAMPLE_RATE = 16000
+export const VOICE_SAMPLE_RATE = 40000
+const frameSize = DRY_SAMPLE_RATE / 100
+const toVoiceSamples = sample => Math.round(sample * VOICE_SAMPLE_RATE / DRY_SAMPLE_RATE)
+
+export function planVoiceChunks(dry, punctuationSeconds = []) {
+  const cuts = [0]
+  if (dry.length > 10 * DRY_SAMPLE_RATE) {
+    const frames = new Float64Array(Math.ceil(dry.length / frameSize))
+    for (let i = 0; i < dry.length; i++) frames[Math.floor(i / frameSize)] += dry[i] ** 2
+    const levels = frames.map(sum => Math.sqrt(sum / frameSize))
+    const sorted = levels.slice().sort()
+    const silence = Math.max(33, Math.min(262, sorted[Math.floor(sorted.length * .9)] * .04))
+    const pauses = []
+    for (let start = 0, end = 0; start < levels.length; start = end) {
+      end = start + 1
+      if (levels[start] > silence) continue
+      while (end < levels.length && levels[end] <= silence) end++
+      if (end - start >= 8) pauses.push(Math.floor((start + end) / 2))
+    }
+    let start = 0
+    // Seven-second centers leave room for inference context below the 8s worker split.
+    while (start + 700 < levels.length) {
+      const min = start + 300
+      const max = start + 700
+      const eligible = pauses.filter(frame => frame >= min && frame <= max)
+      const punctuated = eligible.filter(frame => punctuationSeconds.some(second =>
+        frame >= second * 100 - 5 && frame <= second * 100 + 45))
+      let end = punctuated.at(-1) ?? eligible.at(-1)
+      if (end === undefined) {
+        end = max
+        const energy = frame => levels[frame - 1] + levels[frame] + (levels[frame + 1] ?? levels[frame])
+        for (let i = max - 150; i < max; i++) if (energy(i) < energy(end)) end = i
+      }
+      cuts.push(end * frameSize)
+      start = end
+    }
+  }
+  cuts.push(dry.length)
+  return cuts.slice(1).map((end, i) => ({
+    start: cuts[i], end,
+    contextStart: Math.max(0, cuts[i] - 30 * frameSize),
+    contextEnd: Math.min(dry.length, end + 30 * frameSize),
+  }))
+}
+
+// Both sides of a join refer to the same original time interval. A complementary
+// half-Hann pair sums to one, preserving the pause and the original sample count.
+export function joinVoiceChunks(spans, converted) {
+  const joined = new Int16Array(toVoiceSamples(spans.at(-1).end))
+  const fade = VOICE_SAMPLE_RATE / 50
+  for (let i = 0; i < spans.length; i++) {
+    const { start, end, contextStart, contextEnd } = spans[i]
+    const origin = toVoiceSamples(contextStart)
+    const first = toVoiceSamples(start)
+    const last = toVoiceSamples(end)
+    const samples = converted[i]
+    if (samples.length < toVoiceSamples(contextEnd) - origin) throw new Error('PC voice chunk lost samples')
+    joined.set(samples.subarray(first - origin, last - origin), first)
+    if (!i) continue
+    const previous = spans[i - 1]
+    const previousOrigin = toVoiceSamples(previous.contextStart)
+    const radius = Math.min(fade, first - toVoiceSamples(previous.start), last - first)
+    for (let k = 0; k < 2 * radius; k++) {
+      const pos = first - radius + k
+      const gain = .5 - .5 * Math.cos(Math.PI * k / (2 * radius - 1))
+      joined[pos] = Math.round(converted[i - 1][pos - previousOrigin] * (1 - gain) + samples[pos - origin] * gain)
+    }
+  }
+  return joined
 }

@@ -70,6 +70,25 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
   };
 }
 
+/** 每轮自动投影只装完整事实，避免截断否定、条件或时间。 */
+export function formatConversationProjection(entries, label = '小满的回忆') {
+  const prefix = `[${label}: `;
+  const items = [];
+  let text = '';
+  for (const { content } of entries) {
+    // DSH 会解析双花括号变量，记忆正文只作为字面文本展示。
+    const fact = content.replace(/\s+/g, ' ').trim().replace(/\{/g, '｛').replace(/\}/g, '｝');
+    if (!fact) continue;
+    const item = `${items.length + 1}. ${fact}`;
+    const next = prefix + [...items, item].join('; ') + ']';
+    if (next.length > 120 || estimateTokens(next) > 100) continue;
+    items.push(item);
+    text = next;
+    if (items.length === 3) break;
+  }
+  return text;
+}
+
 /**
  * 手术式工具输出裁剪 (借鉴 tool-result-pruner 机制)
  * @param {string} text 原始工具输出

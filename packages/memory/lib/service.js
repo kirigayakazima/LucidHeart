@@ -6,7 +6,7 @@ import path from 'node:path';
 import { generateMemoryId, validateMemoryEntry } from './types.js';
 import { MemoryStore } from './store.js';
 import { MemoryIndexer } from './indexer.js';
-import { formatCompactOutline } from './budget.js';
+import { formatCompactOutline, formatConversationProjection } from './budget.js';
 
 export class MemoryService {
   /**
@@ -59,6 +59,8 @@ export class MemoryService {
    * @param {string} [params.validFrom]
    * @param {string} [params.supersedesId]
    * @param {any} [params.source]
+   * @param {import('./types.js').MemoryProvenance} [params.provenance]
+   * @param {number} [params.importance]
    * @param {string[]} [params.tags]
    * @param {string[]} [params.entities]
    * @returns {any}
@@ -72,6 +74,8 @@ export class MemoryService {
     validFrom,
     supersedesId,
     source = {},
+    provenance,
+    importance,
     tags = [],
     entities = [],
   } = {}) {
@@ -81,7 +85,8 @@ export class MemoryService {
 
     const now = new Date().toISOString();
     // 置信度低于 0.6 且未经用户明确确认的，进入 candidate 状态 (不进入检索索引)
-    const status = confidence >= 0.6 || confirmed ? 'active' : 'candidate';
+    const inferred = provenance?.origin === 'model_inference';
+    const status = !inferred && (confidence >= 0.6 || confirmed) ? 'active' : 'candidate';
 
     const entry = {
       id: generateMemoryId(kind),
@@ -89,6 +94,8 @@ export class MemoryService {
       scope,
       content: content.trim(),
       confidence,
+      ...(provenance !== undefined && { provenance }),
+      ...(importance !== undefined && { importance }),
       validFrom: validFrom || now,
       validTo: null,
       source: {
@@ -99,7 +106,7 @@ export class MemoryService {
       },
       status,
       supersedesId: supersedesId || null,
-      confirmed: !!confirmed,
+      confirmed: !inferred && !!confirmed,
       tags: Array.isArray(tags) ? tags : [],
       entities: Array.isArray(entities) ? entities : [],
       createdAt: now,
@@ -144,6 +151,12 @@ export class MemoryService {
       count: formatted.count,
       usedTokens: formatted.usedTokens,
     };
+  }
+
+  project(query, { scope = 'all', label } = {}) {
+    this.ensureProjections();
+    const matches = this.indexer.search(query, { scope, limit: 8, projection: true });
+    return formatConversationProjection(matches, label);
   }
 
   /**

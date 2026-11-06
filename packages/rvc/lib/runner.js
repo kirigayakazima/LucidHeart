@@ -2,12 +2,13 @@
 // 负责在 PC GPU 极速模式、手机端离线 ONNX 模式及模拟测试之间自适应调度。
 
 import fs from 'node:fs'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { runProfileSpeak, readVoiceProfile } from './voice-profile.js'
-import { voiceContract, saveOffloadAudio } from './offload.js'
+import { runProfileSpeak, readVoiceProfile, renderDryVoice } from './voice-profile.js'
+import { voiceContract, saveOffloadAudio, offloadDryVoice } from './offload.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -188,23 +189,55 @@ export async function runSpeak(params) {
   if (profilePath) {
     if (mock) throw new Error('Voice profile validation requires a real worker; mock mode cannot certify a new model')
     const profile = readVoiceProfile(profilePath)
+    const effective = { ...profile, pitch: acoustic?.pitch ?? profile.pitch,
+      brightness: acoustic?.brightness ?? profile.brightness, ttsRate: acoustic?.rate ?? profile.ttsRate }
+    const localParams = { ...params, voiceProfile: profilePath }
     const offload = { attempted: false, status: 'unavailable' }
-    if (typeof offloadBridge?.callPcRvc === 'function') {
-      try {
-        offload.attempted = true
-        const contract = voiceContract(profile)
-        const result = await offloadBridge.callPcRvc({ text, voice: contract, signal: params.signal })
-        const saved = saveOffloadAudio(result, contract, outWav)
-        return { ...saved, acoustic: { ...acoustic, ...saved.acoustic } }
-      } catch (error) {
-        if (params.signal?.aborted) throw error
-        offload.status = 'failed'
-        offload.error = String(error?.message || error)
-        console.warn('[@dsh/rvc] PC 新音色分流不可用，保留相同音色回退本地:', offload.error)
+    let dir, input
+    try {
+      if (typeof offloadBridge?.callPcRvc === 'function') {
+        try {
+          offload.attempted = true
+          const contract = voiceContract(effective)
+          const started = Date.now()
+          let punctuationSeconds
+          try {
+            dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-rvc-dry-'))
+            const dryFile = path.join(dir, 'dry.wav')
+            const timeout = AbortSignal.timeout(150_000)
+            const signal = params.signal ? AbortSignal.any([params.signal, timeout]) : timeout
+            punctuationSeconds = await renderDryVoice({ ...localParams, outWav: dryFile, signal })
+            input = dryFile
+          } catch (error) {
+            params.signal?.throwIfAborted()
+            // A PC with TTS can still serve hosts without a local dry renderer.
+            if ([...text].length > 200) throw error
+          }
+          let saved
+          if (input) {
+            if ((await stat(input)).size > 120 * 16000 * 2 + 1024) throw new Error('Dry voice exceeds PC batching limit')
+            saved = await offloadDryVoice({ dryWav: await readFile(input), punctuationSeconds,
+              bridge: offloadBridge, contract, signal: params.signal, outWav })
+          } else {
+            const result = await offloadBridge.callPcRvc({ text, voice: contract, signal: params.signal })
+            params.signal?.throwIfAborted()
+            saved = saveOffloadAudio(result, contract, outWav)
+          }
+          return { ...saved, durationMs: Date.now() - started, acoustic: { ...acoustic, ...saved.acoustic } }
+        } catch (error) {
+          params.signal?.throwIfAborted()
+          offload.status = 'failed'
+          offload.error = String(error?.message || error)
+          console.warn('[@dsh/rvc] PC 新音色分流不可用，保留相同音色回退本地:', offload.error)
+        }
       }
+      params.signal?.throwIfAborted()
+      const local = await runProfileSpeak({ ...localParams, input })
+      return { ...local, offload }
+    } finally {
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(error =>
+        console.warn('[@dsh/rvc] 干声临时目录清理失败:', error.message))
     }
-    const local = await runProfileSpeak({ ...params, voiceProfile: profilePath })
-    return { ...local, offload }
   }
 
   if (mock) {

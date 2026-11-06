@@ -4,7 +4,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { voiceContract, saveOffloadAudio } from '../lib/offload.js'
+import { voiceContract, saveOffloadAudio, offloadDryVoice } from '../lib/offload.js'
+import { readPcm16, writePcm16 } from '../lib/acoustic.js'
 import { runSpeak } from '../lib/runner.js'
 
 test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用Windows路径', async t => {
@@ -28,6 +29,7 @@ test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用W
   let calls = 0
   const output = path.join(dir, 'returned.wav')
   const res = await runSpeak({ text: '短句', acoustic: {}, voiceProfile: profilePath, outWav: output,
+    profilePython: path.join(dir, 'missing-python'),
     offloadBridge: { async callPcRvc(args) { calls++; assert.deepEqual(args.voice, contract); return result } } })
   assert.equal(calls, 1)
   assert.equal(res.mode, 'pc_onnx_offload')
@@ -48,4 +50,69 @@ test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用W
   assert.equal(fs.statSync(saved.audioPath).size, long.length)
   const oversized = Buffer.alloc(8388609)
   assert.throws(() => saveOffloadAudio({ ...result, audioBase64: oversized.toString('base64') }, contract, path.join(dir, 'oversized.wav')), /encoding|checksum/)
+})
+
+const dry = Int16Array.from({ length: 16_000 * 16 + 3 }, (_, i) => 1000 + Math.floor(i / 16_000))
+const dryWav = writePcm16(dry, 16000)
+const contract = voiceContract({ id: 'feiyu-rvc-v1', pitch: -4, brightness: 2.8, ttsRate: '+6%',
+  assets: Object.fromEntries(['model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index']
+    .map(name => [name, { sha256: 'a'.repeat(64) }])) })
+
+function gpuReply(audioBase64, provider = 'CUDAExecutionProvider') {
+  const input = readPcm16(Buffer.from(audioBase64, 'base64'), 16000)
+  const out = Int16Array.from({ length: Math.round(input.length * 2.5) }, (_, i) => input[Math.floor(i / 2.5)])
+  const wav = writePcm16(out, 40000)
+  return { ok: true, voiceId: contract.id, assets: contract.assets, settings: contract.settings,
+    provider, mode: 'pc_onnx_offload', sampleRate: 40000,
+    audioBase64: wav.toString('base64'), sha256: createHash('sha256').update(wav).digest('hex') }
+}
+
+test('实长语音并发两块，乱序返回按原时间线拼接并保留尾句', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-batch-test-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const second = Promise.withResolvers()
+  const starts = []
+  let active = 0
+  let maxActive = 0
+  const bridge = { async callPcRvc({ audioBase64, voice }) {
+    assert.deepEqual(voice, contract)
+    const order = starts.length
+    starts.push(order)
+    maxActive = Math.max(++active, maxActive)
+    if (order === 0) await second.promise
+    if (order === 1) second.resolve()
+    active--
+    return gpuReply(audioBase64)
+  } }
+  const result = await offloadDryVoice({ dryWav, bridge, contract, outWav: path.join(dir, 'out.wav') })
+  assert.equal(maxActive, 2)
+  assert.equal(result.offload.chunks, 3)
+  assert.equal(result.offload.provider, 'CUDAExecutionProvider')
+  assert.deepEqual(result.acoustic, { pitch: -4, brightness: 2.8, rate: '+6%' })
+  const output = readPcm16(fs.readFileSync(result.audioPath), 40000)
+  assert.equal(output.length, Math.round(dry.length * 2.5))
+  assert.equal(output[0], dry[0])
+  assert.equal(output.at(-1), dry.at(-1))
+  assert.ok(output[40000 * 10] > output[40000 * 5])
+})
+
+test('一个长语音块失败时取消同批推理且不生成部分音频', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-batch-fail-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  const outWav = path.join(dir, 'failed.wav')
+  let calls = 0
+  let cancelled = false
+  const bridge = { async callPcRvc({ audioBase64, signal }) {
+    if (++calls === 1) {
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        cancelled = true
+        reject(signal.reason)
+      }, { once: true }))
+    }
+    return gpuReply(audioBase64, 'CPUExecutionProvider')
+  } }
+  await assert.rejects(offloadDryVoice({ dryWav, bridge, contract, outWav }), /CUDA/)
+  assert.equal(calls, 2)
+  assert.equal(cancelled, true)
+  assert.equal(fs.existsSync(outWav), false)
 })

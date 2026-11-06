@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeAcousticProfile, VALID_PITCHES } from '../lib/acoustic.js'
+import { computeAcousticProfile, VALID_PITCHES, planVoiceChunks, joinVoiceChunks } from '../lib/acoustic.js'
 
 describe('Acoustic Parameters & Heart Mood Mapping', () => {
   test('元气少女态 (Joy / Arousal 0.8) 映射为 P0 (pitch 0, 255Hz) 与清脆高频', () => {
@@ -59,4 +59,31 @@ describe('Acoustic Parameters & Heart Mood Mapping', () => {
     assert.equal(profile.brightness, 3.0)
     assert.equal(profile.rate, '+10%')
   })
+})
+
+test('按真实时长启用切分，有标点的静音优先于较晚的其他静音', () => {
+  const dry = new Int16Array(16_000 * 13 + 3).fill(1500)
+  for (const second of [4, 6, 9]) dry.fill(0, second * 16_000, second * 16_000 + 3200)
+  assert.equal(planVoiceChunks(dry.subarray(0, 16_000 * 10)).length, 1)
+  const spans = planVoiceChunks(dry, [4, 9])
+  assert.equal(spans[0].end, 65_600)
+  assert.equal(spans[1].start, spans[0].end)
+  assert.equal(spans.at(-1).end, dry.length)
+  assert.equal(planVoiceChunks(dry)[0].end, 97_600)
+})
+
+test('Hann 叠加保留总样本数、边界幅度和尾部', () => {
+  const dry = new Int16Array(16_000 * 12 + 3).fill(1000)
+  const spans = planVoiceChunks(dry)
+  assert.equal(spans.length, 2)
+  const samples = spans.map(({ contextStart, contextEnd }, i) =>
+    new Int16Array(Math.round(contextEnd * 2.5) - Math.round(contextStart * 2.5)).fill(i === 0 ? 1000 : 3000))
+  const joined = joinVoiceChunks(spans, samples)
+  const join = Math.round(spans[0].end * 2.5)
+  assert.equal(joined.length, Math.round(dry.length * 2.5))
+  assert.equal(joined[0], 1000)
+  assert.equal(joined.at(-1), 3000)
+  assert.ok(Math.abs(joined[join] - 2000) < 3)
+  assert.ok(Math.abs(joined[join] - joined[join - 1]) < 5)
+  assert.throws(() => joinVoiceChunks(spans, [samples[0], new Int16Array(2)]), /lost samples/)
 })

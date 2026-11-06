@@ -89,3 +89,19 @@ export function buildFtsQuery(query) {
 
   return terms.map((t) => `"${t}"`).join(' OR ');
 }
+
+// 整轮输入比手选关键词含更多口语套话，避免这些词单独触发回忆。
+const conversationalTerms = new Set([
+  '喜欢', '不喜', '最喜', '我们', '你们', '他们', '什么', '怎么', '这个', '那个',
+  '不是', '的是', '记得', '还记', '知道', '你知', '我想', '一下',
+  '今天', '昨天', '明天', '你好', '早安', '晚安', '打卡', '小满', '阿醒',
+  'the', 'and', 'you', 'your', 'what', 'about', 'like', 'remember', 'today',
+]);
+
+export function buildProjectionQuery(query) {
+  if (typeof query !== 'string') return '';
+  const terms = new Set(tokenizeForFTS(query.slice(0, 512)).split(' ').filter(
+    (term) => term.length > 1 && !conversationalTerms.has(term),
+  ));
+  return [...terms].slice(0, 48).map((term) => `"${term}"`).join(' OR ');
+}

@@ -1,9 +1,12 @@
+import asyncio
 import base64
 import json
+import sys
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from fullawake.core.config import config
-from fullawake.capabilities.voice import DEFAULTS, ASSETS, prepare_profile
+from fullawake.capabilities.voice import DEFAULTS, ASSETS, VoiceCompute, prepare_profile
 from fullawake.gateway.mcp_server import gateway
 from fullawake.capabilities.voice import read_voice_audio, MAX_AUDIO_BYTES
 
@@ -74,6 +77,54 @@ def test_large_output_rejected_before_read():
         def read_bytes(self): raise AssertionError('must not read oversized audio')
     with pytest.raises(ValueError, match='VOICE_AUDIO_INVALID'):
         read_voice_audio(Oversized())
+
+
+def test_cuda_admits_two_dry_workers_and_releases_slots(voice_setup, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'voice_provider', 'CUDAExecutionProvider')
+    monkeypatch.setattr(config, 'voice_python', sys.executable)
+    monkeypatch.setattr(config, 'voice_work_dir', str(tmp_path))
+    voice = VoiceCompute()
+    wav = b'RIFF' + bytes(4) + b'WAVE' + bytes(100)
+    dry = {'audioBase64': base64.b64encode(wav).decode(), 'voice': voice_setup['voice']}
+
+    async def scenario():
+        ready, release = asyncio.Event(), asyncio.Event()
+        started = 0
+
+        class Worker:
+            returncode = None
+
+            async def communicate(self):
+                await release.wait()
+                self.returncode = 0
+                return b'', b''
+
+        async def spawn(*args, **kwargs):
+            nonlocal started
+            output = Path(args[args.index('--output') + 1])
+            output.write_bytes(wav)
+            output.with_suffix('.result.json').write_text(json.dumps({
+                'sampleRate': 40000, 'executionProvider': 'CUDAExecutionProvider',
+                'pitch': 0, 'brightness': 0, 'ttsRate': None,
+            }), encoding='utf8')
+            started += 1
+            if started == 2:
+                ready.set()
+            return Worker()
+
+        monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+        workers = [asyncio.create_task(voice.synthesize(dry)) for _ in range(2)]
+        await asyncio.wait_for(ready.wait(), 2)
+        with pytest.raises(ValueError, match='VOICE_BUSY'):
+            await voice.synthesize(dry)
+        with pytest.raises(ValueError, match='VOICE_BUSY'):
+            await voice.synthesize(voice_setup)
+        release.set()
+        assert all(result['ok'] for result in await asyncio.gather(*workers))
+        assert voice.active_voice_workers == 0
+        assert (await voice.synthesize(voice_setup))['ok']
+
+    asyncio.run(scenario())
 
 
 def test_asr_loopback_accepts_binary_without_token(monkeypatch):

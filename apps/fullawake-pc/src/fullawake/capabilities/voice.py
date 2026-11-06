@@ -111,7 +111,8 @@ def prepare_profile(request):
 
 class VoiceCompute:
     def __init__(self):
-        self.busy = False
+        self.active_voice_workers = 0
+        self.text_worker_active = False
 
     @cached_property
     def asr_model(self):
@@ -146,7 +147,11 @@ class VoiceCompute:
     async def synthesize(self, request, disconnected=None):
         if not config.voice_enabled:
             raise ValueError('VOICE_DISABLED')
-        if self.busy:
+        is_text = 'text' in request
+        # Keep full-text and CPU inference exclusive. Allow two short CUDA dry
+        # conversions without permitting an unbounded queue of model workers.
+        parallel_dry = not is_text and not self.text_worker_active and config.voice_provider == 'CUDAExecutionProvider'
+        if self.active_voice_workers >= (2 if parallel_dry else 1):
             raise ValueError('VOICE_BUSY')
         profile, text, audio_bytes = prepare_profile(request)
         python_candidate = Path(config.voice_python)
@@ -162,7 +167,9 @@ class VoiceCompute:
         root = Path(config.voice_work_dir).resolve()
         root.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()
-        self.busy = True
+        self.active_voice_workers += 1
+        if is_text:
+            self.text_worker_active = True
         try:
             with tempfile.TemporaryDirectory(prefix='rvc-', dir=root) as folder:
                 work = Path(folder).resolve()
@@ -218,7 +225,9 @@ class VoiceCompute:
                         'provider': result['executionProvider'], 'mode': 'pc_onnx_offload',
                         'acoustic': {'pitch': result['pitch'], 'brightness': result['brightness'], 'rate': result['ttsRate']}}
         finally:
-            self.busy = False
+            self.active_voice_workers -= 1
+            if is_text:
+                self.text_worker_active = False
 
     def get_separated_file(self, task: str, stem: str):
         import re

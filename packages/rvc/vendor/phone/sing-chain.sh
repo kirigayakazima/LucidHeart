@@ -8,7 +8,7 @@ NAME="${2:?缺少歌名}"
 PITCH="${3:-0}"
 MODELS="${4:-/sdcard/rvc/models/feiyu-rvc-v1}"
 
-OUTDIR="/sdcard/rvc/out/sing_${NAME}"
+OUTDIR="${RVC_OUTPUT_DIR:-/sdcard/rvc/out/sing_${NAME}}"
 LOG="/root/.dsh/voice/sing/${NAME}.log"
 OUTLOG="$OUTDIR/sing.log"
 mkdir -p "$OUTDIR" "$(dirname "$LOG")" 2>/dev/null || true
@@ -27,7 +27,10 @@ export PYTHONPATH="/root/.dsh/voice/lib:/root/.dsh/voice/onnx-lib:${PYTHONPATH:-
 AUTH_TOKEN="xiaoman-pc-bridge-secret-2026"
 
 # 0) 优先尝试 PC 端全曲 GPU 极速管线 (分离 + 变声 + 混音，整首约 40~60 秒)
-PC_STATUS=$(curl -s -m 3 -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:28765/status 2>/dev/null || true)
+PC_STATUS=""
+if [ "${RVC_LOCAL_ONLY:-0}" != 1 ]; then
+  PC_STATUS=$(curl -s -m 3 -H "Authorization: Bearer $AUTH_TOKEN" http://127.0.0.1:28765/status 2>/dev/null || true)
+fi
 if echo "$PC_STATUS" | grep -q '"online":true'; then
   echo "--- 检测到 PC FullAwake 在线，启动全链路 PC GPU 极速唱歌管线 (分离+变声+混音)..."
   EXT="${IN##*.}"
@@ -97,7 +100,7 @@ for cand in /sdcard/rvc/pc_offload.py /root/.dsh/voice/pc_offload.py; do
   if [ -f "$cand" ]; then RVC_PC_SCRIPT="$cand"; break; fi
 done
 
-if [ -n "$RVC_PC_SCRIPT" ] && PYTHONPATH=/root/.dsh/voice/onnx-lib $PY -u "$RVC_PC_SCRIPT" "$OUTDIR/vocals.wav" "$OUTDIR/voc_new.wav" \
+if [ "${RVC_LOCAL_ONLY:-0}" != 1 ] && [ -n "$RVC_PC_SCRIPT" ] && PYTHONPATH=/root/.dsh/voice/onnx-lib $PY -u "$RVC_PC_SCRIPT" "$OUTDIR/vocals.wav" "$OUTDIR/voc_new.wav" \
   --models_dir "$MODELS" \
   --pitch "$PITCH" \
   --segment_seconds 15 \

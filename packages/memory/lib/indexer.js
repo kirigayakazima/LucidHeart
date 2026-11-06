@@ -10,7 +10,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { tokenizeForFTS, buildFtsQuery } from './tokenizer.js';
+import { tokenizeForFTS, buildFtsQuery, buildProjectionQuery } from './tokenizer.js';
 
 export class MemoryIndexer {
   /**
@@ -143,10 +143,11 @@ export class MemoryIndexer {
    * @param {'xiaoman_private'|'axing_private'|'shared'|'all'} [options.scope='all']
    * @param {string} [options.kind]
    * @param {number} [options.limit=5]
+   * @param {boolean} [options.projection=false]
    * @returns {Array<any>}
    */
-  search(query, { scope = 'all', kind, limit = 5 } = {}) {
-    const ftsQuery = buildFtsQuery(query);
+  search(query, { scope = 'all', kind, limit = 5, projection = false } = {}) {
+    const ftsQuery = projection ? buildProjectionQuery(query) : buildFtsQuery(query);
     if (!ftsQuery) return [];
 
     let sql = `
@@ -193,6 +194,15 @@ export class MemoryIndexer {
   getById(id) {
     const row = this.db.prepare('SELECT raw_json FROM memories WHERE id = ?').get(id);
     return row ? JSON.parse(row.raw_json) : null;
+  }
+
+  hasIntakeMatch(content, scope, candidate) {
+    return !!this.db.prepare(`
+      SELECT 1 FROM memories
+      WHERE content = ? AND scope = ?
+        AND (status IN ('active', 'revoked') OR (? AND status = 'candidate'))
+      LIMIT 1
+    `).get(content, scope, Number(candidate));
   }
 
   /**
