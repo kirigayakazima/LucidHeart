@@ -1,18 +1,18 @@
 # @dsh/memory
 
-本地源码0.1.1。Core独立于DSH，适配器提供memory_remember、memory_recall、memory_inspect和memory服务。手机实际加载证据见[工作区STATUS](../../../../docs/STATUS.md)，不能按package.json推断。
+本地源码 0.1.1。Core 独立于 DSH，适配器提供 `memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
 
 ## 当前存储和接口
 
 选定dataDir的journal.jsonl是变更回放依据；SQLite/FTS和facts.md为派生投影。MemoryService构造会建目录、回放和可能写派生视图，不是只读调查入口。episodes有写入方法，但当前remember不自动调用，不代表已建生活日记。
 
-Core提供remember/recall/inspect/correct/revoke/reindex/close；模型工具只开放上述三个入口。recall默认返回有估算Token预算的紧凑骨架，再按需inspect。估算值不是Provider实际计费。
+Core 提供 remember/recall/inspect/correct/revoke/reindex/close。recall 默认返回有估算 Token 预算的紧凑骨架，再按需 inspect。模型通过自然对话决定何时纠错或注销，群聊和私聊共享同一份 journal。
 
-0.1.1模型recall使用配置scope，inspect隐藏其他角色和非active条目；Core inspect保留管理审计语义。配置scope优先，默认Windows为axing_private，其余为xiaoman_private。shared仍需后续audience细分，不能当公开许可。
+模型 recall 使用配置 scope，inspect、correct 和 forget 仅定位当前角色可见的 active 条目。Core inspect 保留管理审计语义。配置 scope 优先，默认 Windows 为 axing_private，其余为 xiaoman_private。
 
 ## 已知边界
 
-适配器remember仍默认confidence1/confirmedtrue且未取得实际exec来源。journal回放跳过坏行、correct分次追加、空回放可能残留旧索引；有效时间和派生撤销传播需继续完善。不能声称断电无损、每次重建100%可靠、已有人类遗忘或自动生产评分。
+适配器 remember 仍默认 confidence 1 和 confirmed true。correct 的证据字段取自模型提交的事实陈述。journal 回放跳过坏行，兼容旧的双行覆盖和新的单行覆盖事件。覆盖与撤销后，派生 FTS 和 Markdown 只展示活跃条目。原始正文留在 journal 供审计。
 
 当前默认排序为FTS rank/confidence/created_at。Memory Shape是独立只读展示，影子分数不改变检索。两目录存在不意味着同时召回；dataDir是唯一选定权威，不自动合并。
 

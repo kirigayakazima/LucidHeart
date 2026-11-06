@@ -19,18 +19,33 @@ export class MemoryService {
     this.dataDir = dataDir;
     this.store = new MemoryStore(dataDir);
     this.indexer = new MemoryIndexer(dbPath || path.join(dataDir, 'index.db'));
-    this.initFromStore();
+    try {
+      this.initFromStore();
+    } catch (error) {
+      this.indexer.close();
+      throw error;
+    }
   }
 
   /**
    * 从真源日志初始化或同步索引
    */
   initFromStore() {
-    const entries = this.store.loadAllFromJournal();
-    if (entries.size > 0) {
-      this.indexer.rebuildIndex(entries.values());
+    this.reindex();
+  }
+
+  ensureProjections() {
+    if (this.projectionsDirty) this.reindex();
+  }
+
+  commit(entry, action, { previous, reason } = {}) {
+    this.projectionsDirty = true;
+    this.store.appendJournal(entry, action, reason);
+    this.indexer.upsertAll(previous ? [previous, entry] : [entry]);
+    if (entry.status !== 'candidate' || previous) {
       this.store.syncMarkdownView(this.indexer.getAllActive());
     }
+    this.projectionsDirty = false;
   }
 
   /**
@@ -95,26 +110,18 @@ export class MemoryService {
       throw new Error('Invalid MemoryEntry structure');
     }
 
-    // 1. 如果有前序覆盖项，将旧记忆置为 superseded
+    // 一条 supersede 事件同时记录新事实和旧事实的失效关系。
+    this.ensureProjections();
+    let previous;
     if (supersedesId) {
       const old = this.indexer.getById(supersedesId);
-      if (old && old.status === 'active') {
-        old.status = 'superseded';
-        old.updatedAt = now;
-        old.validTo = now;
-        this.store.appendJournal(old, 'supersede');
-        this.indexer.upsert(old);
+      if (old?.status !== 'active') {
+        throw new Error(`Target memory ${supersedesId} is not active`);
       }
+      previous = { ...old, status: 'superseded', updatedAt: now, validTo: now };
     }
 
-    // 2. 写入真源日志并同步索引
-    this.store.appendJournal(entry, supersedesId ? 'supersede' : 'create');
-    this.indexer.upsert(entry);
-
-    if (entry.status === 'active') {
-      this.store.syncMarkdownView(this.indexer.getAllActive());
-    }
-
+    this.commit(entry, supersedesId ? 'supersede' : 'create', { previous });
     return entry;
   }
 
@@ -128,6 +135,7 @@ export class MemoryService {
    * @returns {{ text: string, entries: Array<any>, count: number, usedTokens: number }}
    */
   recall(query, { scope = 'all', limit = 5, maxTokens = 250 } = {}) {
+    this.ensureProjections();
     const rawMatches = this.indexer.search(query, { scope, limit });
     const formatted = formatCompactOutline(rawMatches, { maxTokens });
     return {
@@ -144,6 +152,7 @@ export class MemoryService {
    * @returns {any|null}
    */
   inspect(id) {
+    this.ensureProjections();
     return this.indexer.getById(id);
   }
 
@@ -155,7 +164,7 @@ export class MemoryService {
    * @returns {any}
    */
   correct(targetId, newContent, options = {}) {
-    const target = this.indexer.getById(targetId);
+    const target = this.inspect(targetId);
     if (!target) {
       throw new Error(`Target memory ${targetId} not found to correct`);
     }
@@ -176,18 +185,18 @@ export class MemoryService {
   /**
    * 注销 / 遗忘记忆 (用户明确要求忘掉)
    * @param {string} id
+   * @param {{reason?: string}} [options]
    * @returns {boolean}
    */
-  revoke(id) {
-    const existing = this.indexer.getById(id);
+  revoke(id, { reason } = {}) {
+    const existing = this.inspect(id);
     if (!existing) return false;
+    if (existing.status === 'revoked') return true;
 
     existing.status = 'revoked';
     existing.updatedAt = new Date().toISOString();
-
-    this.store.appendJournal(existing, 'revoke');
-    this.indexer.upsert(existing);
-    this.store.syncMarkdownView(this.indexer.getAllActive());
+    existing.validTo ??= existing.updatedAt;
+    this.commit(existing, 'revoke', { reason });
     return true;
   }
 
@@ -197,9 +206,11 @@ export class MemoryService {
    */
   reindex() {
     const t0 = Date.now();
+    this.projectionsDirty = true;
     const entries = this.store.loadAllFromJournal();
     this.indexer.rebuildIndex(entries.values());
     this.store.syncMarkdownView(this.indexer.getAllActive());
+    this.projectionsDirty = false;
     const durationMs = Date.now() - t0;
     return {
       restoredCount: entries.size,

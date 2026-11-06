@@ -204,20 +204,32 @@ export class MemoryIndexer {
     return rows.map((r) => JSON.parse(r.raw_json));
   }
 
+  transaction(write) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      write();
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  upsertAll(entries) {
+    this.transaction(() => {
+      for (const entry of entries) this.upsert(entry);
+    });
+  }
+
   /**
    * 重建全量索引 (从所有 Map 条目中重构 SQLite)
    * @param {Iterable<any>} entries
    */
   rebuildIndex(entries) {
-    this.db.exec(`
-      DELETE FROM fts_memories;
-      DELETE FROM memories;
-      DELETE FROM edges;
-    `);
-
-    for (const entry of entries) {
-      this.upsert(entry);
-    }
+    this.transaction(() => {
+      this.db.exec('DELETE FROM fts_memories; DELETE FROM memories; DELETE FROM edges;');
+      for (const entry of entries) this.upsert(entry);
+    });
   }
 
   close() {

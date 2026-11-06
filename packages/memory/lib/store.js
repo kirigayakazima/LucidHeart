@@ -2,8 +2,7 @@
  * @dsh/memory - Ground Truth Storage Layer (Plain Markdown & JSONL Journal)
  *
  * 核心设计哲学 (借鉴 tigerless-labs/agent-memory & Heart):
- * - 人类肉眼可读的 Markdown 与结构化 JSONL 永远是唯一权威真源 (Source of Truth)
- * - 任何 SQLite / FTS 损坏，均可从本层 100% 无损重建
+ * - JSONL 日志是唯一真源，Markdown 与 SQLite / FTS 都是派生视图
  */
 
 import fs from 'node:fs';
@@ -30,14 +29,28 @@ export class MemoryStore {
    * 追加一条记忆变更到日志流 (Append-only Journal)
    * @param {any} entry
    * @param {'create'|'update'|'supersede'|'revoke'} action
+   * @param {string} [reason]
    */
-  appendJournal(entry, action = 'create') {
+  appendJournal(entry, action = 'create', reason) {
     const record = {
       action,
-      timestamp: new Date().toISOString(),
+      timestamp: entry.updatedAt || new Date().toISOString(),
       entry,
+      ...(typeof reason === 'string' && reason.trim() ? { reason: reason.trim() } : {}),
     };
-    fs.appendFileSync(this.journalPath, JSON.stringify(record) + '\n', 'utf8');
+    const fd = fs.openSync(this.journalPath, 'a+', 0o600);
+    try {
+      const size = fs.fstatSync(fd).size;
+      const lastByte = Buffer.alloc(1);
+      if (size) fs.readSync(fd, lastByte, 0, 1, size - 1);
+      // 保留损坏的旧尾行，同时避免它吞掉下一条完整事件。
+      const separator = size && lastByte[0] !== 10 ? '\n' : '';
+      const data = Buffer.from(separator + JSON.stringify(record) + '\n');
+      if (fs.writeSync(fd, data) !== data.length) throw new Error('Incomplete memory journal append');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   /**
@@ -61,19 +74,22 @@ export class MemoryStore {
           entries.set(entry.id, entry);
         } else if (action === 'supersede') {
           entries.set(entry.id, entry);
-          if (entry.supersedesId && entries.has(entry.supersedesId)) {
-            const old = entries.get(entry.supersedesId);
+          const old = entries.get(entry.supersedesId);
+          if (old?.status === 'active') {
+            const endedAt = entry.updatedAt || record.timestamp || old.updatedAt;
             old.status = 'superseded';
-            old.updatedAt = entry.updatedAt || new Date().toISOString();
+            old.updatedAt = endedAt;
+            old.validTo = endedAt;
           }
         } else if (action === 'revoke') {
-          if (entries.has(entry.id)) {
-            const existing = entries.get(entry.id);
-            existing.status = 'revoked';
-            existing.updatedAt = entry.updatedAt || new Date().toISOString();
-          } else {
-            entries.set(entry.id, { ...entry, status: 'revoked' });
-          }
+          const existing = entries.get(entry.id) || entry;
+          const endedAt = entry.updatedAt || record.timestamp || existing.updatedAt;
+          entries.set(entry.id, {
+            ...existing,
+            status: 'revoked',
+            updatedAt: endedAt,
+            validTo: entry.validTo || existing.validTo || endedAt,
+          });
         }
       } catch {
         // 忽略单行日志异常，保证容灾性
