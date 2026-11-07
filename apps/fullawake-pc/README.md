@@ -1,6 +1,6 @@
 # FullAwake PC
 
-本地源码 0.2.4。小满的主脑、Heart 和 Memory 在手机，阿醒独立运行。以 `/health` 核对当前 PC 网关进程版本。
+小满的主脑、Heart 和 Memory 在手机，阿醒独立运行。以 `/health` 核对当前 PC 网关进程版本。
 
 ## 现有能力
 
@@ -34,7 +34,38 @@ uv pip install --python .venv/Scripts/python.exe --index-url https://pypi.tuna.t
 
 ## 独立桌面挂件
 
-在 FullAwake PC 目录使用现有 uv 环境。挂件运行在独立进程，在 127.0.0.1:8766 接收播放时钟。
+新版挂件在独立 PySide6 进程连接 `ws://127.0.0.1:8765/ws/pet`，显示小满的气泡和点头、微笑、挥手、惊讶。它从 WAV 样本振幅和 Qt 的播放位置计算三档口型。左键拖动，右键关闭。
+
+在 FullAwake PC 目录安装 Windows 挂件依赖，再从工作区根双击 `start_widget.bat`。也可用命令启动。
+
+```powershell
+uv pip install --python .venv/Scripts/python.exe --index-url https://pypi.tuna.tsinghua.edu.cn/simple 'PySide6-Addons==6.11.3' wsproto
+$env:PYTHONPATH = 'src'
+uv run --no-sync python -m fullawake.widget --watch
+```
+
+挂件支持 `--gateway-port`、`--name` 与 `--portrait`。旧本机音频监视仍可用 `scripts/start_widget.ps1 -Legacy` 启动，使用 127.0.0.1:8766 和原有 `/clock` 接口。
+
+## 实时陪看
+
+1. 在 PC 启动 FullAwake 0.2.5 前设置一枚独立采集令牌。语音网关启动脚本继承该环境变量。启动后检查 `/health`。分镜渲染使用主权 `dsh-video-storyboard` 的本地源码及 `PATH` 上的 Node.js。
+
+   ```powershell
+   $env:FULLAWAKE_WATCH_TOKEN = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+   .\scripts\start_voice_gateway.ps1 -Background
+   ```
+
+2. 在 Chrome/Edge 的扩展管理页开启开发者模式，加载当前项目的 `browser-watch` 目录。在扩展选项填写同一令牌和网关端口。打开 B 站普通 BV 视频页，点扩展图标开始分享，再点一次停止。`ON` 表示时钟已送达，`CLK` 表示只能读到时钟，`ERR` 表示网关或配对失败。
+3. 手机通过现有 USB 回环 28765 访问 PC 8765。`pc_watch_get_summary` 返回已播区间、已播完的浏览器字幕及至多一张 768×768 分镜。字幕来自浏览器开放的 `TextTrack`，未提供时返回空数组。384 是每张图的预算，供应商计量需单独核对。`pc_watch_control` 支持 `pause`、`play` 和 `sensitivity`，播放命令先排队，浏览器回执随后出现在摘要里。
+4. 在手机 `dsh-fullawake` 配置 `watchProvider`、`watchModel` 为已有视觉模型。用户在小满会话里用 `pc_watch_auto` 开启或关闭自动陪看。`voice:true` 使用已加载的 RVC 0.2.13，省略时仅发气泡。也可在同一会话用 `pc_watch_react` 发送与最近 `cueId` 对应的一句感想。
+
+网页只上传用户明确共享的播放器画面。网关按播放秒数保留候选帧，拖动进度后另起时间线。手机在反应前后检查 Heart，按 `Asia/Shanghai` 执行静音期。模型或语音超时、播放进度越过片段 15 秒、暂停、切换或断连都会取消待发反应。PC 只采集、合成与呈现，离线刷视频仍由手机原有插件处理。
+
+自动模型调用只带一张图，完成后释放插件持有的引用。附件存储由宿主管理。桌宠接收手机反应，不启动模型、不发送 QQ 消息。
+
+## 旧版播放监视
+
+在 FullAwake PC 目录使用现有 uv 环境。
 
 ```powershell
 uv sync --locked --inexact --extra widget

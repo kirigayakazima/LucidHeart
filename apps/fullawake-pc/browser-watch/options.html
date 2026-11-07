@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>LucidHeart 陪看</title>
+<h1>LucidHeart 陪看</h1>
+<form>
+  <p><label>本机网关端口 <input id="port" type="number" min="1" max="65535" value="8765" required></label></p>
+  <p><label>陪看采集令牌 <input id="token" type="password" minlength="24" maxlength="128" required></label></p>
+  <button>保存</button> <output aria-live="polite"></output>
+</form>
+<p>在 B 站视频页点扩展图标开启，再点一次停止。画面仅发送至本机网关。</p>
+<script src="options.js"></script>
+</html>

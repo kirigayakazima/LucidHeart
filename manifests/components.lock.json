@@ -18,11 +18,11 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
-      "description": "PC sensory bridge, local desktop widget, and opt-in voice compute and singing."
+      "description": "PC sensory bridge, opt-in player-clock watch and desktop widget, voice compute and singing."
     },
     "qq-plus": {
       "id": "@dsh/qq-plus",
@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.12",
+      "version": "0.2.13",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."

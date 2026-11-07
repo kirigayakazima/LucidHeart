@@ -6,6 +6,7 @@ import { runSpeak } from './runner.js'
 import { getOptionalService, getVoiceServices } from './services.js'
 import { findSong, renderSong } from './sing.js'
 import fs from 'node:fs'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -78,6 +79,27 @@ export function apply(ctx, config = {}) {
   }
   const lifetime = new AbortController()
   ctx.effect?.(() => () => lifetime.abort())
+
+  ctx.effect?.(() => ctx.provide?.('rvcWatchVoice', {
+    async prepare(text, { signal } = {}) {
+      if (mock) throw new Error('Watch requires real RVC audio')
+      const activeSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal
+      const { heart, pcBridge } = getVoiceServices(ctx)
+      const acoustic = computeAcousticProfile(heart?.getSnapshot?.()?.mood || latestMood, {})
+      const result = await runSpeak({ text, acoustic, modelsDir: config.modelsDir, offloadBridge: pcBridge,
+        voiceProfile: config.voiceProfile, profilePython: config.profilePython, signal: activeSignal,
+        artifacts: voiceArtifacts })
+      try {
+        activeSignal.throwIfAborted()
+        if (!result.artifactId || (await stat(result.audioPath)).size > 1024 * 1024) throw new Error('Invalid watch audio artifact')
+        return await readFile(result.audioPath, { signal: activeSignal })
+      } finally {
+        try {
+          if (result.artifactId) voiceArtifacts.remove(result.audioPath)
+        } finally { result.releaseArtifact?.() }
+      }
+    },
+  }))
 
   // 1. 订阅 Heart 状态变化事件 (只读通知，更新活跃声学预备态)
   ctx.on('heart/state-changed', (event) => {

@@ -10,8 +10,17 @@ import { ensureLayout } from '../../heart/lib/store.js'
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'fullawake-adapter-test-'))
 
-function startMockGateway() {
+function startMockGateway(watch = null) {
   const server = http.createServer((req, res) => {
+    if (watch && req.method === 'POST' && req.url === '/v1/watch/reaction') {
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', () => {
+        watch.dispatched.push(JSON.parse(Buffer.concat(chunks).toString()))
+        res.end('{"status":"dispatched"}')
+      })
+      return
+    }
     if (req.method === 'GET' && req.url === '/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
@@ -52,6 +61,10 @@ function startMockGateway() {
             } else {
               content = [{ type: 'text', text: '# DSHA - DeepSeek Heart Agent\nMulti-Agent System for Xiaoman & Axing.' }]
             }
+          } else if (tool === 'pc_watch_get_summary' && watch) {
+            const meta = { ...watch.metadata(), frameCount: args.clockOnly ? 0 : 1 }
+            content = [{ type: 'text', text: JSON.stringify(meta) }]
+            if (!args.clockOnly) content.push({ type: 'image', mimeType: 'image/png', data: watch.png })
           } else if (tool === 'pc_snapshot') {
             content = [
               {
@@ -145,7 +158,7 @@ class MockCordisHost {
   }
 }
 
-test('FullAwake Adapter: 1. 注册 4 个正式 DSH 工具与 Cordis 服务', () => {
+test('FullAwake Adapter: 1. 注册 DSH 工具与 Cordis 服务', () => {
   const host = new MockCordisHost()
   const ctx = host.createContext('dsh-fullawake')
 
@@ -159,6 +172,8 @@ test('FullAwake Adapter: 1. 注册 4 个正式 DSH 工具与 Cordis 服务', () 
   assert.equal(host.tools.has('pc_list_windows'), true)
   assert.equal(host.tools.has('pc_snapshot'), true)
   assert.equal(host.tools.has('pc_read_file'), true)
+  assert.equal(host.tools.has('pc_watch_get_summary'), true)
+  assert.equal(host.tools.has('pc_watch_auto'), true)
 
   // 验证服务导出
   const pcBridge = host.services.get('pcBridge')
@@ -296,7 +311,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 首次装载
   const ctx1 = host.createContext('dsh-fullawake')
   apply(ctx1, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 4)
+  assert.equal(host.tools.size, 8)
 
   // 卸载
   ctx1.dispose()
@@ -306,7 +321,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 重新装载
   const ctx2 = host.createContext('dsh-fullawake')
   apply(ctx2, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 4)
+  assert.equal(host.tools.size, 8)
 
   ctx2.dispose()
   assert.equal(host.tools.size, 0)
@@ -341,5 +356,88 @@ test('FullAwake long audio reply is bounded while streaming, cancellation remain
     ctx.dispose()
     server.closeAllConnections()
     await new Promise(resolve => server.close(resolve))
+  }
+})
+
+function watchFixture() {
+  const pngHeader = Buffer.from('89504e470d0a1a0a0000000d494844520000030000000300', 'hex')
+  const watch = { timeline: 'first', frame: 12, at: 14, dispatched: [], png: pngHeader.toString('base64') }
+  watch.metadata = () => ({ status: 'playing', watchSessionId: 'BV_test', timelineId: watch.timeline,
+    latestCandidateSec: 12, widgetOnline: true, cueId: 'watch-cue', watchedInterval: [10, watch.at],
+    playbackPositionSec: watch.at, sceneAtSec: watch.frame, timecodes: [watch.frame], tokenCost: 384,
+    subtitles: [{ start: 11, end: 13, text: '已播台词' }, { start: 14, end: 15, text: '未来台词' }] })
+  return watch
+}
+
+test('watch tool yields one visual attachment and discards a scene changed during voice synthesis', async () => {
+  const watch = watchFixture()
+  const gateway = await startMockGateway(watch)
+  const host = new MockCordisHost()
+  const ctx = host.createContext('dsh-fullawake')
+  const calls = []
+  let voiceCalls = 0
+  let allow = true
+  host.services.set('attachments', { async saveImage() { return { id: 'watch-image' } } })
+  host.services.set('heart', { getSnapshot: () => ({}), async evaluateActivity(args) { calls.push(args); return { suitable: allow } } })
+  host.services.set('rvcWatchVoice', { async prepare() { voiceCalls++; watch.timeline = 'seek'; return Buffer.from('wav') } })
+  apply(ctx, { gatewayUrl: gateway.url })
+  const exec = { agent: { id: 'owner' } }
+  const get = () => host.tools.get('pc_watch_get_summary').execute({}, exec)
+  const reply = (exec, voice = false) => host.tools.get('pc_watch_react').execute({
+    cueId: 'watch-cue', text: '这个切镜挺有意思', intent: 'smile', voice,
+  }, exec)
+  try {
+    const summary = await get()
+    assert.deepEqual(summary.images, [{ id: 'watch-image' }])
+    assert.deepEqual(summary.subtitles.map(cue => cue.text), ['已播台词'])
+    assert.equal((await reply({ agent: { id: 'other' } })).status, 'discarded')
+    assert.equal((await reply(exec, true)).status, 'discarded')
+    assert.equal(voiceCalls, 1)
+    assert.deepEqual(watch.dispatched, [])
+    allow = false
+    await get()
+    assert.equal((await reply(exec)).status, 'discarded')
+    allow = true
+    watch.frame = 15
+    assert.equal((await get()).status, 'invalid')
+    watch.frame = 12
+    await get()
+    assert.equal((await reply(exec)).status, 'dispatched')
+    assert.equal(watch.dispatched.length, 1)
+    assert(calls.some(call => call.intent === 'companion_react' && call.category === 'chat'))
+  } finally {
+    ctx.dispose()
+    await gateway.close()
+  }
+})
+
+test('watch autoplay uses one image in an isolated DSH model call', async () => {
+  const watch = watchFixture()
+  const gateway = await startMockGateway(watch)
+  const host = new MockCordisHost()
+  const ctx = host.createContext('dsh-fullawake')
+  const evidence = []
+  host.services.set('attachments', { async saveImage() { return { id: 'watch-image', mediaType: 'image/png' } } })
+  host.services.set('heart', { getSnapshot: () => ({ mood: { state: 'calm' } }), evaluateActivity: () => ({ suitable: true }) })
+  host.services.set('llm', { async *stream(input) {
+    evidence.push(input)
+    yield { type: 'block-end', index: 0, block: { type: 'text', text: '{"text":"好利落的切镜。","intent":"nod"}' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  } })
+  apply(ctx, { gatewayUrl: gateway.url, watchProvider: 'mock-vision', watchModel: 'mock-model' })
+  const exec = { agent: { id: 'owner' } }
+  try {
+    assert.equal((await host.tools.get('pc_watch_auto').execute({ enabled: true }, exec)).status, 'started')
+    for (let i = 0; i < 40 && watch.dispatched.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 100))
+    assert.equal(watch.dispatched.length, 1)
+    assert.equal(evidence.length, 1)
+    const blocks = evidence[0].messages[0].content
+    assert.equal(blocks.filter(block => block.type === 'image').length, 1)
+    assert.match(blocks[1].text, /已播台词/)
+    assert.doesNotMatch(blocks[1].text, /未来台词/)
+    assert.equal((await host.tools.get('pc_watch_auto').execute({ enabled: false }, exec)).status, 'stopped')
+  } finally {
+    ctx.dispose()
+    await gateway.close()
   }
 })

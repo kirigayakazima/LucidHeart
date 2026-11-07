@@ -20,6 +20,7 @@ from fullawake import __version__
 
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.capabilities.desktop_vision import DesktopVisionCapability
+from fullawake.capabilities.desktop_vision.watch import WatchCapability, native_loopback
 from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
 from fullawake.core.config import config
@@ -48,12 +49,19 @@ class FullAwakeMCPGateway:
 
     def __init__(self) -> None:
         self.voice = VoiceCompute()
+        self.watch = WatchCapability()
 
         @asynccontextmanager
         async def lifespan(_app):
             if config.voice_enabled:
                 self.voice.artifacts.sweep()
-            yield
+            expiry = asyncio.create_task(self.watch.expire_clocks()) if self.watch.enabled else None
+            try:
+                yield
+            finally:
+                if expiry:
+                    expiry.cancel()
+                    await asyncio.gather(expiry, return_exceptions=True)
 
         self.app = FastAPI(
             title="FullAwake Gateway",
@@ -87,10 +95,12 @@ class FullAwakeMCPGateway:
     def _register_default_capabilities(self) -> None:
         """Register standard Phase 1 capabilities."""
         self.register_capability(DesktopVisionCapability())
+        self.register_capability(self.watch)
         self.register_capability(SafeFSCapability())
 
     def _setup_routes(self) -> None:
         app = self.app
+        self.watch.mount(app)
 
         @app.get("/health")
         async def health():
@@ -287,7 +297,7 @@ class FullAwakeMCPGateway:
                 raise HTTPException(status_code=400, detail="Invalid or missing session_id")
 
             body = await request.json()
-            response = await self.handle_jsonrpc(body)
+            response = await self.handle_jsonrpc(body, watch_allowed=native_loopback(request))
             if response is not None:
                 await self.sessions[session_id].put(response)
             return Response(status_code=status.HTTP_202_ACCEPTED)
@@ -300,10 +310,10 @@ class FullAwakeMCPGateway:
         async def mcp_direct_endpoint(request: Request):
             """Direct HTTP JSON-RPC endpoint for MCP calls."""
             body = await request.json()
-            response = await self.handle_jsonrpc(body)
+            response = await self.handle_jsonrpc(body, watch_allowed=native_loopback(request))
             return response if response is not None else {}
 
-    async def handle_jsonrpc(self, msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def handle_jsonrpc(self, msg: Dict[str, Any], *, watch_allowed=False) -> Optional[Dict[str, Any]]:
         """Process incoming JSON-RPC 2.0 message."""
         req_id = msg.get("id")
         method = msg.get("method")
@@ -353,6 +363,11 @@ class FullAwakeMCPGateway:
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
 
+            watch_tool = tool_name in ('pc_watch_get_summary', 'pc_watch_control')
+            if watch_tool and (not watch_allowed or not isinstance(arguments, dict)):
+                code = 'WATCH_LOOPBACK_ONLY' if not watch_allowed else 'WATCH_INVALID_ARGUMENTS'
+                return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32602, "message": code}}
+
             if tool_name not in self.tools:
                 return {
                     "jsonrpc": "2.0",
@@ -367,7 +382,13 @@ class FullAwakeMCPGateway:
             try:
                 result_data = await tool_def.handler(arguments)
                 # Format as MCP content
-                if isinstance(result_data, dict) and "base64_data" in result_data:
+                if tool_name == 'pc_watch_get_summary' and 'imageBase64' in result_data:
+                    content = [
+                        {'type': 'image', 'data': result_data['imageBase64'], 'mimeType': 'image/png'},
+                        {'type': 'text', 'text': json.dumps({k: v for k, v in result_data.items() if k != 'imageBase64'},
+                                                            ensure_ascii=False, allow_nan=False)},
+                    ]
+                elif isinstance(result_data, dict) and "base64_data" in result_data:
                     # Image content if snapshot
                     content = [
                         {
@@ -391,7 +412,7 @@ class FullAwakeMCPGateway:
                     content = [
                         {
                             "type": "text",
-                            "text": json.dumps(result_data, ensure_ascii=False, indent=2),
+                            "text": json.dumps(result_data, ensure_ascii=False, indent=2, allow_nan=False),
                         }
                     ]
 
@@ -409,7 +430,7 @@ class FullAwakeMCPGateway:
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "result": {
-                        "content": [{"type": "text", "text": f"Error: {e}"}],
+                        "content": [{"type": "text", "text": '{"error":"WATCH_TOOL_FAILED"}' if watch_tool else f"Error: {e}"}],
                         "isError": True,
                     },
                 }
@@ -432,7 +453,8 @@ def run_server():
     print(f"[*] Starting FullAwake Gateway on {config.host}:{config.port}...")
     print("[*] Bearer authentication enabled (token hidden)")
     print(f"[*] Allowed Workspace Roots: {config.allowed_roots}")
-    uvicorn.run(app, host=config.host, port=config.port, log_level="info")
+    uvicorn.run(app, host=config.host, port=config.port, log_level="info",
+                ws="wsproto" if gateway.watch.enabled else "auto")
 
 
 if __name__ == "__main__":

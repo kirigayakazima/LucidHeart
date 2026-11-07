@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "LucidHeart Watch Clock",
+  "version": "1.0.0",
+  "description": "Share the selected Bilibili player's presented frames with the local FullAwake gateway.",
+  "action": { "default_title": "Start or stop LucidHeart watch" },
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "bridge.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true }
+}

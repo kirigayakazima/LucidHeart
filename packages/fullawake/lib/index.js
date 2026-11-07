@@ -2,6 +2,8 @@
 // 运行在手机 DSHA 侧，桥接 PC Gateway 暴露的 MCP 视觉与安全文件能力，
 // 并基于 Heart Protocol v1 向 Heart 汇报 PC 在线/离线与设备感官观察。
 
+import { registerWatch } from './watch.js'
+
 let compileTool = (t) => t
 try {
   const dt = await import('@deepseek-ai/dsh-tools')
@@ -29,6 +31,8 @@ export const Config = z
       gatewayUrl: z.string().default('http://127.0.0.1:28765').description('FullAwake PC Gateway URL'),
       authToken: z.string().default('xiaoman-pc-bridge-secret-2026').description('Bearer Token'),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
+      watchProvider: z.string().default('').description('自动陪看的 DSH 视觉模型提供者'),
+      watchModel: z.string().default('').description('自动陪看的 DSH 视觉模型'),
     })
   : undefined
 
@@ -77,7 +81,7 @@ export function apply(ctx, config = {}) {
   let lastStatus = null
 
   // 1. JSON-RPC 2.0 工具调用封装
-  async function callGatewayTool(toolName, args = {}) {
+  async function callGatewayTool(toolName, args = {}, signal) {
     const endpoint = `${gatewayUrl}/mcp`
     const payload = {
       jsonrpc: '2.0',
@@ -100,14 +104,15 @@ export function apply(ctx, config = {}) {
           'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        redirect: toolName.startsWith('pc_watch_') ? 'error' : 'follow',
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       })
 
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
 
-      const data = await res.json()
+      const data = toolName.startsWith('pc_watch_') ? await readWatchReply(res) : await res.json()
       if (data.error) {
         return { ok: false, error: data.error.message || JSON.stringify(data.error) }
       }
@@ -141,6 +146,19 @@ export function apply(ctx, config = {}) {
       clearTimeout(timeout)
     }
   }
+
+  async function readWatchReply(response) {
+    const chunks = []
+    let total = 0
+    for await (const chunk of response.body) {
+      total += chunk.byteLength
+      if (total > 2_700_000) throw Error('WATCH_RESPONSE_TOO_LARGE')
+      chunks.push(chunk)
+    }
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  }
+
+  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken })
 
   // 2. PC 状态检测与 Heart 联动
   async function checkPCStatus() {

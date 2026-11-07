@@ -189,9 +189,15 @@ def main():
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--name", default="小满")
     parser.add_argument("--portrait", help="Local PNG or GIF to use as the sprite")
+    parser.add_argument("--watch", action="store_true", help="Connect to the FullAwake watch gateway")
+    parser.add_argument("--gateway-port", type=int, default=8765)
     parser.add_argument("--token", default=None)
     parser.add_argument("--motion", type=Path, default=HERE.parents[4] / "packages/heart/lib/motion.js")
     args = parser.parse_args()
+    if args.watch:
+        from .watch_pet import run_pet
+        run_pet(args.gateway_port, args.name, args.portrait)
+        return
     if not args.motion.is_file():
         parser.error("Supply the Heart motion.js source with --motion")
     token = args.token or secrets.token_urlsafe(24)
