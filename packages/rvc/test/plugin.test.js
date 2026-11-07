@@ -72,6 +72,7 @@ describe('@dsh/rvc Cordis Plugin & Heart Protocol v1 Integration', () => {
     const res = await tool.execute({ text: '你好呀姐姐！' })
 
     assert.equal(res.ok, true)
+    assert.deepEqual(res, JSON.parse(JSON.stringify(res)), '工具返回值必须是严格的 lossless JSON，严禁含 undefined')
     assert.match(res.audio_file, /mock_dv5_.*\.wav/)
     assert.equal(res.acoustic.pitch, 0, '元气心境下音高应为 0 (P0)')
     assert.equal(res.sent_to_qq, true, '应默认调用 QQ sendVoice')

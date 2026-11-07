@@ -56,6 +56,14 @@ function assertQqDelivery(result) {
   }
 }
 
+function losslessJson(fn) {
+  return async (...args) => {
+    const result = await fn(...args)
+    if (result === undefined) return {}
+    return JSON.parse(JSON.stringify(result))
+  }
+}
+
 export function apply(ctx, config = {}) {
   const mock = Boolean(config.mock)
   let latestMood = {}
@@ -106,7 +114,7 @@ export function apply(ctx, config = {}) {
           description: '是否通过 QQ 直接作为语音条发送（默认为 true）',
         },
       },
-      async execute(args, exec) {
+      execute: losslessJson(async function execute(args, exec) {
         if (exec?.signal?.aborted) return { ok: false, cancelled: true, sent_to_qq: false, heart_observation: 'cancelled', plugin_version: pluginVersion };
         const text = String(args.text || '').trim()
         if (!text) {
@@ -255,7 +263,7 @@ export function apply(ctx, config = {}) {
             emotion: acoustic.emotion,
           },
         }
-      },
+      }),
     })
   )
 
@@ -283,7 +291,7 @@ export function apply(ctx, config = {}) {
           description: '音高调整（0 为元气少女，-4 为沉稳日常，严禁传 -2；默认为 0）',
         },
       },
-      async execute(args, exec) {
+      execute: losslessJson(async function execute(args, exec) {
         const signal = AbortSignal.any([lifetime.signal, ...(exec?.signal ? [exec.signal] : [])])
         if (signal.aborted) return { ok: false, status: 'cancelled' }
         const { heart, mediaSender } = getVoiceServices(ctx)
@@ -370,7 +378,7 @@ export function apply(ctx, config = {}) {
           if (job.artifactDir) songArtifacts.finish(job.artifactDir)
         })
         return result
-      },
+      }),
     })
   )
 }
