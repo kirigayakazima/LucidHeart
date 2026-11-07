@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import time
 
@@ -78,8 +79,22 @@ def test_singing_heartbeat_keeps_existing_json_contract(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway.voice, 'process_singing_pipeline', sing)
     with TestClient(gateway.app) as client:
         url = '/v1/voice/sing?task=demo'
-        legacy = client.post(url, content=b'x' * 100)
-        streamed = client.post(url + '&heartbeat=true', content=b'x' * 100)
+        headers = {'Authorization': f'Bearer {config.auth_token}'}
+        legacy = client.post(url, content=b'x' * 100, headers=headers)
+        streamed = client.post(url + '&heartbeat=true', content=b'x' * 100, headers=headers)
         assert legacy.status_code == streamed.status_code == 200
         assert streamed.content.startswith(b'\n')
         assert streamed.json() == legacy.json() == {'ok': True, 'task': 'demo'}
+
+
+def test_singing_progress_stream_reports_actual_rejection(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, 'voice_enabled', True)
+    monkeypatch.setattr(config, 'voice_clients', ['127.0.0.1'])
+    monkeypatch.setattr(config, 'voice_work_dir', str(tmp_path))
+    with TestClient(gateway.app, client=('127.0.0.1', 49152)) as client:
+        response = client.post('/v1/voice/sing?task=demo&progress=true', content=b'too short')
+        assert response.status_code == 200
+        assert response.headers['content-type'] == 'application/x-ndjson'
+        assert [json.loads(line) for line in response.text.splitlines()] == [
+            {'type': 'result', 'result': {'ok': False, 'error': 'VOICE_AUDIO_EMPTY'}},
+        ]

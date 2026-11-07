@@ -2,7 +2,12 @@
 //
 // 边界：只读她写下的文件，不生成任何默认人格。空文件就返回空字符串，
 // 由 systemPrompt 的 section 机制丢弃空节。
-import { readBody, readFacts, readNotebook, readVoiceLearned, readMood, formatMoodPrompt, readMemoryMode } from './store.js'
+import { readBody, readFacts, readNotebook, readVoiceLearned, readMood, formatMoodPrompt, readMemoryMode, timeOf } from './store.js'
+
+export function formatCommitmentCarePrompt(kind, now) {
+  const context = kind === 'returned' ? '对方刚回来' : '对方有一阵没说话了'
+  return `【感知】${context}（现在 ${timeOf(now, 'Asia/Shanghai')}）。本轮只做一件事：如果本轮有主动生活关怀背景，就自然问候并关心这一件约定；否则安静休息。等对方确认进展，再结算约定。`
+}
 
 const BULLET = /^\s*-\s+/
 

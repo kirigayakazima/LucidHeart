@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { look } from '../lib/index.js'
 import { inferStickerMeaning } from '../lib/look.js'
-import { validateObservation } from '../../heart-plugin/contracts/validator.js'
+import { validateObservation } from '../../heart/contracts/validator.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(here, '..')

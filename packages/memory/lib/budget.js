@@ -7,6 +7,8 @@
  * 3. 动态预算控制：根据场景严格截断候选条目，防止上下文挤压
  */
 
+import { shanghaiDay } from './store.js';
+
 /**
  * 快速估算文本占用的 Token 数量
  * 经验法则：
@@ -49,7 +51,8 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
   let addedCount = 0;
 
   for (const item of entries) {
-    const date = (item.validFrom || item.createdAt || '').slice(0, 10);
+    const at = new Date(item.validFrom || item.createdAt || '');
+    const date = Number.isFinite(at.getTime()) ? shanghaiDay(at) : '';
     const scopeTag = item.scope === 'shared' ? '[共享]' : '';
     const line = `- [${item.id}] ${date} ${scopeTag} [${item.kind}] ${item.content}`;
     const lineTokens = estimateTokens(line);
@@ -70,24 +73,7 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
   };
 }
 
-/** 每轮自动投影只装完整事实，避免截断否定、条件或时间。 */
-export function formatConversationProjection(entries, label = '小满的回忆') {
-  const prefix = `[${label}: `;
-  const items = [];
-  let text = '';
-  for (const { content } of entries) {
-    // DSH 会解析双花括号变量，记忆正文只作为字面文本展示。
-    const fact = content.replace(/\s+/g, ' ').trim().replace(/\{/g, '｛').replace(/\}/g, '｝');
-    if (!fact) continue;
-    const item = `${items.length + 1}. ${fact}`;
-    const next = prefix + [...items, item].join('; ') + ']';
-    if (next.length > 120 || estimateTokens(next) > 100) continue;
-    items.push(item);
-    text = next;
-    if (items.length === 3) break;
-  }
-  return text;
-}
+export { formatConversationProjection } from './projection.js';
 
 /**
  * 手术式工具输出裁剪 (借鉴 tool-result-pruner 机制)

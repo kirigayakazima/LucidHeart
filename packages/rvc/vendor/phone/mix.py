@@ -4,6 +4,7 @@
 用法: python mix.py 人声.wav 伴奏.wav 输出.mp3 [--vocal-gain 1.0] [--inst-gain 0.9]
 """
 import argparse
+import math
 import os
 
 import numpy as np
@@ -19,6 +20,14 @@ def load(path):
 
 def rms(x):
     return float(np.sqrt(np.mean(x ** 2) + 1e-12))
+
+
+def soft_clip(samples, ceiling_db=-0.5, knee=0.75):
+    ceiling = 10 ** (ceiling_db / 20)
+    magnitude = np.abs(samples)
+    span = ceiling - knee
+    over = np.maximum(0, magnitude - knee)
+    return np.copysign(np.minimum(magnitude, knee) + span * np.tanh(over / span), samples)
 
 
 def resample_to(x, sr, target):
@@ -55,23 +64,28 @@ def main():
         v = v / rms(v) * rms(a) * 0.85
     v = v * vg
     # 人声先限幅：峰值高但能量低，整体缩放会把歌压得很小声
-    v = np.clip(v, -args.vocal_limit, args.vocal_limit)
-    mix = v + a * ag
-
-    # 先压伴奏峰值，再限幅：整首按峰值缩放会把响度压太低
-    amax = float(np.max(np.abs(a * ag)))
-    if amax > 0.8:
-        a = a / amax * 0.8
-        mix = v * vg + a * ag
-    mix = np.clip(mix, -0.98, 0.98)
-    peak = float(np.max(np.abs(mix)))
-
+    v = soft_clip(v, ceiling_db=20 * math.log10(args.vocal_limit), knee=args.vocal_limit * 0.8)
+    accompaniment = a * ag
+    # Leave headroom for reconstruction and lossy MP3 encoding.
+    mix = soft_clip(v + accompaniment, ceiling_db=-1.0)
     out = args.output
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    wav = os.path.splitext(out)[0] + ".wav"
-    sf.write(wav, mix, sr, subtype="PCM_16")
     fmt = "MP3" if out.lower().endswith(".mp3") else None
     sf.write(out, mix, sr, format=fmt)
+    if fmt == "MP3":
+        # MP3 decoding can overshoot even if every input sample is below the ceiling.
+        for attempt in range(3):
+            decoded, _ = sf.read(out, dtype="float32", always_2d=True)
+            decoded_peak = float(np.max(np.abs(decoded)))
+            if decoded_peak <= 10 ** (-0.5 / 20):
+                break
+            if attempt == 2:
+                raise ValueError("Encoded song exceeds the -0.5 dBFS peak ceiling")
+            mix *= 10 ** (-1.2 / 20) / decoded_peak
+            sf.write(out, mix, sr, format=fmt)
+    wav = os.path.splitext(out)[0] + ".wav"
+    sf.write(wav, mix, sr, subtype="PCM_16")
+    peak = float(np.max(np.abs(mix)))
     print(f"混音完成: {wav} / {out}  ({n / sr:.1f}s, peak {peak:.2f})")
 
 

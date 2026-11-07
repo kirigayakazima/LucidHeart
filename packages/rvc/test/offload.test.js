@@ -8,7 +8,7 @@ import childProcess from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { syncBuiltinESMExports } from 'node:module'
 import { voiceContract, saveOffloadAudio, offloadDryVoice } from '../lib/offload.js'
-import { readPcm16, writePcm16 } from '../lib/acoustic.js'
+import { computeAcousticProfile, readPcm16, writePcm16 } from '../lib/acoustic.js'
 import { runSpeak } from '../lib/runner.js'
 import { Artifacts } from '../lib/artifacts.js'
 
@@ -20,28 +20,30 @@ test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用W
     fs.rmSync(dir, { recursive: true, force: true })
   })
   const assets = Object.fromEntries(['model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index'].map(name => [name, { sha256: 'a'.repeat(64) }]))
-  const profile = { schema: 'lucidheart-voice-profile-v1', id: 'feiyu-rvc-v1', engine: 'rvc-onnx', modelsDir: '.', index: 'voice.mobile.index', assets, pitch: 0, synthesisMode: 'continuous', indexMethod: 'l2-8' }
+  const profile = { schema: 'lucidheart-voice-profile-v1', id: 'feiyu-rvc-v1', engine: 'rvc-onnx', modelsDir: '.', index: 'voice.mobile.index', assets, pitch: 0, synthesisMode: 'continuous', indexMethod: 'l2-8',
+    ttsVoice: 'zh-CN-XiaoyiNeural', ttsRate: '+6%' }
   const profilePath = path.join(dir, 'profile.json')
   fs.writeFileSync(profilePath, JSON.stringify(profile))
   const data = Buffer.alloc(84)
   data.write('RIFF', 0); data.write('WAVE', 8)
-  const contract = voiceContract(profile)
+  const contract = voiceContract({ ...profile, pitch: -4, brightness: 2.2, ttsVoice: 'zh-CN-XiaoxiaoNeural', ttsRate: '+0%' })
   const result = { ok: true, voiceId: contract.id, assets: contract.assets, settings: contract.settings,
     mode: 'pc_onnx_offload', provider: 'CPUExecutionProvider', sampleRate: 40000,
     audioBase64: data.toString('base64'), sha256: createHash('sha256').update(data).digest('hex'),
-    acoustic: { pitch: 0, brightness: 0, rate: '+0%' }, audioPath: 'C:/never-use-this.wav' }
+    acoustic: { pitch: -4, brightness: 2.2, rate: '+0%' }, audioPath: 'C:/never-use-this.wav' }
   let calls = 0
   const output = path.join(dir, 'returned.wav')
-  const res = await runSpeak({ text: '短句', acoustic: {}, voiceProfile: profilePath, outWav: output,
+  const res = await runSpeak({ text: '短句', acoustic: computeAcousticProfile(), voiceProfile: profilePath, outWav: output,
     profilePython: path.join(dir, 'missing-python'),
     offloadBridge: { async callPcRvc(args) { calls++; assert.deepEqual(args.voice, contract); return result } } })
   assert.equal(calls, 1)
   assert.equal(res.mode, 'pc_onnx_offload')
+  assert.equal(res.acoustic.ttsVoice, 'zh-CN-XiaoxiaoNeural')
   assert.equal(res.audioPath, output)
   assert.deepEqual(fs.readFileSync(output), data)
   assert.throws(() => saveOffloadAudio({ ...result, sha256: 'bad' }, contract, path.join(dir, 'bad.wav')), /checksum/)
   assert.throws(() => saveOffloadAudio({ ...result, voiceId: 'dv5' }, contract, path.join(dir, 'wrong.wav')), /Invalid/)
-  assert.throws(() => saveOffloadAudio({ ...result, settings: { ...contract.settings, pitch: -4 } }, contract, path.join(dir, 'wrong2.wav')), /settings/)
+  assert.throws(() => saveOffloadAudio({ ...result, settings: { ...contract.settings, pitch: 0 } }, contract, path.join(dir, 'wrong2.wav')), /settings/)
   // Verify CUDAExecutionProvider is accepted
   const cudaResult = saveOffloadAudio({ ...result, provider: 'CUDAExecutionProvider' }, contract, path.join(dir, 'cuda.wav'))
   assert.equal(cudaResult.offload.provider, 'CUDAExecutionProvider')
@@ -140,7 +142,10 @@ test('timeout, 503, 403 and disconnect reconcile to the same Feiyu CPU profile a
       assert.equal(args[args.indexOf('--profile') + 1], profilePath)
       assert.equal(args[args.indexOf('--pitch') + 1], '-4')
       const dryOnly = args.includes('--dry-only')
-      if (!dryOnly) {
+      if (dryOnly) {
+        assert.equal(args[args.indexOf('--tts-voice') + 1], 'zh-CN-XiaoxiaoNeural')
+        assert.ok(args.includes('--rate=+0%'))
+      } else {
         assert.equal(args[args.indexOf('--provider') + 1], 'CPUExecutionProvider')
         assert.equal(args[args.indexOf('--input') + 1], path.join(path.dirname(output), 'dry.wav'))
         assert.ok(fs.existsSync(args[args.indexOf('--input') + 1]))
@@ -159,10 +164,12 @@ test('timeout, 503, 403 and disconnect reconcile to the same Feiyu CPU profile a
   const keepAlive = setTimeout(() => {}, 3000)
   t.after(() => clearTimeout(keepAlive))
   for (const error of [null, 'PC_RVC_HTTP_503', 'PC_RVC_HTTP_403', 'fetch failed']) {
-    const result = await runSpeak({ text: '你好', voiceProfile: profilePath, acoustic: { pitch: -4 }, artifacts,
+    const result = await runSpeak({ text: '你好', voiceProfile: profilePath, acoustic: computeAcousticProfile(), artifacts,
       offloadBridge: { async callPcRvc({ voice }) {
         assert.equal(voice.id, contract.id)
         assert.equal(voice.settings.pitch, -4)
+        assert.equal(voice.settings.ttsVoice, 'zh-CN-XiaoxiaoNeural')
+        assert.equal(voice.settings.ttsRate, '+0%')
         if (error) throw new Error(error)
         return new Promise(() => {})
       } } })

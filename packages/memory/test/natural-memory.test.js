@@ -85,7 +85,7 @@ test('精选摄取从当前发言取证，来源、重要性和置信度随 jour
   const [direct, shared, episode, candidate] = h.journal().map(({ entry }) => entry);
   assert.deepEqual(direct.provenance, { origin: 'user_statement', speaker: '小舟', channel: 'group', timestamp: new Date(time).toISOString() });
   assert.equal(direct.source.evidenceText, preference.evidence);
-  assert.equal(direct.confidence, 1);
+  assert.equal(direct.confidence, 0.95);
   assert.equal(direct.importance, 0.6);
   assert.equal(direct.confirmed, false);
   assert.equal(shared.provenance.origin, 'shared_experience');

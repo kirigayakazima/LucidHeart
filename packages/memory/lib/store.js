@@ -9,6 +9,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { supersedeMemory } from './types.js';
 
+const zonedFormatters = new Map();
+
+export function getZonedParts(date, timeZone = 'Asia/Shanghai') {
+  let formatter = zonedFormatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric',
+      hour: 'numeric', minute: 'numeric', second: 'numeric',
+    });
+    zonedFormatters.set(timeZone, formatter);
+  }
+  return Object.fromEntries(formatter.formatToParts(date)
+    .filter(({ type }) => type !== 'literal').map(({ type, value }) => [type, Number(value)]));
+}
+
+export function shanghaiDay(date) {
+  const { year, month, day } = getZonedParts(date, 'Asia/Shanghai');
+  return [year, month, day].map(value => String(value).padStart(2, '0')).join('-');
+}
+
 export class MemoryStore {
   /**
    * @param {string} rootDir 存储根目录，如 ~/.dsh/memory
@@ -58,7 +78,7 @@ export class MemoryStore {
    * 从 JSONL 还原所有有效记忆条目 (回放状态机)
    * @returns {Map<string, any>}
    */
-  loadAllFromJournal(commitments) {
+  loadAllFromJournal(commitments, projects) {
     const entries = new Map();
     if (!fs.existsSync(this.journalPath)) return entries;
 
@@ -73,6 +93,8 @@ export class MemoryStore {
 
         if (action === 'commitment') {
           commitments?.set(entry.id, entry);
+        } else if (action === 'project') {
+          projects?.set(entry.id, entry);
         } else if (action === 'create' || action === 'update') {
           entries.set(entry.id, entry);
         } else if (action === 'supersede') {
@@ -118,7 +140,8 @@ export class MemoryStore {
     for (const item of sorted) {
       if (item.status !== 'active') continue;
       const scopeBadge = item.scope === 'shared' ? '[shared]' : `[${item.scope.replace('_private', '')}]`;
-      const date = (item.validFrom || item.createdAt || '').slice(0, 10);
+      const at = new Date(item.validFrom || item.createdAt || '');
+      const date = Number.isFinite(at.getTime()) ? shanghaiDay(at) : '';
       lines.push(`- ${date} ${scopeBadge} [${item.kind}] ${item.content} <!-- id:${item.id} -->`);
     }
 

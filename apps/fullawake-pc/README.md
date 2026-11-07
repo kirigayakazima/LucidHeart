@@ -1,6 +1,6 @@
 # FullAwake PC
 
-本地源码0.2.1。小满的主脑/Heart/Memory仍在手机，阿醒独立；PC网关不读取阿醒私有DSH数据，不充当另一份小满。当前PC运行版本须查/health，源码或端口存在不证明已重载。
+本地源码 0.2.4。小满的主脑、Heart 和 Memory 在手机，阿醒独立运行。以 `/health` 核对当前 PC 网关进程版本。
 
 ## 现有能力
 
@@ -31,3 +31,16 @@ uv pip install --python .venv/Scripts/python.exe --index-url https://pypi.tuna.t
 ```
 
 将 [Faster-Whisper Base 模型](https://huggingface.co/Systran/faster-whisper-base) 放到 Suite 的 `local/fullawake/faster-whisper-base`，保留模型和 tokenizer 文件。启动脚本默认使用该目录，也可在启动前设定 `FULLAWAKE_ASR_MODEL_DIR`。推理使用本机 CUDA 和 cuDNN。
+
+## 独立桌面挂件
+
+在 FullAwake PC 目录使用现有 uv 环境。挂件运行在独立进程，在 127.0.0.1:8766 接收播放时钟。
+
+```powershell
+uv sync --locked --inexact --extra widget
+uv run --no-sync python -m fullawake.widget
+```
+
+打开启动时打印的完整地址，在浏览器中选择本地音频。默认立绘随呼吸、眨眼和三档口型变化，播放结束或断连后关闭口型。左键拖动，右键关闭。可通过 `--name` 和 `--portrait` 指定显示名称与本地 PNG。
+
+可在 PC 端 Heart 配置 `widgetSocket`，值为 `ws://127.0.0.1:8766/clock?token=<挂件令牌>`。连接后挂件显示 Heart 的休息、倾听和思考状态，`heart_motion` 可提交点头、微笑、挥手意图。手机 QQ 对话通过现有链路运行。

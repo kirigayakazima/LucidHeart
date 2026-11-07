@@ -413,23 +413,35 @@ def plan_speech_segments(audio16k: np.ndarray, max_seconds: float = 8.0):
     return spans
 
 
+def speech_mix_bounds(seg, total_samples):
+    start = round(seg['start_16k'] * 2.5)
+    end = round(seg['end_16k'] * 2.5)
+    total = round(total_samples * 2.5)
+    # Retain 50ms on either side of a join, limited by a short final segment.
+    return start - min(2000, start, total - start), end + min(2000, end, total - end)
+
+
 def crop_speech_segment(wav, seg, total_samples):
-    """Keep exactly the center, including the final fractional 10ms frame."""
-    first = (seg['start_16k'] - seg['ctx_start_16k']) * 5 // 2
-    count = round(seg['end_16k'] * 2.5) - round(seg['start_16k'] * 2.5)
-    if len(wav) < first + count:
+    """Keep the center and only the inference context used for the Hann overlap."""
+    start, end = speech_mix_bounds(seg, total_samples)
+    origin = round(seg['ctx_start_16k'] * 2.5)
+    if len(wav) < end - origin:
         raise ValueError('Continuous segment output is incomplete; refusing to lose speech')
-    result = np.array(wav[first:first + count], dtype=np.float32, copy=True)
-    # Independent phases are never cross-faded over voiced audio. A tiny ramp
-    # suppresses clicks at joins, retaining the original timeline and pauses.
-    fade = min(200, len(result) // 2)  # 5ms at 40kHz
-    if fade:
-        ramp = np.linspace(0, 1, fade, dtype=np.float32)
-        if seg['start_16k']:
-            result[:fade] *= ramp
-        if seg['end_16k'] < total_samples:
-            result[-fade:] *= ramp[::-1]
-    return result
+    return wav[start - origin:end - origin]
+
+
+def join_speech_segments(spans, chunks, total_samples):
+    output = np.empty(round(total_samples * 2.5), dtype=np.float32)
+    previous_end = 0
+    for seg, chunk in zip(spans, chunks, strict=True):
+        start, end = speech_mix_bounds(seg, total_samples)
+        overlap = previous_end - start
+        if overlap:
+            gain = .5 - .5 * np.cos(np.linspace(0, np.pi, overlap))
+            output[start:previous_end] = output[start:previous_end] * (1 - gain) + chunk[:overlap] * gain
+        output[previous_end:end] = chunk[overlap:]
+        previous_end = end
+    return output
 
 
 def convert_audio(
@@ -665,7 +677,7 @@ def convert_audio(
             chunk_wav = chunk_wav.astype(np.float32) / 32767.0
         full_audio.append(chunk_wav)
         
-    final_output = np.concatenate(full_audio)
+    final_output = join_speech_segments(segments, full_audio, total_audio_len_16k) if speech_split else np.concatenate(full_audio)
     
     # Optional brightness compensation (High-shelf filter)
     if brightness > 0.0:

@@ -159,6 +159,7 @@ MIX_SCRIPT=""
 for cand in /sdcard/rvc/mix.py /root/.dsh/voice/mix.py; do
   if [ -f "$cand" ]; then MIX_SCRIPT="$cand"; break; fi
 done
+if [ -n "${RVC_VOICE_PROFILE:-}" ]; then MIX_SCRIPT="$BUNDLED/mix.py"; fi
 
 if [ -n "$MIX_SCRIPT" ]; then
   MIX_OUTPUT="$OUTDIR/song_${NAME}.mp3"

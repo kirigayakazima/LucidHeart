@@ -6,7 +6,7 @@
 //   心（notebook.md / handoff/）只能由它自己写：这里只提供写入面，不提供默认内容。
 //   所以本模块没有任何「人格设定」的字符串常量。
 import z from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool as defineDshTool } from '@deepseek-ai/dsh-tools'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -16,7 +16,6 @@ import {
   appendFact,
   appendMemory,
   appendNotebook,
-  appendVoiceLearned,
   assertLegacyMemory,
   dateOf,
   discardEntry,
@@ -60,12 +59,14 @@ import {
   saveInsights,
   updateInsightStatus,
   promoteInsight,
+  hasDreamReview,
 } from './dream.js'
 import { log } from './logger.js'
 import { HeartService } from './service.js'
 import { activityOrigin } from './activity-origin.js'
 import { installRuntimeDiagnostics } from './runtime-diagnostics.js'
 import { buildExpressionPolicy } from './expression.js'
+import { connectMotion, motionIntents } from './motion.js'
 
 export { HeartService } from './service.js'
 export * from '../contracts/index.js'
@@ -93,9 +94,18 @@ export const name = 'dsh-heart'
 /** 静态注入：服务必须写在这里，ctx.get() 拿不到（同生态插件的实测结论）。 */
 export const inject = ['tools', 'webServer', 'agents', 'systemPrompt']
 
+function defineTool(def) {
+  return defineDshTool({ ...def, async execute(...args) {
+    const result = await def.execute(...args)
+    return JSON.parse(JSON.stringify(result))
+  } })
+}
+
 export const Config = z.object({
   /** 时区设置；默认 Asia/Shanghai (UTC+8)。保证安静时段和节律时区对齐。 */
   timeZone: z.string().default('Asia/Shanghai'),
+  /** 可选 Windows 本机桌面挂件地址。 */
+  widgetSocket: z.string().default(''),
   /** 数据目录；留空 = ~/.dsh/heart。数据永远在插件包之外。 */
   root: z.string().default(''),
   /** 本设备标识，写进每条记忆的 [device] 标记，如 pc / phone。 */
@@ -170,11 +180,9 @@ export function apply(ctx, config) {
   // 宿主的 config 会被重启重写，这里以 heart/config.json 为准。
   trace(root, 'apply:start')
   config = { ...config, ...readHeartConfig(root) }
-  const timeZone = config.timeZone || 'Asia/Shanghai'
+  const timeZone = 'Asia/Shanghai'
   setHeartTimeZone(timeZone)
-  if (!process.env.TZ || process.env.TZ === 'UTC' || process.env.TZ === 'Etc/UTC') {
-    process.env.TZ = timeZone
-  }
+  process.env.TZ = timeZone
   const externalMemory = readMemoryMode(root) === 'external'
   trace(root, 'apply:config pulse=' + !!config.pulse + ' seconds=' + config.pulseSeconds)
   const device = String(config.device || process.env.DSH_HEART_DEVICE || 'agent').trim() || 'agent'
@@ -190,6 +198,20 @@ export function apply(ctx, config) {
 
   // 注册 Heart 0.20.0 微内核服务 (Cordis Service)
   const service = new HeartService(ctx, root, config)
+  if (process.platform === 'win32' && config.widgetSocket) {
+    ctx.effect(() => connectMotion(ctx, service, config.widgetSocket))
+    ctx.effect(() => ctx.tools.register(defineTool({
+      name: 'heart_motion',
+      description: '有明确交互语境时给本机挂件一个简短动作意图。',
+      parameters: { intent: { type: 'string', required: true, enum: motionIntents } },
+      output: textOutput,
+      async execute({ intent }, exec) {
+        if (exec?.signal?.aborted) return { message: '动作已取消。' }
+        ctx.emit('heart/motion-intent', intent)
+        return { message: '动作意图已提交。' }
+      },
+    })))
+  }
   ctx.effect(() => {
     if (typeof ctx.provide === 'function') {
       return ctx.provide('heart', service)
@@ -201,27 +223,21 @@ export function apply(ctx, config) {
       defineTool({
         name: 'heart_voice_learn',
         description:
-          '记一条关于「对方表达偏好」或「怎么沟通更有效」的观察。必须是经过筛选的偏好（如"对方看排查过程时更倾向直接看 diff"），而不是记录整段对话、临时猜测或把偶发情况当作永久规则。',
+          '提交一条关于表达偏好的 Dream 候选。必须是经过筛选的观察，经用户确认并晋升后才进入表达习惯。',
         parameters: {
           observation: { type: 'string', description: '观察到的表达偏好，一句话，200 字以内。' },
         },
         output: textOutput,
-        async execute(args) {
-          const raw = args && args.observation
-          const res = appendVoiceLearned(root, raw)
-          if (!res.ok) {
-            if (res.reason === 'duplicate') {
-              return { message: '这条表达偏好之前已经记过了，不用重复记录。' }
-            }
-            if (res.reason === 'too-long') {
-              return { message: `记录失败：内容超过 200 字上限（${res.message}）。请浓缩为一句话。` }
-            }
-            if (res.reason === 'empty-or-control' || res.reason === 'invalid-input') {
-              return { message: '记录失败：输入内容不能为空或纯控制字符。' }
-            }
-            return { message: `记录失败：${res.message || res.reason}` }
-          }
-          return { message: `已记下表达习惯：${res.line}` }
+        async execute({ observation }, exec) {
+          if (exec?.signal?.aborted) return { message: '本轮已取消。' }
+          const parsed = parseModelInsights(JSON.stringify([{ category: 'communication', type: 'observation', statement: observation }]))
+          if (!parsed.ok) return { message: parsed.message }
+          const res = saveInsights(root, parsed.insights, {
+            session: exec?.agent?.id || '',
+            turnCount: filterSessionMessages(exec?.agent?.session?.messages).turns,
+          })
+          const candidate = res.saved?.[0]
+          return { message: candidate ? `已提交表达习惯候选 [${candidate.id.slice(0, 8)}]：${candidate.statement}` : res.message }
         },
       })
     )
@@ -642,7 +658,7 @@ export function apply(ctx, config) {
           action: {
             type: 'string',
             description:
-              '操作类型: reflect（提炼经历，默认）| list（查看经验列表）| show（查看经验详情）| confirm（确认经验）| reject（驳回经验）| promote（晋升至长期记忆）',
+              'reflect 提炼 | list 查看列表 | show 查看详情 | confirm 确认 | reject 驳回 | promote 预览或提交晋升。确认和提交须分别收到用户当前发言「确认经验 ID」和「晋升经验 ID」。',
           },
           id: {
             type: 'string',
@@ -767,6 +783,9 @@ export function apply(ctx, config) {
             if (action === 'confirm') {
               const id = String((args && args.id) || '').trim()
               if (!id) return { message: '请提供要确认的经验条目 ID' }
+              if (exec?.signal?.aborted || !hasDreamReview(exec, 'confirm', id)) {
+                return { message: `等待用户明确发送「确认经验 ${id}」。` }
+              }
               const res = updateInsightStatus(root, id, 'confirm')
               if (!res.ok) {
                 return { message: `确认失败：${res.message || res.reason}` }
@@ -793,6 +812,9 @@ export function apply(ctx, config) {
               const id = String((args && args.id) || '').trim()
               if (!id) return { message: '请提供要晋升的经验条目 ID' }
               const commit = Boolean(args && args.commit)
+              if (commit && (exec?.signal?.aborted || !hasDreamReview(exec, 'promote', id))) {
+                return { message: `等待用户明确发送「晋升经验 ${id}」。` }
+              }
               const res = promoteInsight(root, id, { commit, selfPrinciple: args.selfPrinciple === true })
               return { message: res.message }
             }

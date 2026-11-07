@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { apply, MemoryService } from '../lib/index.js';
+import { HeartService } from '../../heart/lib/service.js';
+import { maybeTrigger, readTrigger } from '../../heart/lib/trigger.js';
 
 function setup(t, heart) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'commitments-'));
@@ -36,7 +38,12 @@ function setup(t, heart) {
   };
   return {
     dataDir, memory, tools, agent, emit, turn,
-    run: (name, args, execution = { agent }) => tools.get(name).execute(args, execution),
+    claim: (message, target = agent) => listeners.get('agent/inbox/claimed')({ agent: target, message }),
+    run: async (name, args, execution = { agent }) => {
+      const result = await tools.get(name).execute(args, execution);
+      assert.deepEqual(result, JSON.parse(JSON.stringify(result)));
+      return result;
+    },
     prompt: (target = agent, signal) => section.text({ agent: target, signal }),
     journal: () => fs.readFileSync(memory.store.journalPath, 'utf8').trim().split('\n').map(JSON.parse),
   };
@@ -103,6 +110,97 @@ test('承诺登记刷盘结果不明时，重试复用已写入的事件', (t) =
   failure.mock.restore();
   assert.equal(memory.commitments.record(request).id, entry.id);
   assert.equal(journal().length, 1);
+});
+
+test('关怀优先最近 24 小时内的待兑现项，再选最近逾期项，跳过已结算条目', (t) => {
+  const { memory, journal } = setup(t);
+  const ledger = memory.commitments;
+  const now = new Date('2026-11-07T16:15:00Z'); // 上海已经是 11 月 8 日。
+  const record = (title, targetTime) => ledger.record({ title, targetTime, evidence: title, channel: 'direct' }, +now);
+  record('超过一天', '2026-11-09T00:15:00.001');
+  record('未定日期', '改天');
+  record('较早逾期', '2026-11-07T23:00:00');
+  const overdue = record('刚刚逾期', '2026-11-07');
+  const edge = record('刚好 24 小时', '2026-11-09T00:15:00');
+  const nearest = record('今天喝水', '2026-11-07T16:25:00Z');
+  const resolved = record('已完成', '2026-11-08T00:15:00');
+  const cancelled = record('已取消', '2026-11-08T00:16:00');
+  ledger.resolve(resolved.id, 'fulfilled', '', +now);
+  ledger.resolve(cancelled.id, 'cancelled', '', +now);
+  const select = () => ledger.getActiveCommitmentCare(now, 'Asia/Shanghai');
+  const journalBefore = journal();
+  assert.deepEqual(select(), nearest);
+  assert.deepEqual(journal(), journalBefore);
+  ledger.resolve(nearest.id, 'fulfilled', '', +now);
+  assert.deepEqual(select(), edge);
+  ledger.resolve(edge.id, 'cancelled', '', +now);
+  assert.deepEqual(select(), { ...overdue, status: 'expired' });
+  ledger.resolve(overdue.id, 'fulfilled', '', +now);
+  assert.equal(select().title, '较早逾期');
+  ledger.resolve(select().id, 'cancelled', '', +now);
+  assert.equal(select(), null);
+});
+
+test('Heart 返回和空闲回合各注入一条关怀，人工消息与其他会话不继承背景', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'commitment-care-heart-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sessionsRoot = path.join(root, 'sessions');
+  const sessionDir = path.join(sessionsRoot, 'workspace', 'session-test');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionDir, 'session.v4.jsonl'), '');
+  const config = { sessionsRoot, triggerCooldownMinutes: 60, timeZone: 'Asia/Shanghai' };
+  const heart = new HeartService(null, root, config);
+  const h = setup(t, heart);
+  const start = Date.parse('2026-11-07T22:00:00Z'); // 上海 06:00，先登记后等待早晨。
+  t.mock.timers.enable({ apis: ['Date'], now: start });
+  const title = '早上记得给猫喂食';
+  h.turn(`好，${title}。`);
+  const { id } = await h.run('commitment_record', { title, targetTime: '2026-11-08T10:30:00', evidence: title });
+  h.memory.commitments.record({ title: '下午看新番', targetTime: '2026-11-08T15:00:00', evidence: '约好看新番', channel: 'direct' });
+  const originalJournal = h.journal();
+  const messages = [];
+  h.agent.followup = (message) => messages.push(message);
+  const ctx = { agents: { list: () => [h.agent] }, get: (name) => name === 'memory' ? h.memory : undefined };
+  const next = { presence: 'present', sinceMsgMin: 90 };
+  const other = { id: 'other', session: {} };
+
+  for (const [iso, presence, cue] of [
+    ['2026-11-08T01:00:00Z', 'away', '对方刚回来'],
+    ['2026-11-08T04:00:00Z', 'present', '对方有一阵没说话了'],
+  ]) {
+    const now = new Date(iso);
+    t.mock.timers.setTime(+now);
+    const prev = { presence, at: new Date(+now - 60_000).toISOString(), awaySince: new Date(+now - 3_600_000).toISOString() };
+    assert.equal(await maybeTrigger(ctx, root, prev, next, config, now, heart), true);
+    const [message] = messages.splice(0);
+    assert.ok(message.content[0].text.includes(cue));
+    assert.doesNotMatch(message.content[0].text, /喂食/);
+    h.claim(message, other);
+    assert.doesNotMatch(h.prompt(other), /主动生活关怀背景:/);
+    h.claim(message);
+    const expected = '[主动生活关怀背景: 你之前与对方约定了「早上记得给猫喂食」（时间: 2026-11-08T10:30:00）。打招呼时请自然问起进展，语气亲昵贴心，不要像系统通知。]';
+    const prompt = h.prompt();
+    if (presence === 'away') {
+      assert.deepEqual(prompt.split('\n').filter((line) => line.startsWith('[主动生活关怀背景:')), [expected]);
+      assert.doesNotMatch(prompt, /下午看新番/);
+    } else {
+      assert.match(prompt, /主动生活关怀背景: .*下午看新番/); // 临近履约优先于逾期。
+      assert.doesNotMatch(prompt, /喂食/);
+    }
+    assert.doesNotMatch(h.prompt(h.agent, AbortSignal.abort()), /主动生活关怀背景:/);
+    h.emit({ type: 'turn/end' });
+    assert.doesNotMatch(h.prompt(), /主动生活关怀背景:/);
+    h.claim(message);
+    assert.doesNotMatch(h.prompt(), /主动生活关怀背景:/);
+  }
+  assert.equal(readTrigger(root).idleCount, 2);
+  assert.deepEqual(h.journal(), originalJournal);
+  assert.doesNotMatch(fs.readFileSync(h.memory.store.factsPath, 'utf8'), /喂食|新番/);
+  h.claim({ source: { kind: 'schedule' }, id: 'another-schedule' });
+  assert.doesNotMatch(h.prompt(), /主动生活关怀背景:/);
+  h.turn('刚刚已经喂过猫了。');
+  assert.doesNotMatch(h.prompt(), /主动生活关怀背景:/);
+  assert.deepEqual(await h.run('commitment_resolve', { id, status: 'fulfilled' }), { id, status: 'fulfilled' });
 });
 
 test('群聊登记、私聊问候触发一条提醒，取证、Heart 门控与工具核销沿用真实回合', async (t) => {

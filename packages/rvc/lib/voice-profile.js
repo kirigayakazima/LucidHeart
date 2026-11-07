@@ -29,6 +29,7 @@ async function runWorker({ voiceProfile, profilePython, text, acoustic, outWav, 
   if (input) args.push('--input', input)
   else args.push('--text', text)
   if (!input && acoustic?.rate !== undefined) args.push(`--rate=${acoustic.rate}`)
+  if (!input && acoustic?.ttsVoice !== undefined) args.push('--tts-voice', acoustic.ttsVoice)
   if (acoustic?.pitch !== undefined) args.push('--pitch', String(acoustic.pitch))
   if (acoustic?.brightness !== undefined) args.push('--brightness', String(acoustic.brightness))
   if (dryOnly) args.push('--dry-only')

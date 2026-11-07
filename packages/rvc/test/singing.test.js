@@ -2,15 +2,57 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import childProcess from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { setImmediate as nextTick } from 'node:timers/promises'
 import { apply } from '../lib/index.js'
+import { runPcSong } from '../lib/sing.js'
 
 const mp3 = Buffer.alloc(256)
 mp3.write('ID3')
+
+test('singing client consumes fragmented stage events over loopback before publishing the download', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'dsh-sing-stream-'))
+  t.after(() => rm(folder, { recursive: true, force: true }))
+  const file = path.join(folder, 'source.mp3')
+  const output = path.join(folder, 'result.mp3')
+  const audio = childProcess.execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=440:d=0.3', '-f', 'mp3', '-'])
+  await writeFile(file, audio)
+  const stages = []
+  const seenRvc = Promise.withResolvers()
+  const server = createServer(async (req, res) => {
+    if (req.method === 'POST') {
+      const received = []
+      for await (const chunk of req) received.push(chunk)
+      assert.deepEqual(Buffer.concat(received), audio)
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
+      res.write('{"type":"stage","stage":"separation"}\n{"type":"stage",')
+      res.write('"stage":"rvc"}\n{"type":"heartbeat","stage":"rvc"}\n')
+      await seenRvc.promise
+      res.end('{"type":"result","result":{"ok":true,"task":"song"}}\n')
+      return
+    }
+    assert.equal(req.url, '/v1/voice/sing/download/song')
+    res.writeHead(200, { 'Content-Type': 'audio/mpeg' })
+    res.end(audio)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => server.close())
+  await runPcSong({
+    source: { file, size: audio.length }, jobId: 'song', pitch: 0, output,
+    signal: AbortSignal.timeout(4000), gatewayUrl: `http://127.0.0.1:${server.address().port}`,
+    onStage(stage) {
+      stages.push(stage)
+      if (stage === 'rvc') seenRvc.resolve()
+    },
+  })
+  assert.deepEqual(stages, ['separation', 'rvc'])
+  assert.deepEqual(await readFile(output), audio)
+  await assert.rejects(stat(`${output}.part`), { code: 'ENOENT' })
+})
 
 async function fixture(t) {
   const songsDir = await mkdtemp(path.join(os.tmpdir(), 'dsh-sing-test-'))
@@ -72,7 +114,7 @@ test('QQ 点歌先确认、后台返回、完成下载后只向原会话投递�
   })
   const job = await f.request({ pitch: -2 })
   assert.equal(job.status, 'dispatched')
-  assert.match(f.messages[0].message, /一分钟/)
+  assert.match(f.messages[0].message, /正在切伴奏/)
   assert.deepEqual(f.messages[0].peer, f.target)
   assert.equal(await upload.promise, job.job_id)
   assert.equal((await f.request({ pitch: -2 })).job_id, job.job_id)

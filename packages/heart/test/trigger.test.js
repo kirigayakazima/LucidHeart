@@ -16,6 +16,10 @@ import {
   writeTrigger,
 } from '../lib/trigger.js'
 import { findActiveAgent, clearSessionMtimesCache } from '../lib/target.js'
+import { HeartService } from '../lib/service.js'
+import { readSpeak, writeSpeak } from '../lib/store.js'
+import { CommitmentLedger } from '../../memory/lib/commitments.js'
+import { MemoryStore } from '../../memory/lib/store.js'
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'heart-trigger-test-'))
 
@@ -490,4 +494,51 @@ test('桶内动态退避至少一小时', () => {
   }
   assert.equal(shouldTriggerIdle({ next, triggerState, now: new Date('2026-10-21T18:59:00') }).reason, 'not-due')
   assert.equal(shouldTriggerIdle({ next, triggerState, now: new Date('2026-10-21T19:00:00') }).ok, true)
+})
+
+test('关怀共用北京时间静音期、开口档位、每日配额和跨触发的一小时冷却', async t => {
+  const root = tmp()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const sessionsRoot = path.join(root, 'sessions')
+  const dir = path.join(sessionsRoot, 'workspace', 'session-care')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'session.v4.jsonl'), '')
+  const config = { sessionsRoot, timeZone: 'Asia/Shanghai', triggerCooldownMinutes: 1,
+    idleCategories: [{ id: 'chat', dailyCap: 2 }] }
+  const commitments = new CommitmentLedger(new MemoryStore(path.join(root, 'memory')))
+  commitments.record({ title: '一起看书', evidence: '一起看书', channel: 'direct', targetTime: '2026-11-08T21:00:00' })
+  const messages = []
+  const agent = { id: 'session-care', status: 'idle', followup: message => messages.push(message) }
+  const ctx = { agents: { list: () => [agent] }, get: name => name === 'memory' ? { commitments } : undefined }
+  const heart = new HeartService(ctx, root, config)
+  const next = { presence: 'present', sinceMsgMin: 90 }
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-07T22:30:00Z') })
+  const tick = (iso, presence = 'away') => {
+    const now = new Date(iso)
+    t.mock.timers.setTime(+now)
+    const prev = { presence, at: new Date(+now - 60_000).toISOString(), awaySince: new Date(+now - 3_600_000).toISOString() }
+    return maybeTrigger(ctx, root, prev, next, config, now, heart)
+  }
+
+  assert.equal(await tick('2026-11-07T22:30:00Z'), false) // 上海 06:30。
+  assert.equal(heart.evaluateActivity({ intent: 'companion_care', category: 'chat' }).reason, 'quiet-hours')
+  writeSpeak(root, { level: 0 })
+  assert.equal(await tick('2026-11-08T11:00:00Z'), false)
+  writeSpeak(root, { level: 10 })
+  writeTrigger(root, { idleDate: '2026-11-08', idleCount: 5,
+    idleCategoryDate: '2026-11-08', idleCategoryCounts: { chat: 2 } })
+  assert.equal(await tick('2026-11-08T11:00:00Z'), false)
+  assert.equal(heart.evaluateActivity({ intent: 'companion_care', category: 'chat' }).reason, 'category-cap')
+  writeTrigger(root, { idleCategoryCounts: {}, idleCount: 4 })
+  assert.equal(await tick('2026-11-08T11:00:00Z'), true)
+  assert.equal(readTrigger(root).idleCount, 5)
+  assert.equal(await tick('2026-11-08T11:59:00Z', 'present'), false)
+  assert.equal(await tick('2026-11-08T11:59:00Z'), false)
+  assert.equal(await tick('2026-11-08T12:00:00Z', 'present'), true)
+  assert.equal(readTrigger(root).idleCount, 6)
+  assert.equal(await tick('2026-11-08T13:01:00Z'), false)
+  assert.equal(heart.evaluateActivity({ intent: 'companion_care', category: 'chat' }).reason, 'daily-cap')
+  assert.equal(messages.length, 2)
+  assert.equal(readSpeak(root).usedToday, 2)
+  assert.equal(readTrigger(root).idleCategoryCounts.chat, 2)
 })

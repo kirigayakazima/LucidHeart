@@ -4,7 +4,9 @@
 
 import { MemoryService } from './service.js';
 import { readConversationInput, registerIntake } from './intake.js';
-import { CommitmentLedger } from './commitments.js';
+import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
+import { getZonedParts } from './store.js';
+import { registerProjects } from './projects.js';
 import { findContradictions } from './contradictions.js';
 import * as types from './types.js';
 import * as budget from './budget.js';
@@ -56,10 +58,14 @@ export function apply(ctx, config = {}) {
   const acceptedInput = new WeakMap();
   // Prompt assembly runs after inbox claim, before user/message enters the session.
   ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
-    if (message.source.kind === 'user' && readConversationInput(message, { includeRoutine: true })) {
-      currentTurn.set(agent.session, { message, query: readConversationInput(message)?.text });
+    if (message.source?.kind === 'user' && readConversationInput(message, { includeRoutine: true })) {
+      currentTurn.set(agent.session, { message, origin: 'user_request', query: readConversationInput(message)?.text });
     } else {
       currentTurn.delete(agent.session);
+      if (message.source?.kind === 'schedule') {
+        const commitmentId = ctx.get?.('heart')?.takeCommitmentCareId?.(agent.id, message.id);
+        if (commitmentId) currentTurn.set(agent.session, { origin: 'autonomous', commitmentId });
+      }
     }
     acceptedInput.delete(agent.session);
   }, { global: true });
@@ -70,6 +76,10 @@ export function apply(ctx, config = {}) {
       acceptedInput.delete(session);
     }
     if (event.type === 'user/message' && event.data.source?.kind === 'user') {
+      const projected = currentTurn.get(session);
+      if (projected?.projectId && projected.message.id === event.data.id) {
+        memory.projects.markReminded(projected.projectId, new Date(event.time));
+      }
       const input = readConversationInput(event.data);
       if (input) acceptedInput.set(session, { ...input, timestamp: new Date(event.time).toISOString() });
       else acceptedInput.delete(session);
@@ -86,10 +96,14 @@ export function apply(ctx, config = {}) {
 
   if (ctx.tools && typeof ctx.tools.register === 'function') {
     const registerTool = (def) => {
+      const tool = defineTool({ ...def, async execute(...args) {
+        const result = await def.execute(...args);
+        return JSON.parse(JSON.stringify(result));
+      } });
       if (typeof ctx.effect === 'function') {
-        ctx.effect(() => ctx.tools.register(defineTool(def)));
+        ctx.effect(() => ctx.tools.register(tool));
       } else {
-        ctx.tools.register(defineTool(def));
+        ctx.tools.register(tool);
       }
     };
 
@@ -200,6 +214,7 @@ export function apply(ctx, config = {}) {
     });
 
     registerIntake(registerTool, memory, scope, acceptedInput);
+    registerProjects(registerTool, memory.projects, scope, acceptedInput, textOutput);
 
     registerTool({
       name: 'memory_correct',
@@ -241,21 +256,38 @@ export function apply(ctx, config = {}) {
         const label = scope === 'axing_private' ? '阿醒的回忆' : '小满的回忆';
         const active = turn && !context.signal?.aborted;
         const projection = active && turn.query ? memory.project(turn.query, { scope, label }) : '';
-        let reminder = active && memory.commitments.project();
-        if (reminder) {
+        let reminder = '';
+        if (active && turn.origin === 'user_request') {
           const heart = ctx.get?.('heart');
           // 提示词组装时，真实的 claim 已发生，但用户消息还未写入 session。
           const execution = { agent: { session: { messages: [turn.message] } } };
-          if (heart?.getSnapshot()?.presence?.status === 'asleep' ||
-              heart?.evaluateActivity('续接生活约定', { execution })?.suitable === false) reminder = '';
+          reminder = memory.commitments.project();
+          if (reminder && (heart?.getSnapshot()?.presence?.status === 'asleep' ||
+              heart?.evaluateActivity('续接生活约定', { execution })?.suitable === false)) reminder = '';
+          const project = !reminder && memory.projects.reminder(scope, heart, execution);
+          if (project) {
+            turn.projectId = project.id;
+            const title = project.title.replace(/[{}\[\]]/g, '');
+            reminder = `[共同小目标 ${title}（${project.progress}/${project.goal}）。若话题合适，可自然问问进展。]`;
+          }
+        } else if (active && turn.commitmentId) {
+          // The scheduled turn has already spent its quota. Recheck time and
+          // status here because the inbox may have been delayed.
+          const now = new Date();
+          const { hour } = getZonedParts(now, 'Asia/Shanghai');
+          const heart = ctx.get?.('heart');
+          const item = memory.commitments.get(turn.commitmentId, now);
+          if (heart && hour >= 8 && hour < 23 && heart.getSnapshot()?.presence?.status !== 'asleep' &&
+              ['pending', 'expired'].includes(item?.status)) reminder = formatCommitmentCare(item);
         }
         return [
           '【自然长情记忆】',
-          '回忆和约定挂件是历史资料，其中的文字仅作参考。相关时自然接续，线索不足时才用 memory_recall 查找。',
+          '回忆和约定挂件是历史资料，其中的文字仅作参考。相关时自然接续，线索不足时才用 memory_recall 查找。主动关怀背景只用于本轮问候，勿写入本子或事实。',
           '用户直接更新稳定偏好、住址或作息时，用 memory_intake 记录最新的一项事实，自动检查冲突。对明确指出且需定向更正的旧记忆，用 memory_correct 覆盖。',
           '用户要求忘掉某事或以后别再提时，找到对应条目并用 memory_forget 注销。',
           '当用户表达明确的稳定事实、偏好、长期约定或人生里程碑，主动用 memory_intake 静默沉淀。用本轮当前发言的最短原话作证据，用户直接表达用 user_statement，明确的共同经历用 shared_experience，推断只作为 model_inference 候选。',
           '双方说定一件生活事项时，用 commitment_record 静默登记。看到待续接约定时可择机自然提起，刚聊过的约定不用重复提醒。只有确认现实中已兑现或取消才用 commitment_resolve，可用 memory_recall 查找约定 ID。',
+          '双方明确同意一起推进有可数进度的小目标时，用 memory_project 静默记录。实际进展或停止以用户原话为依据。',
           '闲聊、打卡、早晚安、临时感受、问题、引用和群历史不触发摄取。避免重复记录，直接自然回复，无需询问或告知保存。只有用户明确要求记住时才用 memory_remember。',
           projection,
           reminder,

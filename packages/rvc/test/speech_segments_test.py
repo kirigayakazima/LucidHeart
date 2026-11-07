@@ -60,17 +60,20 @@ class SpeechSegmentsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runtime.plan_speech_segments(audio)
 
-    def test_crop_preserves_fractional_tail_and_never_overlaps_voice(self):
+    def test_hann_overlap_preserves_timeline_and_fractional_tail(self):
         total = 200003
-        seg = {'start_16k': 128000, 'end_16k': total, 'ctx_start_16k': 120000}
-        wav = np.ones(210000, dtype=np.float32)
-        result = runtime.crop_speech_segment(wav, seg, total)
-        self.assertEqual(len(result), round(total * 2.5) - 320000)
-        self.assertEqual(result[0], 0)
-        self.assertEqual(result[-1], 1)  # No end fade/tail truncation.
-        np.testing.assert_array_equal(result[200:], 1)
+        first = {'start_16k': 0, 'end_16k': 128000, 'ctx_start_16k': 0}
+        second = {'start_16k': 128000, 'end_16k': total, 'ctx_start_16k': 120000}
+        left = runtime.crop_speech_segment(np.ones(325000, dtype=np.float32), first, total)
+        right = runtime.crop_speech_segment(np.full(210000, 3, dtype=np.float32), second, total)
+        result = runtime.join_speech_segments([first, second], [left, right], total)
+        self.assertEqual(len(result), round(total * 2.5))
+        np.testing.assert_array_equal(result[:318001], 1)
+        np.testing.assert_array_equal(result[321999:], 3)
+        self.assertAlmostEqual(result[319000], 1.293, places=3)
+        self.assertAlmostEqual(result[320000], 2, places=3)
         with self.assertRaisesRegex(ValueError, 'incomplete'):
-            runtime.crop_speech_segment(np.zeros(20), seg, total)
+            runtime.crop_speech_segment(np.zeros(20), second, total)
 
     def test_real_conversion_loop_reuses_sessions_and_keeps_all_samples(self):
         audio = np.full(21 * 16000 + 73, .1, dtype=np.float32)

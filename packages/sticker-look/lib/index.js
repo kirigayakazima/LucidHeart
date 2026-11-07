@@ -3,11 +3,17 @@
 import path from 'node:path'
 import { buildResult, prepareLook, inferStickerMeaning } from './look.js'
 
-let defineTool = (t) => t
+let compileTool = (t) => t
 try {
   const dt = await import('@deepseek-ai/dsh-tools')
-  if (typeof dt.defineTool === 'function') defineTool = dt.defineTool
+  if (typeof dt.defineTool === 'function') compileTool = dt.defineTool
 } catch {}
+
+function defineTool(spec) {
+  return compileTool({ ...spec, async execute(...args) {
+    return JSON.parse(JSON.stringify(await spec.execute(...args)))
+  } })
+}
 
 let z = null
 try {

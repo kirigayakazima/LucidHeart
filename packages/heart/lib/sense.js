@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import {
-  dateOf,
+  getZonedParts,
   ensureLayout,
   inQuietHours,
   readProfile,
@@ -20,13 +20,15 @@ export const SENSE_LOG_MAX = 500
 
 const pad = (n) => String(n).padStart(2, '0')
 
-/** 生成带本地时区偏移的 ISO 字符串（如 2026-10-21T19:20:00+08:00）。 */
+/** 生成 Asia/Shanghai 墙上时间和对应 UTC 偏移。 */
 export function toLocalISOString(date = new Date()) {
-  const tzOffset = -date.getTimezoneOffset()
+  const { year, month, day, hour, minute, second } = getZonedParts(date, 'Asia/Shanghai')
+  const wall = Date.UTC(year, month - 1, day, hour, minute, second)
+  const tzOffset = Math.round((wall - date.getTime()) / 60_000)
   const sign = tzOffset >= 0 ? '+' : '-'
   const tzHours = pad(Math.floor(Math.abs(tzOffset) / 60))
   const tzMins = pad(Math.abs(tzOffset) % 60)
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${tzHours}:${tzMins}`
+  return `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:${pad(second)}${sign}${tzHours}:${tzMins}`
 }
 
 /** 计算当前距离最新会话文件修改的分钟数。 */
@@ -171,7 +173,7 @@ export function applyPresence(prev, sample, config = {}, options = {}) {
  */
 export function formatSenseLine(record) {
   const atDate = record.at ? new Date(record.at) : new Date()
-  const timestamp = `${dateOf(atDate)} ${pad(atDate.getHours())}:${pad(atDate.getMinutes())}:${pad(atDate.getSeconds())}`
+  const timestamp = toLocalISOString(atDate).slice(0, 19).replace('T', ' ')
   const presence = record.presence || 'unknown'
   const idle = record.idleMs !== null && record.idleMs !== undefined ? `${Math.floor(record.idleMs / 1000)}s` : '-'
   const sinceMsg = record.sinceMsgMin !== null && record.sinceMsgMin !== undefined ? `${record.sinceMsgMin}m` : '-'

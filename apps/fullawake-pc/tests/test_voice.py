@@ -128,14 +128,14 @@ def test_cuda_admits_two_dry_workers_and_releases_slots(voice_setup, tmp_path, m
 
 
 def test_asr_loopback_accepts_binary_without_token(monkeypatch):
-    monkeypatch.setattr(config, 'voice_clients', ['testclient'])
+    monkeypatch.setattr(config, 'voice_clients', ['127.0.0.1'])
 
     def transcribe(audio):
         assert audio == b'RIFF-test'
         return {'ok': True, 'text': '听到了', 'duration': 3.2, 'language': 'zh'}
 
     monkeypatch.setattr(gateway.voice, 'transcribe', transcribe)
-    client = TestClient(gateway.app)
+    client = TestClient(gateway.app, client=('127.0.0.1', 49152))
     response = client.post('/v1/voice/asr', content=b'RIFF-test', headers={'Content-Type': 'audio/wav'})
     assert response.status_code == 200
     assert response.json() == {'ok': True, 'text': '听到了', 'duration': 3.2, 'language': 'zh'}

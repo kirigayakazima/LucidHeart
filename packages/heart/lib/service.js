@@ -33,7 +33,6 @@ import {
   inQuietHours,
   readSpeak,
   resolveRoot,
-  getHeartTimeZone,
 } from './store.js'
 import { log } from './logger.js'
 import { activityOrigin } from './activity-origin.js'
@@ -114,6 +113,14 @@ export class HeartService {
   /** Optional extension; Protocol v1 state and permission methods are unchanged. */
   getExpressionPolicy() {
     return buildExpressionPolicy({ ...this.config, ...readHeartConfig(this.root) })
+  }
+
+  /** Consume the transient handoff for the exact Heart-scheduled message. */
+  takeCommitmentCareId(agentId, messageId) {
+    const turn = this.commitmentCareTurn
+    if (!turn || turn.agentId !== agentId || turn.messageId !== messageId) return null
+    this.commitmentCareTurn = null
+    return turn.commitmentId
   }
 
   /**
@@ -225,7 +232,7 @@ export class HeartService {
     } catch {}
     const liveConfig = { ...readHeartConfig(root), ...this.config, ...diskCustom }
     const speakState = readSpeak(root)
-    const timeZone = liveConfig.timeZone || this.config?.timeZone || getHeartTimeZone(root)
+    const timeZone = 'Asia/Shanghai'
     const now = new Date()
 
     // 1. 安静时段检查
@@ -256,7 +263,7 @@ export class HeartService {
       }
     }
 
-    const { counts } = idleCategoryState(trigger, now)
+    const { counts } = idleCategoryState(trigger, now, liveConfig)
     const remainingCategories = idleCategoryRemaining(liveConfig, counts)
     const targetCat = category ? remainingCategories.find((c) => c.id === category) : null
 

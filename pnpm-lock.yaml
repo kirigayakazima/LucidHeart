@@ -64,6 +64,8 @@ importers:
         specifier: ^3.18.0
         version: 3.18.5
 
+  packages/voice-duplex: {}
+
 packages:
 
   '@deepseek-ai/cordis@4.0.5':

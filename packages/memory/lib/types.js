@@ -1,3 +1,5 @@
+import { IntakeWeights } from './schema.js';
+
 /**
  * @dsh/memory - Core Types and Constants
  */
@@ -45,7 +47,7 @@ export const CommitmentStatuses = /** @type {const} */ (['pending', 'fulfilled',
  * @property {'direct'|'group'} channel
  */
 
-export const MemoryOrigins = ['user_statement', 'shared_experience', 'model_inference'];
+export const MemoryOrigins = Object.keys(IntakeWeights);
 
 export function supersedeMemory(previous, replacementId, endedAt) {
   return { ...previous, status: 'superseded', supersededBy: replacementId, updatedAt: endedAt, validTo: endedAt };
@@ -53,7 +55,7 @@ export function supersedeMemory(previous, replacementId, endedAt) {
 
 /**
  * @typedef {Object} MemoryProvenance
- * @property {'user_statement'|'shared_experience'|'model_inference'} origin
+ * @property {'user_statement'|'shared_experience'|'casual_chat'|'model_inference'} origin
  * @property {string} speaker
  * @property {'direct'|'group'} channel
  * @property {string} timestamp ISO timestamp
@@ -81,7 +83,7 @@ export function validateMemoryEntry(entry) {
   if (!MemoryKinds.includes(entry.kind)) return false;
   if (!MemoryScopes.includes(entry.scope)) return false;
   if (!entry.content || typeof entry.content !== 'string') return false;
-  if (typeof entry.confidence !== 'number' || entry.confidence < 0 || entry.confidence > 1) return false;
+  if (!Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1) return false;
   if (!MemoryStatuses.includes(entry.status)) return false;
   if (entry.importance !== undefined &&
       !(Number.isFinite(entry.importance) && entry.importance >= 0 && entry.importance <= 1)) return false;

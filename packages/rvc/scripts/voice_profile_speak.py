@@ -54,7 +54,7 @@ async def save_edge_dry(text, voice, rate, dry, track_punctuation):
 
 
 def synthesize_dry(profile, text, rate, dry, track_punctuation):
-    voice = profile.get('ttsVoice', 'zh-CN-XiaoyiNeural')
+    voice = profile.get('ttsVoice', 'zh-CN-XiaoxiaoNeural')
     command = profile.get('ttsCommand')
     if not command:
         return dry, asyncio.run(save_edge_dry(text, voice, rate, dry, track_punctuation))
@@ -82,6 +82,7 @@ def main():
     parser.add_argument('--text')
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--rate', help='Edge TTS rate, e.g. +8%%; text input only')
+    parser.add_argument('--tts-voice', help='Override the dry TTS voice for this utterance')
     parser.add_argument('--pitch', type=int, choices=[0, -4])
     parser.add_argument('--brightness', type=float)
     parser.add_argument('--dry-only', action='store_true', help='Render mono 16kHz dry WAV without loading RVC')
@@ -122,6 +123,8 @@ def main():
     if not args.input:
         if not args.text or not args.text.strip():
             raise ValueError('--input or --text is required')
+        if args.tts_voice is not None:
+            profile['ttsVoice'] = args.tts_voice
         dry, punctuation = synthesize_dry(profile, args.text, rate, dry, args.dry_only)
     if args.dry_only:
         subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',

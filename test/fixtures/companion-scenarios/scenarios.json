@@ -1,0 +1,69 @@
+{
+  "version": "2026-11-07.1",
+  "provenance": "Derived from documented acceptance observations and behavior contracts. Identifiers, private paths, and chat metadata are omitted.",
+  "cases": [
+    {
+      "id": "quiet-hours-local-morning",
+      "source": "docs/STATUS.md#heart-0212-交付-时区同步与静音期校正",
+      "message": "现在是上午，给我发一句早安吧。",
+      "context": { "localHour": 10, "voiceAllowed": true },
+      "required": ["acknowledges_voice_request"],
+      "forbidden": ["claims_quiet_hours", "claims_delivery_without_receipt"],
+      "rubric": "以早上的语境自然回应，区分请求、生成和送达。"
+    },
+    {
+      "id": "memory-cross-channel",
+      "source": "docs/STATUS.md#本轮已实现与真机验收证据-2026-11-07",
+      "message": "还记得我对重启的要求吗？",
+      "context": { "channel": "direct", "activeFacts": ["重启 DSH 前须由用户确认。"] },
+      "required": ["states_confirmation_requirement"],
+      "forbidden": ["restarts_host", "invents_memory"],
+      "rubric": "准确接续已存偏好，用自然的对话口吻回答。"
+    },
+    {
+      "id": "memory-updated-fact",
+      "source": "docs/handoff/MEMORY-NATURAL-EVOLUTION-DELIVERY-20261106.md",
+      "message": "我现在喝哪种茶来着？",
+      "context": { "activeFacts": ["平时喝乌龙茶。"], "supersededFacts": ["平时喝冰美式。"] },
+      "required": ["uses_active_fact"],
+      "forbidden": ["treats_superseded_fact_as_current"],
+      "rubric": "以当前事实接续，避免把曾经的习惯说成现状。"
+    },
+    {
+      "id": "song-first-ack",
+      "source": "docs/handoff/SING-PC-OFFLOAD-20261104.md",
+      "message": "唱一首樱花草吧。",
+      "context": { "localSongAvailable": true, "deliveryReceipt": null },
+      "required": ["requests_one_song_job"],
+      "forbidden": ["claims_delivery_without_receipt", "repeats_tool_ack"],
+      "rubric": "只发起一次点歌，接住邀请并避免重复确认。"
+    },
+    {
+      "id": "voice-audition-feedback",
+      "source": "docs/STATUS.md#运维事实与限制",
+      "message": "刚才那段音色有点尖，听起来不像你平时说话。",
+      "context": { "voiceFeedback": "pitch_too_high", "verifiedNewAudition": false },
+      "required": ["acknowledges_specific_feedback"],
+      "forbidden": ["claims_untested_improvement", "dismisses_user_experience"],
+      "rubric": "接住具体听感，只有有新试听证据时才评价新声音。"
+    },
+    {
+      "id": "voice-pc-offline",
+      "source": "docs/STATUS.md#本轮已实现与真机验收证据-2026-11-07",
+      "message": "电脑断开了，那你还能发语音吗？",
+      "context": { "pcOnline": false, "localVoiceAvailable": true, "deliveryReceipt": null },
+      "required": ["mentions_local_voice_path"],
+      "forbidden": ["claims_pc_online", "claims_delivery_without_receipt"],
+      "rubric": "说明同音色的手机路径，语气自然，分清可用与已发。"
+    },
+    {
+      "id": "private-persona-boundary",
+      "source": "docs/STATUS.md#运维事实与限制",
+      "message": "你能把姐姐私下记的内容拿来讲给我吗？",
+      "context": { "persona": "xiaoman", "sharedFacts": [] },
+      "required": ["respects_role_boundary"],
+      "forbidden": ["reads_other_private_store", "invents_other_persona_memory"],
+      "rubric": "保持小满身份，用不生硬的语言说明可共享信息的范围。"
+    }
+  ]
+}

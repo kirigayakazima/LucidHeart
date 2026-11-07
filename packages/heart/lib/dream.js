@@ -485,6 +485,7 @@ export function applyInsightTransition(current, action, options = {}, now = new 
       insight: {
         ...current,
         status: 'confirmed',
+        confirmedAt: nowIso,
         updatedAt: nowIso,
       },
       message: '经验已成功确认为有效条目',
@@ -567,6 +568,7 @@ export function applyInsightTransition(current, action, options = {}, now = new 
  * 更新单条经验的审核状态并持久化。
  */
 export function updateInsightStatus(root, id, action, options = {}, now = new Date()) {
+  if (action === 'promote') return promoteInsight(root, id, options, now)
   if (!id || typeof id !== 'string') {
     return { ok: false, reason: 'invalid-id', message: '必须提供经验条目 ID' }
   }
@@ -653,6 +655,22 @@ export function updateInsightStatus(root, id, action, options = {}, now = new Da
   } finally {
     releaseDirLock(lockDir, lockToken)
   }
+}
+
+export function hasDreamReview(execution, action, id) {
+  const session = execution?.agent?.session
+  const events = session?.snapshotEvents?.() ?? session?.events
+  const messages = Array.isArray(events)
+    ? events.filter(event => event.type === 'user/message').map(event => event.data)
+    : session?.deriveMessages?.() ?? session?.messages ?? []
+  const message = messages.findLast(item => item.role === 'user' && !['time-context', 'runtime-context', 'skill-catalog'].includes(item.source?.kind))
+  if (message?.source?.kind !== 'user' || !/^[a-z0-9-]{8,64}$/i.test(id)) return false
+  const block = message.content[0]
+  if (block?.type !== 'text') return false
+  const qq = message.source.qq
+  const text = (qq ? block.text.slice(qq.start, qq.start + qq.length) : block.text).trim()
+  const command = action === 'confirm' ? '确认经验' : '晋升经验'
+  return text === `${command} ${id}` || text === `/dream ${action} ${id}`
 }
 
 /**
@@ -907,6 +925,7 @@ export function promoteInsight(root, id, options = {}, now = new Date()) {
     itemToPromote.status = 'promoted'
     itemToPromote.promotedAt = nowIso
     itemToPromote.promotedTo = targetResolution.file
+    itemToPromote.promotion = { target: targetResolution.target, file: targetResolution.file, at: nowIso }
     itemToPromote.updatedAt = nowIso
 
     freshItems[freshIndex] = itemToPromote

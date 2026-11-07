@@ -2,11 +2,17 @@
 // 运行在手机 DSHA 侧，桥接 PC Gateway 暴露的 MCP 视觉与安全文件能力，
 // 并基于 Heart Protocol v1 向 Heart 汇报 PC 在线/离线与设备感官观察。
 
-let defineTool = (t) => t
+let compileTool = (t) => t
 try {
   const dt = await import('@deepseek-ai/dsh-tools')
-  if (typeof dt.defineTool === 'function') defineTool = dt.defineTool
+  if (typeof dt.defineTool === 'function') compileTool = dt.defineTool
 } catch {}
+
+function defineTool(spec) {
+  return compileTool({ ...spec, async execute(...args) {
+    return JSON.parse(JSON.stringify(await spec.execute(...args)))
+  } })
+}
 
 let z = null
 try {

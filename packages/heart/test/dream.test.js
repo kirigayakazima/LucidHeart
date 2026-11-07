@@ -15,6 +15,7 @@ import {
   updateInsightStatus,
   applyInsightTransition,
   promoteInsight,
+  hasDreamReview,
   resolvePromotionTarget,
   DREAM_DIR,
   INSIGHTS_FILE,
@@ -35,6 +36,37 @@ import {
 function tmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'heart-dream-test-'))
 }
+
+test('Dream review uses the current user slice and commits a durable Voice receipt', t => {
+  const root = tmp()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const { saved: [entry] } = saveInsights(root, [{
+    type: 'observation', category: 'communication', statement: '先给短句，再解释背景',
+  }], { session: 'review-session', turnCount: 2 })
+  const id = entry.id.slice(0, 8)
+  const command = `确认经验 ${id}`
+  const prefix = `引用消息：${command}\n`
+  const message = { role: 'user', source: { kind: 'user', qq: { start: prefix.length, length: 2 } },
+    content: [{ type: 'text', text: prefix + '继续' }] }
+  const exec = { agent: { session: { messages: [message] } } }
+  assert.equal(hasDreamReview(exec, 'confirm', id), false)
+  assert.equal(promoteInsight(root, id, { commit: true }).ok, false)
+  assert.doesNotMatch(readVoiceLearned(root), /先给短句/)
+  message.source.qq.length = command.length
+  message.content[0].text = prefix + command
+  assert.equal(hasDreamReview(exec, 'confirm', id), true)
+  assert.equal(hasDreamReview(exec, 'promote', id), false)
+  assert.ok(updateInsightStatus(root, id, 'confirm').insight.confirmedAt)
+  assert.equal(updateInsightStatus(root, id, 'promote').isPreview, true)
+  message.source.qq.length = command.length
+  message.content[0].text = prefix + `晋升经验 ${id}`
+  assert.equal(hasDreamReview(exec, 'promote', id), true)
+  const promotion = promoteInsight(root, id, { commit: true })
+  assert.ok(promotion.committed)
+  assert.deepEqual(readInsights(root).items[0].promotion, { target: 'voice', file: 'body/voice-learned.md', at: promotion.insight.promotedAt })
+  assert.match(readVoiceLearned(root), /先给短句/)
+  assert.ok(promoteInsight(root, id, { commit: true }).alreadyPromoted)
+})
 
 // ---------------------------------------------------------------- 一、切片清洗与格式化测试
 test('1. filterSessionMessages：有效消息抽取、系统消息过滤、长消息截断与字符预算', () => {

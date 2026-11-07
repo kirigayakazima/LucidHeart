@@ -4,7 +4,7 @@
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak } from './runner.js'
 import { getOptionalService, getVoiceServices } from './services.js'
-import { findSong, renderSong } from './singing.js'
+import { findSong, renderSong } from './sing.js'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -34,7 +34,7 @@ export const Config = z
       modelsDir: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1').description('RVC 移动端 ONNX 权重与检索索引所在目录'),
       voiceProfile: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json').description('新音色配置文件路径；默认指向 feiyu-rvc-v1'),
       profilePython: z.string().default('').description('新音色运行环境的 Python 路径'),
-      defaultPitch: z.number().default(0).description('默认基准音高 (0 为活泼少女 255Hz, -4 为沉稳日常 210Hz)'),
+      defaultPitch: z.number().default(-4).description('默认基准音高 (0 为活泼少女 255Hz, -4 为沉稳日常 210Hz)'),
       defaultBrightness: z.number().default(0).description('默认高频补偿 (dB)'),
       mock: z.boolean().default(false).description('开发与测试模式 (不调用真实推理)'),
       autoSendQq: z.boolean().default(true).description('在 QQ 会话中调用时是否自动发送语音条'),
@@ -338,12 +338,17 @@ export function apply(ctx, config = {}) {
         }
 
         async function finish() {
-          await say('好呀，满宝来唱！我先用电脑准备伴奏和变声，顺利的话大约一分钟哦～')
+          let progress = say('满宝去换装准备啦，正在切伴奏哦～')
           signal.throwIfAborted()
+          job.onStage = stage => {
+            if (stage === 'rvc') progress = progress.then(() => say('伴奏准备好啦，满宝开始变声录歌咯～'))
+          }
           let rendered
           try {
-            rendered = await renderSong(job, () => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。'))
+            rendered = await renderSong(job, () => progress.then(() => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。')))
+            await progress
           } catch (error) {
+            await progress
             if (!signal.aborted) {
               console.warn(`[@dsh/rvc] 唱歌任务 ${jobId} 失败:`, error.message)
               await say('满宝这次没能把歌合成出来，等电脑连好我们再试一次吧。')

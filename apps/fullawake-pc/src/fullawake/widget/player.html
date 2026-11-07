@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LucidHeart 播放时钟</title>
+<style>
+  body { color: #eee8f9; background: #211b2f; margin: 4rem auto; padding: 0 1rem; max-width: 34rem; font: 16px system-ui; }
+  input, audio { display: block; margin: 1.5rem 0; width: 100%; }
+  p { color: #d3c6e2; }
+</style>
+<h1>LucidHeart 播放时钟</h1>
+<p>选择本地音频，桌面挂件会随实际播放进度和响度动起来。</p>
+<input id="file" type="file" accept="audio/*" aria-label="选择本地音频">
+<audio id="audio" controls></audio>
+<p id="status" role="status">等待连接挂件</p>
+<script type="module" src="/player.mjs"></script>
+</html>

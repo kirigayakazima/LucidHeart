@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runProfileSpeak, readVoiceProfile, renderDryVoice } from './voice-profile.js'
 import { voiceContract, saveOffloadAudio, offloadDryVoice, requestPcVoice } from './offload.js'
+import { DEFAULT_TTS_VOICE } from './acoustic.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -212,11 +213,12 @@ async function synthesize(params) {
     }
     const pitch = acoustic?.pitch ?? profile.pitch
     if (![0, -4].includes(pitch)) throw new Error('RVC pitch must be 0 or -4')
-    const effective = { ...profile, pitch,
+    const ttsVoice = profile.id === 'feiyu-rvc-v1' ? acoustic?.ttsVoice ?? DEFAULT_TTS_VOICE : profile.ttsVoice
+    const effective = { ...profile, pitch, ttsVoice,
       brightness: acoustic?.brightness ?? profile.brightness, ttsRate: acoustic?.rate ?? profile.ttsRate }
     const feiyuContract = profile.id === 'feiyu-rvc-v1' ? voiceContract(effective) : null
     if (feiyuContract && profile.index !== 'voice.mobile.index') throw new Error('Invalid Feiyu retrieval index')
-    const localParams = { ...params, voiceProfile: profilePath }
+    const localParams = { ...params, voiceProfile: profilePath, acoustic: { ...acoustic, ttsVoice } }
     const offload = { attempted: false, status: 'unavailable' }
     let dir, input
     try {
@@ -248,7 +250,7 @@ async function synthesize(params) {
             params.signal?.throwIfAborted()
             saved = saveOffloadAudio(result, contract, outWav)
           }
-          return { ...saved, durationMs: Date.now() - started, acoustic: { ...acoustic, ...saved.acoustic } }
+          return { ...saved, durationMs: Date.now() - started, acoustic: { ...acoustic, ...saved.acoustic, ttsVoice: contract.settings.ttsVoice } }
         } catch (error) {
           params.signal?.throwIfAborted()
           offload.status = 'failed'

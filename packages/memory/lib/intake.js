@@ -1,7 +1,7 @@
 import { MemoryOrigins } from './types.js';
+import { IntakeWeights } from './schema.js';
 
 const durableKinds = ['preference', 'relationship', 'episodic', 'fact'];
-const confidenceByOrigin = { user_statement: 1, shared_experience: 0.85, model_inference: 0.35 };
 const routine = new Set(['早', '早安', '早上好', '晚安', '晚上好', '你好', '嗨', '哈喽', '在吗',
   '签到', '打卡', '早安打卡', '晚安打卡', '谢谢', '哈哈', 'hello', 'hi', 'good morning', 'good night']);
 function isRoutine(text) {
@@ -27,7 +27,7 @@ export function registerIntake(registerTool, memory, scope, currentInput) {
     parameters: {
       content: { type: 'string', required: true, description: '一句独立、简短的事实，最多 90 字，群聊中写明当事人' },
       kind: { type: 'string', required: true, enum: durableKinds, description: 'fact 稳定事实；preference 稳定偏好；relationship 长期约定；episodic 里程碑' },
-      origin: { type: 'string', required: true, enum: MemoryOrigins, description: '用户直接陈述、对话中明确的共同经历、或基于本轮证据的推断' },
+      origin: { type: 'string', required: true, enum: MemoryOrigins, description: '直接陈述、明确共同经历、低置信度闲聊线索或基于本轮证据的推断' },
       evidence: { type: 'string', required: true, description: '本轮当前发言中支持这条记忆的最短原话片段，最多 120 字' },
       importance: { type: 'number', description: '长期影响（0–1），独立于对来源的置信度，缺省 0.75' },
     },
@@ -45,7 +45,7 @@ export function registerIntake(registerTool, memory, scope, currentInput) {
           !Number.isFinite(importance) || importance < 0 || importance > 1) return { stored: false };
 
       const entry = memory.intake({
-        content: fact, kind, scope, importance, confidence: confidenceByOrigin[origin],
+        content: fact, kind, scope, importance, confidence: IntakeWeights[origin],
         source: { sessionId: exec.agent.id, channel: 'qq', evidenceText: quote },
         provenance: {
           origin, channel: input.channel, timestamp: input.timestamp,

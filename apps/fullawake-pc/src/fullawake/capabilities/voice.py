@@ -15,6 +15,7 @@ import wave
 
 from fullawake.core.config import config
 from fullawake.capabilities.voice_artifacts import VoiceArtifacts
+from fullawake.capabilities.voice_sing import render_song
 
 ASSETS = ('model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index')
 DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio': .3,
@@ -356,7 +357,7 @@ class VoiceCompute:
                 return c
         return None
 
-    async def process_singing_pipeline(self, task: str, audio_bytes: bytes, audio_format: str = "m4a", pitch: int = 0) -> dict:
+    async def process_singing_pipeline(self, task: str, audio_bytes: bytes, audio_format: str = "m4a", pitch: int = 0, *, progress=None) -> dict:
         if not config.voice_enabled:
             raise ValueError('VOICE_DISABLED')
         if not audio_bytes or len(audio_bytes) < 100:
@@ -380,137 +381,11 @@ class VoiceCompute:
         cache = self.artifacts
         with cache.job(cache.task_dir('singing', clean_task)) as destination:
             work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
-            return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger)
+            callbacks = {'progress': progress} if progress is not None else {}
+            return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger, **callbacks)
 
-    async def _sing(self, clean_task, audio_bytes, audio_format, pitch, root, destination, logger):
-        clean_fmt = audio_format.lower() if audio_format.lower() in ('m4a', 'mp3', 'wav', 'flac') else 'm4a'
-        in_file = root / f"input.{clean_fmt}"
-        in_file.write_bytes(audio_bytes)
-
-        python = Path(r"C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe")
-        if not python.is_file():
-            python = Path(config.voice_python)
-
-        worker_env = dict(os.environ)
-        torch_lib = r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib'
-        worker_env['PATH'] = torch_lib + os.pathsep + worker_env.get('PATH', '')
-        worker_env['PYTHONPATH'] = r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages;D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages;D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone'
-
-        started = time.monotonic()
-        vocals_wav = root / "vocals.wav"
-        bgm_wav = root / "no_vocals.wav"
-
-        # Stage 1: Demucs Separation on GPU
-        if not vocals_wav.is_file() or not bgm_wav.is_file():
-            logger.info("[Singing] Stage 1: Running Demucs GPU separation for %s...", clean_task)
-            out_demucs_dir = root / "demucs_out"
-            out_demucs_dir.mkdir(parents=True, exist_ok=True)
-            cmd_sep = [
-                str(python), "-m", "demucs.separate",
-                "-n", "htdemucs",
-                "--two-stems", "vocals",
-                "-o", str(out_demucs_dir),
-                str(in_file),
-            ]
-            proc_sep = await asyncio.create_subprocess_exec(
-                *cmd_sep,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=worker_env,
-            )
-            stdout_sep, stderr_sep = await communicate(proc_sep, timeout=300)
-            if proc_sep.returncode != 0:
-                logger.error("Singing Demucs failed: %s", stderr_sep.decode('utf8', 'replace')[-500:])
-                raise ValueError('VOICE_SEPARATION_FAILED')
-            found_voc = list(out_demucs_dir.rglob("vocals.wav"))
-            found_bgm = list(out_demucs_dir.rglob("no_vocals.wav"))
-            if not found_voc or not found_bgm:
-                raise ValueError('VOICE_SEPARATION_OUTPUT_MISSING')
-            vocals_wav.write_bytes(found_voc[0].read_bytes())
-            bgm_wav.write_bytes(found_bgm[0].read_bytes())
-
-        t_sep = time.monotonic() - started
-        logger.info("[Singing] Stage 1 completed in %.2fs", t_sep)
-
-        # Stage 2: RVC Full-Song GPU Conversion
-        logger.info("[Singing] Stage 2: Running RVC GPU conversion for %s (pitch=%d)...", clean_task, pitch)
-        t_rvc_start = time.monotonic()
-        voc_new_wav = root / "voc_new.wav"
-        profile_path = Path(config.voice_profile).resolve(strict=True)
-        models_dir = str(profile_path.parent)
-        index_path = str(profile_path.parent / "voice.mobile.index")
-
-        rvc_script = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone' / 'rvc_onnx.py'
-        if not rvc_script.is_file():
-            rvc_script = Path(r'D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone\rvc_onnx.py')
-
-        cmd_rvc = [
-            str(python), "-u", str(rvc_script),
-            str(vocals_wav),
-            "--models_dir", models_dir,
-            "--output", str(voc_new_wav),
-            "--work_dir", str(root / ".rvc_work"),
-            "--pitch", str(pitch),
-            "--segment_seconds", "15",
-            "--threads", "4",
-            "--provider", "CUDAExecutionProvider",
-        ]
-        if Path(index_path).is_file():
-            cmd_rvc.extend(["--index-path", index_path, "--index-ratio", "0.3"])
-
-        proc_rvc = await asyncio.create_subprocess_exec(
-            *cmd_rvc,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=worker_env,
+    async def _sing(self, clean_task, audio_bytes, audio_format, pitch, root, destination, logger, *, progress=None):
+        return await render_song(
+            self.artifacts, communicate, clean_task, audio_bytes, audio_format, pitch,
+            root, destination, logger, progress=progress,
         )
-        stdout_rvc, stderr_rvc = await communicate(proc_rvc, timeout=300)
-        if proc_rvc.returncode != 0 or not voc_new_wav.is_file():
-            logger.error("Singing RVC failed: %s", stderr_rvc.decode('utf8', 'replace')[-500:])
-            raise ValueError('VOICE_RVC_CONVERSION_FAILED')
-
-        t_rvc = time.monotonic() - t_rvc_start
-        logger.info("[Singing] Stage 2 completed in %.2fs", t_rvc)
-
-        # Stage 3: Mixing to final MP3
-        logger.info("[Singing] Stage 3: Mixing to MP3 for %s...", clean_task)
-        t_mix_start = time.monotonic()
-        final_mp3 = root / 'mix.mp3'
-        mix_script = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone' / 'mix.py'
-        if not mix_script.is_file():
-            mix_script = Path(r'D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone\mix.py')
-
-        cmd_mix = [
-            str(python), str(mix_script),
-            str(voc_new_wav), str(bgm_wav),
-            str(final_mp3),
-        ]
-        proc_mix = await asyncio.create_subprocess_exec(
-            *cmd_mix,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=worker_env,
-        )
-        stdout_mix, stderr_mix = await communicate(proc_mix, timeout=300)
-        if proc_mix.returncode != 0 or not final_mp3.is_file():
-            logger.error("Singing mix failed: %s", stderr_mix.decode('utf8', 'replace')[-500:])
-            raise ValueError('VOICE_MIX_FAILED')
-
-        published = final_mp3.replace(destination / f'song_{clean_task}.mp3')
-        t_mix = time.monotonic() - t_mix_start
-        total_elapsed = time.monotonic() - started
-        logger.info("[Singing] All stages completed in %.2fs (sep=%.1fs, rvc=%.1fs, mix=%.1fs)", total_elapsed, t_sep, t_rvc, t_mix)
-
-        return {
-            "ok": True,
-            "task": clean_task,
-            "elapsedTotalSeconds": round(total_elapsed, 2),
-            "stageSeconds": {
-                "separation": round(t_sep, 2),
-                "rvc_gpu": round(t_rvc, 2),
-                "mixing": round(t_mix, 2),
-            },
-            "downloadUrl": f"/v1/voice/sing/download/{clean_task}",
-            "artifactId": self.artifacts.artifact_id(published),
-            "mode": "pc_gpu_pipeline",
-        }

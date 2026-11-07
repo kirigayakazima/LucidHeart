@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LucidHeart 实时语音沙盒</title>
+<style>
+  body { color: #eee8f9; background: #211b2f; margin: 3rem auto; padding: 0 1rem; max-width: 43rem; font: 16px system-ui; line-height: 1.65; }
+  button, input { margin: .3rem .4rem .3rem 0; }
+  section { padding: 1rem; margin: 1rem 0; background: #302641; border-radius: .75rem; }
+  output { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+<h1>LucidHeart 实时语音沙盒</h1>
+<p>显式开启麦克风，然后播放本地音频。在播放期间开口，可以观察 Silero 检出、Epoch 更新和本地停播。</p>
+<section>
+  <button id="connect">开启麦克风</button>
+  <button id="disconnect" disabled>断开</button>
+  <output id="status" role="status">未连接</output>
+</section>
+<section>
+  <input id="file" type="file" accept="audio/*" aria-label="选择播放音频">
+  <button id="play" disabled>播放</button>
+  <button id="stop" disabled>停播</button>
+  <output id="transcript"></output>
+</section>
+<section>
+  <output id="metrics">等待测量</output>
+  <button id="export">导出测量 JSON</button>
+</section>
+<script type="module" src="/client.js"></script>
+</html>

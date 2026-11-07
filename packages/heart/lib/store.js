@@ -167,9 +167,9 @@ export function getHeartTimeZone(root) {
 
 const formatterCache = new Map()
 
-export function getZonedParts(date = new Date(), timeZone = getHeartTimeZone()) {
+export function getZonedParts(date = new Date(), timeZone = 'Asia/Shanghai') {
   const d = date instanceof Date && !isNaN(date.getTime()) ? date : new Date()
-  const tz = timeZone || getHeartTimeZone()
+  const tz = timeZone || 'Asia/Shanghai'
   try {
     let fmt = formatterCache.get(tz)
     if (!fmt) {
@@ -198,15 +198,9 @@ export function getZonedParts(date = new Date(), timeZone = getHeartTimeZone()) 
       minute: map.minute,
       second: map.second,
     }
-  } catch {
-    return {
-      year: d.getFullYear(),
-      month: d.getMonth() + 1,
-      day: d.getDate(),
-      hour: d.getHours(),
-      minute: d.getMinutes(),
-      second: d.getSeconds(),
-    }
+  } catch (error) {
+    if (tz === 'Asia/Shanghai') throw error
+    return getZonedParts(d, 'Asia/Shanghai')
   }
 }
 

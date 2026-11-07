@@ -22,7 +22,8 @@ function harness(t) {
     const tool = tools.get(name)
     const value = await tool.execute(args, exec)
     // This is the same exported validator used by ToolRuntime.createSuccessResult.
-    const violations = validateJsonSchemaValue(tool.output.schema, JSON.parse(JSON.stringify(value)), 'value')
+    assert.deepEqual(value, JSON.parse(JSON.stringify(value)), `${name} output must round-trip as lossless JSON`)
+    const violations = validateJsonSchemaValue(tool.output.schema, value, 'value')
     assert.deepEqual(violations, [], `${name} output contract: ${violations.join('; ')}`)
     const rendered = tool.output.render(args, value)
     assert.equal(rendered[0].type, 'text')

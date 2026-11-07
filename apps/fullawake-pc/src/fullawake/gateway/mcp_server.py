@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query, s
 from starlette.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
+from fullawake import __version__
 
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.capabilities.desktop_vision import DesktopVisionCapability
@@ -57,7 +58,7 @@ class FullAwakeMCPGateway:
         self.app = FastAPI(
             title="FullAwake Gateway",
             description="Sensory and embodiment bridge for Xiaoman (DSHA)",
-            version="0.2.1",
+            version=__version__,
             lifespan=lifespan,
         )
         self.capabilities: List[BaseCapability] = []
@@ -94,7 +95,7 @@ class FullAwakeMCPGateway:
         @app.get("/health")
         async def health():
             """Unauthenticated health check."""
-            return {"status": "ok", "service": "fullawake-pc-bridge", "version": "0.2.1"}
+            return {"status": "ok", "service": "fullawake-pc-bridge", "version": __version__}
 
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
@@ -171,7 +172,8 @@ class FullAwakeMCPGateway:
 
         @app.post('/v1/voice/sing', dependencies=[Depends(verify_token)])
         async def voice_sing_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a'),
-                                      pitch: int = Query(0), heartbeat: bool = Query(False)):
+                                      pitch: int = Query(0), heartbeat: bool = Query(False),
+                                      progress: bool = Query(False)):
             if not config.voice_enabled:
                 raise HTTPException(status_code=503, detail='VOICE_DISABLED')
             if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
@@ -181,9 +183,12 @@ class FullAwakeMCPGateway:
                 body.extend(chunk)
                 if len(body) > 60 * 1024 * 1024:
                     raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
+            stages = asyncio.Queue()
+
             async def generate_song():
                 try:
-                    return await self.voice.process_singing_pipeline(task, bytes(body), format, pitch)
+                    callbacks = {'progress': stages.put_nowait} if progress else {}
+                    return await self.voice.process_singing_pipeline(task, bytes(body), format, pitch, **callbacks)
                 except (ValueError, OSError, TimeoutError) as error:
                     logger.exception("Voice singing pipeline exception: %s", error)
                     code = str(error)
@@ -191,27 +196,42 @@ class FullAwakeMCPGateway:
                         code = 'VOICE_SINGING_FAILED'
                     raise HTTPException(status_code=422, detail=code) from error
 
-            if not heartbeat:
+            if not heartbeat and not progress:
                 return await generate_song()
 
             async def stream_result():
                 job = asyncio.create_task(generate_song())
                 try:
+                    stage = None
                     while not job.done():
-                        # JSON whitespace keeps the connection alive without changing the result shape.
-                        yield b'\n'
-                        await asyncio.wait({job}, timeout=5)
+                        if progress:
+                            try:
+                                stage = await asyncio.wait_for(stages.get(), timeout=1)
+                            except asyncio.TimeoutError:
+                                if job.done():
+                                    break
+                                yield (json.dumps({'type': 'heartbeat', 'stage': stage}) + '\n').encode()
+                            else:
+                                yield (json.dumps({'type': 'stage', 'stage': stage}) + '\n').encode()
+                        else:
+                            yield b'\n'
+                            await asyncio.wait({job}, timeout=5)
                     try:
                         result = job.result()
                     except HTTPException as error:
                         result = {'ok': False, 'error': error.detail}
-                    yield json.dumps(result).encode()
+                    if progress:
+                        while not stages.empty():
+                            yield (json.dumps({'type': 'stage', 'stage': stages.get_nowait()}) + '\n').encode()
+                        yield (json.dumps({'type': 'result', 'result': result}) + '\n').encode()
+                    else:
+                        yield json.dumps(result).encode()
                 finally:
                     if not job.done():
                         job.cancel()
                     await asyncio.shield(asyncio.gather(job, return_exceptions=True))
 
-            return StreamingResponse(stream_result(), media_type='application/json')
+            return StreamingResponse(stream_result(), media_type='application/x-ndjson' if progress else 'application/json')
 
         @app.get('/v1/voice/sing/download/{task}', dependencies=[Depends(verify_token)])
         async def voice_sing_download_endpoint(task: str):
@@ -307,7 +327,7 @@ class FullAwakeMCPGateway:
                     },
                     "serverInfo": {
                         "name": "fullawake-pc-bridge",
-                        "version": "0.2.1",
+                        "version": __version__,
                     },
                 },
             }

@@ -9,7 +9,7 @@
       "id": "@dsh/heart",
       "name": "Heart Core",
       "type": "subsystem",
-      "version": "0.21.2",
+      "version": "0.21.3",
       "layer": "Core",
       "source": "packages/heart",
       "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."
@@ -18,11 +18,11 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
-      "description": "PC sensory bridge, read-only desktop vision, and opt-in CPU ONNX voice compute with audio return."
+      "description": "PC sensory bridge, local desktop widget, and opt-in voice compute and singing."
     },
     "qq-plus": {
       "id": "@dsh/qq-plus",
@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.10",
+      "version": "0.2.12",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."
@@ -46,7 +46,7 @@
       "id": "@tencent-connect/dsh-qqbot",
       "name": "DSH QQBot Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "0.5.8",
+      "version": "0.5.9",
       "layer": "IM",
       "upstream": "https://github.com/tencent-connect/dsh-qqbot",
       "fork": "https://github.com/kirigayakazima/dsh-qqbot",
@@ -67,27 +67,27 @@
       "id": "dsh-bili-scroll",
       "name": "Bili Scroll Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "2.4.0-heart.2",
+      "version": "2.4.0-heart.3",
       "layer": "Habit",
       "upstream": "https://github.com/c1overzz/dsh-bili-scroll",
       "fork": "https://github.com/kirigayakazima/dsh-bili-scroll",
-      "description": "Bilibili duty inspection, evaluateActivity gating alignment, and 384-token contact sheet storyboard."
+      "description": "Bilibili duty, Heart gating, checkpointed co-viewing, and a text riddle."
     },
     "video-storyboard": {
       "id": "dsh-video-storyboard",
       "name": "Video Storyboard Sovereign Fork",
       "type": "sovereign_fork",
-      "version": "0.5.4",
+      "version": "0.5.5",
       "layer": "Sensory",
       "upstream": "https://github.com/SAOS-3624/dsh-video-storyboard",
       "fork": "https://github.com/kirigayakazima/dsh-video-storyboard",
-      "description": "Video frame contact sheet and visual zoom inspection tools."
+      "description": "Single-image 768px contact sheets and on-demand source cell inspection."
     },
     "sticker-look": {
       "id": "dsh-sticker-look",
       "name": "Sticker Look",
       "type": "package",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "layer": "Sensory",
       "source": "packages/sticker-look",
       "description": "Pure JS zero-dependency GIF frame decoder, contact sheet storyboard generator, and Heart Protocol v1 intent observer."
@@ -96,10 +96,19 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.4",
+      "version": "0.1.6",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."
+    },
+    "voice-duplex": {
+      "id": "@dsh/voice-duplex",
+      "name": "Voice Duplex Sandbox",
+      "type": "sandbox",
+      "version": "0.1.0",
+      "layer": "Sensory",
+      "source": "packages/voice-duplex",
+      "description": "Opt-in loopback audio sandbox with Silero ONNX, AEC, epoch interruption and latency capture."
     }
   },
   "externalTools": {

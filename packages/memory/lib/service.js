@@ -6,8 +6,11 @@ import path from 'node:path';
 import { generateMemoryId, supersedeMemory, validateMemoryEntry } from './types.js';
 import { MemoryStore } from './store.js';
 import { MemoryIndexer } from './indexer.js';
-import { formatCompactOutline, formatConversationProjection } from './budget.js';
+import { formatCompactOutline } from './budget.js';
+import { projectConversation } from './projection.js';
+import { isCandidateOrigin } from './schema.js';
 import { CommitmentLedger } from './commitments.js';
+import { ProjectLedger } from './projects.js';
 import { findContradictions } from './contradictions.js';
 
 export class MemoryService {
@@ -21,6 +24,7 @@ export class MemoryService {
     this.dataDir = dataDir;
     this.store = new MemoryStore(dataDir);
     this.commitments = new CommitmentLedger(this.store);
+    this.projects = new ProjectLedger(this.store);
     this.indexer = new MemoryIndexer(dbPath || path.join(dataDir, 'index.db'));
     try {
       this.initFromStore();
@@ -74,7 +78,7 @@ export class MemoryService {
 
   intake(params) {
     this.ensureProjections();
-    const candidate = params.provenance?.origin === 'model_inference';
+    const candidate = isCandidateOrigin(params.provenance?.origin);
     if (this.indexer.hasIntakeMatch(params.content, params.scope, candidate)) return;
     return this.#remember(params, true);
   }
@@ -99,7 +103,7 @@ export class MemoryService {
 
     const now = new Date().toISOString();
     // 置信度低于 0.6 且未经用户明确确认的，进入 candidate 状态 (不进入检索索引)
-    const inferred = provenance?.origin === 'model_inference';
+    const inferred = isCandidateOrigin(provenance?.origin);
     const status = !inferred && (confidence >= 0.6 || confirmed) ? 'active' : 'candidate';
 
     const entry = {
@@ -176,8 +180,7 @@ export class MemoryService {
 
   project(query, { scope = 'all', label } = {}) {
     this.ensureProjections();
-    const matches = this.indexer.search(query, { scope, limit: 8, projection: true });
-    return formatConversationProjection(matches, label);
+    return projectConversation(this.indexer, query, { scope, label });
   }
 
   /**
@@ -242,7 +245,9 @@ export class MemoryService {
     const t0 = Date.now();
     this.projectionsDirty = true;
     const commitments = new Map();
-    const entries = this.store.loadAllFromJournal(commitments);
+    const projects = new Map();
+    const entries = this.store.loadAllFromJournal(commitments, projects);
+    this.projects.entries = projects;
     this.indexer.rebuildIndex(entries.values());
     this.store.syncMarkdownView(this.indexer.getAllActive());
     this.commitments.entries = commitments;

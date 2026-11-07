@@ -337,14 +337,13 @@ test('验收 5: PC Capability 模拟（在线暴露能力，离线即时撤销�
   assert.equal(offlineCall2.code, 'ERR_PC_OFFLINE')
 })
 
-test('验收 6: 架构负荷度量（零新增模型工具，系统提示词零膨胀）', () => {
-  // 测量 Heart 0.20.0 导出的 tools 数量
+test('验收 6: 保留原有模型工具与协议边界，桌宠意图为显式可选项', () => {
   const src = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
   const toolMatches = Array.from(src.matchAll(/name:\s*['"](heart_[a-z0-9_]+)['"]/g)).map((m) => m[1])
   const uniqueTools = Array.from(new Set(toolMatches))
 
-  // 严格断言：工具数量正好是原来的 18 个，绝不为微内核协议暴露多余的 LLM 工具
-  assert.equal(uniqueTools.length, 18)
+  assert.equal(uniqueTools.filter(name => name !== 'heart_motion').length, 18)
+  assert.match(src, /process\.platform === 'win32' && config\.widgetSocket/)
   assert.ok(uniqueTools.includes('heart_mood'))
   assert.ok(uniqueTools.includes('heart_voice_learn'))
   assert.ok(uniqueTools.includes('heart_self'))

@@ -3,8 +3,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { dateOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts, getHeartTimeZone } from './store.js'
+import { canSpeak, consumeSpeak, dateOf, timeOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts } from './store.js'
 import { findActiveAgent } from './target.js'
+import { formatCommitmentCarePrompt } from './prompt.js'
 
 export const TRIGGER_DEFAULT = {
   lastTriggerAt: null,
@@ -12,7 +13,12 @@ export const TRIGGER_DEFAULT = {
   cooldownMinutes: 360,
 }
 
-const pad = (n) => String(n).padStart(2, '0')
+const HOUR = 60 * 60 * 1000
+
+function autonomousCooldownAt(state) {
+  const last = Math.max(Date.parse(state.lastIdleTurnAt) || 0, Date.parse(state.lastTriggerAt) || 0)
+  return last ? last + HOUR : 0
+}
 
 function trace(root, msg) {
   try {
@@ -47,7 +53,7 @@ export function writeTrigger(root, patch) {
  *   5. 距上次触发 >= triggerCooldownMinutes（默认 360）；
  *   6. 排除首次启动或断档重启（prev.at 距离当前超过 3 * pulseSeconds）。
  */
-export function shouldTriggerReturned({ prev, next, triggerState, config = {}, speakState = {}, now = new Date(), isStartup = false }) {
+export function shouldTriggerReturned({ prev, next, triggerState = {}, config = {}, speakState = {}, now = new Date(), isStartup = false }) {
   if (config.triggerOnReturn === false) {
     return { ok: false, reason: 'disabled' }
   }
@@ -72,7 +78,7 @@ export function shouldTriggerReturned({ prev, next, triggerState, config = {}, s
     return { ok: false, reason: 'not-from-away' }
   }
 
-  const tz = config.timeZone || getHeartTimeZone()
+  const tz = 'Asia/Shanghai'
   const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
   const quietTo = speakState?.quietTo || config.quietTo || '08:00'
   if (inQuietHours(now, quietFrom, quietTo, tz)) {
@@ -102,6 +108,9 @@ export function shouldTriggerReturned({ prev, next, triggerState, config = {}, s
       return { ok: false, reason: 'cooldown', diffMin: Math.floor(elapsedMinutes), cooldown }
     }
   }
+  if (now.getTime() < autonomousCooldownAt(triggerState)) {
+    return { ok: false, reason: 'cooldown', cooldown: 60 }
+  }
 
   return { ok: true, awayDuration }
 }
@@ -113,19 +122,16 @@ function idleBucket(now, timeZone) {
   return hour >= 8 ? IDLE_BUCKET_END_HOURS.findIndex((end) => hour < end) : -1
 }
 
-function idleRhythmAt(at, bucket, available) {
-  const end = new Date(at)
-  end.setHours(IDLE_BUCKET_END_HOURS[bucket], 0, 0, 0)
+function idleRhythmAt(at, bucket, available, timeZone) {
+  const { hour, minute, second } = getZonedParts(at, timeZone)
+  const midnight = at.getTime() - (hour * 3600 + minute * 60 + second) * 1000 - at.getUTCMilliseconds()
+  const end = midnight + IDLE_BUCKET_END_HOURS[bucket] * HOUR
   if (available > 1) {
     // 当前这一拍也占一个位置，用开拍时的余额把余下机会分散在桶内。
-    const interval = Math.max(60 * 60000, (end - at) / available)
-    return Math.min(at.getTime() + interval, end.getTime())
+    const interval = Math.max(HOUR, (end - at) / available)
+    return Math.min(at.getTime() + interval, end)
   }
-  if (bucket === 2) {
-    end.setDate(end.getDate() + 1)
-    end.setHours(8)
-  }
-  return end.getTime()
+  return bucket === 2 ? midnight + 32 * HOUR : end
 }
 
 /** 空闲自主回合：消息静默达到阈值，且当前作息时段与排程均允许时触发。 */
@@ -146,7 +152,7 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
     }
   }
 
-  const tz = config.timeZone || getHeartTimeZone()
+  const tz = 'Asia/Shanghai'
   const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
   const quietTo = speakState?.quietTo || config.quietTo || '08:00'
   const bucket = idleBucket(now, tz)
@@ -168,10 +174,11 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
   }
 
   const lastIdle = new Date(triggerState.lastIdleTurnAt)
-  const rhythmAt = triggerState.idleDate === today && dateOf(lastIdle) === today && idleBucket(lastIdle) === bucket
-    ? idleRhythmAt(lastIdle, bucket, bucketRemaining + 1)
+  const rhythmAt = Number.isFinite(lastIdle.getTime()) && triggerState.idleDate === today &&
+    dateOf(lastIdle, tz) === today && idleBucket(lastIdle, tz) === bucket
+    ? idleRhythmAt(lastIdle, bucket, bucketRemaining + 1, tz)
     : 0
-  const due = Math.max(Date.parse(triggerState.nextIdleAt) || 0, rhythmAt)
+  const due = Math.max(Date.parse(triggerState.nextIdleAt) || 0, rhythmAt, autonomousCooldownAt(triggerState))
   const dueAt = due ? new Date(due).toISOString() : null
   if (now.getTime() < due) {
     return { ok: false, reason: 'not-due', nextIdleAt: dueAt, diffMin: Math.ceil((due - now.getTime()) / 60000) }
@@ -181,18 +188,18 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
     return { ok: false, reason: 'too-soon', since, initial }
   }
 
-  const { counts } = idleCategoryState(triggerState, now)
+  const { counts } = idleCategoryState(triggerState, now, config)
   const remaining = idleCategoryRemaining(config, counts)
   if (remaining.length && remaining.every((c) => c.remaining <= 0)) {
     return { ok: false, reason: 'category-cap', remaining }
   }
 
-  return { ok: true, since, dueAt, minMinutes, cap, used, remaining, nextRhythmAt: idleRhythmAt(now, bucket, bucketRemaining) }
+  return { ok: true, since, dueAt, minMinutes, cap, used, remaining, nextRhythmAt: idleRhythmAt(now, bucket, bucketRemaining, tz) }
 }
 
 /** 今天各类别已用次数；跨日自动清零。 */
 export function idleCategoryState(triggerState = {}, now = new Date(), config = {}) {
-  const tz = config?.timeZone || getHeartTimeZone()
+  const tz = 'Asia/Shanghai'
   const today = dateOf(now, tz)
   const counts =
     triggerState.idleCategoryDate === today ? { ...(triggerState.idleCategoryCounts || {}) } : {}
@@ -225,7 +232,7 @@ export function recordIdleCategory(root, id, config = {}, now = new Date()) {
     return { ok: false, reason: 'unknown-category', categories: cats.map((c) => c.id) }
   }
   const state = readTrigger(root)
-  const { today, counts } = idleCategoryState(state, now)
+  const { today, counts } = idleCategoryState(state, now, config)
   const used = Number(counts[id]) || 0
   const dailyCap = Number(cat.dailyCap) || 0
   if (used >= dailyCap) {
@@ -251,14 +258,14 @@ export function scheduleNextIdle(root, minutes, config = {}, now = new Date()) {
 /**
  * 组装给模型的消息模板（供模型感知后自行决定开口内容）。
  */
-export function formatReturnedPrompt(awayDuration, now = new Date()) {
-  const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`
+export function formatReturnedPrompt(awayDuration, now = new Date(), timeZone = 'Asia/Shanghai') {
+  const timeStr = timeOf(now, timeZone)
   return `【感知】他离开了 ${awayDuration} 分钟，刚回来（现在 ${timeStr}）。手上有没做完的事就接着说；没有就别硬找话。`
 }
 
 /** 空闲自主回合的提示词：给方向，不逼它说话；下一次由它自己排。 */
 export function formatIdlePrompt(idleMinutes, now = new Date(), config = {}, remaining = []) {
-  const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`
+  const timeStr = timeOf(now, 'Asia/Shanghai')
   const min = Number(config.idleTurnMinMinutes) || 6
   const max = Number(config.idleTurnMaxMinutes) || 180
   const left = remaining
@@ -304,8 +311,21 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
       ? { ok: false, reason: 'returned-priority' }
       : shouldTriggerIdle({ next, triggerState, config, speakState, now })
 
+  const kind = returned.ok ? 'returned' : idle.ok ? 'idle' : null
+  if (!kind) return false
+  const timeZone = 'Asia/Shanghai'
+  const today = dateOf(now, timeZone)
+  const used = triggerState.idleDate === today ? Number(triggerState.idleCount) || 0 : 0
+  const cap = Number(config.idleTurnDailyCap) || 6
+  if (used >= cap) return false
+
+  const care = service && ctx.get?.('memory')?.commitments?.getActiveCommitmentCare?.(now, 'Asia/Shanghai')
+  if (care && (used >= 6 || next?.presence === 'asleep' ||
+      inQuietHours(now, '23:00', '08:00', 'Asia/Shanghai') || !canSpeak(dir, now).ok ||
+      !service.evaluateActivity({ intent: 'companion_care', category: 'chat' }).suitable)) return false
+
   // 当空闲条件成立时，发布 heart/idle 契约事件
-  if (idle && idle.ok) {
+  if (idle.ok && !care) {
     const idlePayload = {
       sinceMsgMin: idle.since,
       availableCategories: (idle.remaining || []).map((c) => c.id),
@@ -320,48 +340,52 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
     }
   }
 
-  const kind = returned.ok ? 'returned' : idle.ok ? 'idle' : null
-  if (!kind) {
-    return false
-  }
-
   const agent = findActiveAgent(ctx && ctx.agents, config.sessionsRoot)
   if (!agent || typeof agent.followup !== 'function') {
     trace(dir, 'trigger:skip no-agent')
     return false
   }
+  if (care && agent.status === 'running') return false
 
-  const prompt =
-    kind === 'returned'
-      ? formatReturnedPrompt(returned.awayDuration, now)
+  const prompt = care
+    ? formatCommitmentCarePrompt(kind, now)
+    : kind === 'returned'
+      ? formatReturnedPrompt(returned.awayDuration, now, timeZone)
       : formatIdlePrompt(idle.since, now, config, idle.remaining)
 
+  const message = createSelfMessage(prompt)
   try {
-    agent.followup(createSelfMessage(prompt))
+    if (care) service.commitmentCareTurn = { agentId: agent.id, messageId: message.id, commitmentId: care.id }
+    agent.followup(message)
+    const accounting = { idleDate: today, idleCount: used + 1, lastEvent: kind }
+    if (care && config.idleCategories?.some(category => category.id === 'chat')) {
+      const { counts } = idleCategoryState(triggerState, now, config)
+      counts.chat = (Number(counts.chat) || 0) + 1
+      Object.assign(accounting, { idleCategoryDate: today, idleCategoryCounts: counts })
+    }
     if (kind === 'returned') {
       writeTrigger(dir, {
+        ...accounting,
         lastTriggerAt: now.toISOString(),
-        lastEvent: 'returned',
         cooldownMinutes: Number(config.triggerCooldownMinutes) || 360,
       })
       trace(dir, 'trigger:returned to=' + agent.id + ' away=' + returned.awayDuration + 'm')
     } else {
-      const count = idle.used + 1
       const fallbackMinutes = Number(config.idleTurnDefaultMinutes) || 30
       writeTrigger(dir, {
-        lastEvent: 'idle',
+        ...accounting,
         lastIdleTurnAt: now.toISOString(),
-        idleDate: dateOf(now),
-        idleCount: count,
-        nextIdleAt: new Date(Math.max(now.getTime() + fallbackMinutes * 60000, idle.nextRhythmAt)).toISOString(),
+        nextIdleAt: new Date(Math.max(now.getTime() + Math.max(HOUR, fallbackMinutes * 60000), idle.nextRhythmAt)).toISOString(),
       })
       trace(
         dir,
-        'trigger:idle to=' + agent.id + ' idle=' + idle.since + 'm n=' + count + '/' + idle.cap
+        'trigger:idle to=' + agent.id + ' idle=' + idle.since + 'm n=' + accounting.idleCount + '/' + idle.cap
       )
     }
+    if (care) consumeSpeak(dir, now)
     return true
   } catch (error) {
+    if (care) service.commitmentCareTurn = null
     trace(dir, 'trigger:error ' + String((error && error.message) || error))
     return false
   }

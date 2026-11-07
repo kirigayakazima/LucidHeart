@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { tokenizeForFTS } from './tokenizer.js';
+import { getZonedParts } from './store.js';
 
 const day = 24 * 60 * 60 * 1000;
 const dateFormat = new Intl.DateTimeFormat('zh-CN', {
@@ -7,20 +8,34 @@ const dateFormat = new Intl.DateTimeFormat('zh-CN', {
   hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
 });
 
-function deadline(time = '') {
+function offsetAt(ms, timeZone) {
+  const { year, month, day, hour, minute, second } = getZonedParts(new Date(ms), timeZone);
+  return Date.UTC(year, month - 1, day, hour, minute, second) - Math.floor(ms / 1000) * 1000;
+}
+
+function deadline(time = '', timeZone = 'Asia/Shanghai') {
   const match = /^(\d{4}-\d{2}-\d{2})(?:T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.exec(time);
   if (!match) return NaN;
   const date = new Date(match[1]);
   if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== match[1]) return NaN;
-  if (time.length === 10) return Date.parse(`${time}T23:59:59.999+08:00`);
-  return Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(time) ? time : `${time}+08:00`);
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(time)) return Date.parse(time);
+  const wallTime = Date.parse(time.length === 10 ? `${time}T23:59:59.999Z` : `${time}Z`);
+  return wallTime - offsetAt(wallTime - offsetAt(wallTime, timeZone), timeZone);
+}
+
+function promptTitle(entry) {
+  return entry.title.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()
+    .replace(/[{}\[\]]/g, (char) => ({ '{': '｛', '}': '｝', '[': '［', ']': '］' })[char]);
+}
+
+export function formatCommitmentCare(entry) {
+  return `[主动生活关怀背景: 你之前与对方约定了「${promptTitle(entry)}」（时间: ${entry.targetTime || '近日'}）。打招呼时请自然问起进展，语气亲昵贴心，不要像系统通知。]`;
 }
 
 function reminder(entry) {
   const prefix = '[待续接的约定: ';
   const time = entry.targetTime.length === 10 ? entry.targetTime.slice(5) : dateFormat.format(deadline(entry.targetTime));
-  const title = entry.title.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()
-    .replace(/[{}\[\]]/g, (char) => ({ '{': '｛', '}': '｝', '[': '［', ']': '］' })[char]);
+  const title = promptTitle(entry);
   const text = `${entry.status === 'expired' ? '逾期 ' : ''}${time} ${title}`;
   const available = 40 - prefix.length - 1;
   const shortened = text.length <= available ? text : text.slice(0, available - 1).replace(/[\uD800-\uDBFF]$/, '') + '…';
@@ -44,10 +59,10 @@ export class CommitmentLedger {
     this.entries.set(entry.id, entry);
   }
 
-  get(id, now = Date.now()) {
+  get(id, now = Date.now(), timeZone = 'Asia/Shanghai') {
     const entry = this.entries.get(id);
     if (!entry) return;
-    const expired = entry.status === 'pending' && deadline(entry.targetTime) < now;
+    const expired = entry.status === 'pending' && deadline(entry.targetTime, timeZone) < now;
     return { ...entry, status: expired ? 'expired' : entry.status };
   }
 
@@ -84,24 +99,31 @@ export class CommitmentLedger {
     return { ...entry };
   }
 
-  project(now = Date.now()) {
+  /** Prefer the nearest upcoming deadline in 24h, then the nearest overdue one. */
+  getActiveCommitmentCare(now = new Date(), timeZone = 'Asia/Shanghai') {
+    const at = now.getTime();
     let next;
     let overdue;
     let earliest = Infinity;
     let latestPast = -Infinity;
     for (const entry of this.entries.values()) {
       if (!['pending', 'expired'].includes(entry.status)) continue;
-      const due = deadline(entry.targetTime);
-      if (due >= now && due <= now + day && due < earliest) {
+      const due = deadline(entry.targetTime, timeZone);
+      if (due >= at && due <= at + day && due < earliest) {
         earliest = due;
         next = entry.id;
-      } else if (due < now && due > latestPast) {
+      } else if (due < at && due > latestPast) {
         latestPast = due;
         overdue = entry.id;
       }
     }
     const id = next || overdue;
-    return id ? reminder(this.get(id, now)) : '';
+    return id ? this.get(id, at, timeZone) : null;
+  }
+
+  project(now = Date.now()) {
+    const entry = this.getActiveCommitmentCare(new Date(now));
+    return entry ? reminder(entry) : '';
   }
 
   find(query) {
