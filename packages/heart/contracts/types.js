@@ -2,7 +2,7 @@
 // 遵循零外部依赖原则，可在任何 Node.js / DSH 环境中运行。
 
 export const HEART_PROTOCOL_VERSION = '1.0.0'
-export const HEART_CORE_VERSION = '0.21.1'
+export const HEART_CORE_VERSION = '0.21.2'
 
 /** Cordis 事件名称契约 */
 export const HEART_EVENTS = Object.freeze({

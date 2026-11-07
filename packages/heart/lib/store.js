@@ -143,14 +143,83 @@ Linux 上的 Node 进程，跑着 DSH。
 `,
 }
 
-const pad = (n) => String(n).padStart(2, '0')
-
-export function dateOf(now = new Date()) {
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+// 同步进程级时区环境变量，保证底层 libc / V8 默认运行在 Asia/Shanghai (UTC+8)
+if (!process.env.TZ || process.env.TZ === 'UTC' || process.env.TZ === 'Etc/UTC') {
+  process.env.TZ = process.env.DSH_TIMEZONE || 'Asia/Shanghai'
 }
 
-export function timeOf(now = new Date()) {
-  return `${pad(now.getHours())}:${pad(now.getMinutes())}`
+let currentHeartTimeZone = 'Asia/Shanghai'
+
+export function setHeartTimeZone(tz) {
+  if (tz) currentHeartTimeZone = tz
+}
+
+export function getHeartTimeZone(root) {
+  if (process.env.DSH_TIMEZONE) return process.env.DSH_TIMEZONE
+  if (root) {
+    try {
+      const cfg = readHeartConfig(root)
+      if (cfg?.timeZone) return cfg.timeZone
+    } catch {}
+  }
+  return currentHeartTimeZone || 'Asia/Shanghai'
+}
+
+const formatterCache = new Map()
+
+export function getZonedParts(date = new Date(), timeZone = getHeartTimeZone()) {
+  const d = date instanceof Date && !isNaN(date.getTime()) ? date : new Date()
+  const tz = timeZone || getHeartTimeZone()
+  try {
+    let fmt = formatterCache.get(tz)
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+      formatterCache.set(tz, fmt)
+    }
+    const parts = fmt.formatToParts(d)
+    const map = {}
+    for (const p of parts) {
+      if (p.type !== 'literal') map[p.type] = Number(p.value)
+    }
+    return {
+      year: map.year,
+      month: map.month,
+      day: map.day,
+      hour: map.hour,
+      minute: map.minute,
+      second: map.second,
+    }
+  } catch {
+    return {
+      year: d.getFullYear(),
+      month: d.getMonth() + 1,
+      day: d.getDate(),
+      hour: d.getHours(),
+      minute: d.getMinutes(),
+      second: d.getSeconds(),
+    }
+  }
+}
+
+const pad = (n) => String(n).padStart(2, '0')
+
+export function dateOf(now = new Date(), timeZone) {
+  const p = getZonedParts(now, timeZone)
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}`
+}
+
+export function timeOf(now = new Date(), timeZone) {
+  const p = getZonedParts(now, timeZone)
+  return `${pad(p.hour)}:${pad(p.minute)}`
 }
 
 export function resolveRoot(root) {
@@ -1499,6 +1568,7 @@ export const DEFAULT_IDLE_CATEGORIES = [
 ]
 
 export const DEFAULT_CONFIG = {
+  timeZone: 'Asia/Shanghai',
   memoryMode: 'legacy',
   pulse: false,
   pulseSeconds: 60,
@@ -1579,19 +1649,21 @@ function minutesOf(text) {
 }
 
 /** 安静时段：跨午夜也成立（23:00–08:00）。 */
-export function inQuietHours(now, from, to) {
+export function inQuietHours(now = new Date(), from, to, timeZone) {
   const f = minutesOf(from)
   const t = minutesOf(to)
   if (f === null || t === null) return false
-  const cur = now.getHours() * 60 + now.getMinutes()
+  const p = getZonedParts(now, timeZone)
+  const cur = p.hour * 60 + p.minute
   return f <= t ? cur >= f && cur < t : cur >= f || cur < t
 }
 
 /** 今天还能不能说；说明理由，便于面板显示和自查。 */
 export function canSpeak(root, now = new Date()) {
   const state = readSpeak(root)
-  if (inQuietHours(now, state.quietFrom, state.quietTo)) return { ok: false, reason: 'quiet-hours', state }
-  const today = dateOf(now)
+  const tz = getHeartTimeZone(root)
+  if (inQuietHours(now, state.quietFrom, state.quietTo, tz)) return { ok: false, reason: 'quiet-hours', state }
+  const today = dateOf(now, tz)
   const used = state.lastSpokeDate === today ? state.usedToday : 0
   if (used >= state.level) return { ok: false, reason: 'budget', state: { ...state, usedToday: used } }
   return { ok: true, reason: 'ok', state: { ...state, usedToday: used } }
@@ -1599,7 +1671,8 @@ export function canSpeak(root, now = new Date()) {
 
 export function consumeSpeak(root, now = new Date()) {
   const state = readSpeak(root)
-  const today = dateOf(now)
+  const tz = getHeartTimeZone(root)
+  const today = dateOf(now, tz)
   const used = (state.lastSpokeDate === today ? state.usedToday : 0) + 1
   return writeSpeak(root, {
     usedToday: used,

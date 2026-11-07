@@ -361,3 +361,21 @@ test('待发条目记住说这句话的窗口', () => {
   enqueueSay(root, '不知道在哪个窗口说的')
   assert.equal(readOutbox(root)[1].session, undefined)
 })
+
+test('时区钩子：UTC 时间戳在 Asia/Shanghai 下准确计算昼夜与日期', async () => {
+  const { getZonedParts, dateOf, timeOf, inQuietHours } = await import('../lib/store.js')
+  // 模拟手机端以 UTC 运行：2026-11-07T02:50:00Z（对应北京时间上午 10:50）
+  const utcMorning = new Date('2026-11-07T02:50:00.000Z')
+  const parts = getZonedParts(utcMorning, 'Asia/Shanghai')
+  assert.equal(parts.hour, 10)
+  assert.equal(parts.minute, 50)
+  assert.equal(parts.day, 7)
+  assert.equal(dateOf(utcMorning, 'Asia/Shanghai'), '2026-11-07')
+  assert.equal(timeOf(utcMorning, 'Asia/Shanghai'), '10:50')
+  // 绝不误判为安静时段（23:00 - 08:00）
+  assert.equal(inQuietHours(utcMorning, '23:00', '08:00', 'Asia/Shanghai'), false)
+
+  // 模拟北京时间深夜 23:30（UTC 15:30）
+  const utcNight = new Date('2026-11-07T15:30:00.000Z')
+  assert.equal(inQuietHours(utcNight, '23:00', '08:00', 'Asia/Shanghai'), true)
+})

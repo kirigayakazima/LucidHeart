@@ -33,6 +33,7 @@ import {
   inQuietHours,
   readSpeak,
   resolveRoot,
+  getHeartTimeZone,
 } from './store.js'
 import { log } from './logger.js'
 import { activityOrigin } from './activity-origin.js'
@@ -224,12 +225,13 @@ export class HeartService {
     } catch {}
     const liveConfig = { ...readHeartConfig(root), ...this.config, ...diskCustom }
     const speakState = readSpeak(root)
+    const timeZone = liveConfig.timeZone || this.config?.timeZone || getHeartTimeZone(root)
     const now = new Date()
 
     // 1. 安静时段检查
     const quietFrom = liveConfig.quietFrom || speakState?.quietFrom || '23:00'
     const quietTo = liveConfig.quietTo || speakState?.quietTo || '08:00'
-    if (inQuietHours(now, quietFrom, quietTo)) {
+    if (inQuietHours(now, quietFrom, quietTo, timeZone)) {
       return {
         suitable: false,
         reason: 'quiet-hours',
@@ -240,7 +242,7 @@ export class HeartService {
     }
 
     // 2. 配额与类别检查
-    const today = dateOf(now)
+    const today = dateOf(now, timeZone)
     const cap = Number(liveConfig.idleTurnDailyCap) || 6
     const used = trigger.idleDate === today ? Number(trigger.idleCount) || 0 : 0
     if (autonomous && used >= cap) {

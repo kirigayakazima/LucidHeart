@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-04",
+  "updatedAt": "2026-11-07",
   "components": {
     "heart": {
       "id": "@dsh/heart",
       "name": "Heart Core",
       "type": "subsystem",
-      "version": "0.21.1",
+      "version": "0.21.2",
       "layer": "Core",
       "source": "packages/heart",
       "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."

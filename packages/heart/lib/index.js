@@ -31,6 +31,8 @@ import {
   enqueueSay,
   readHeartConfig,
   readMemoryMode,
+  setHeartTimeZone,
+  getHeartTimeZone,
   LEGACY_ARCHIVE_NOTICE,
   writeHeartConfig,
   shortSessionId,
@@ -92,6 +94,8 @@ export const name = 'dsh-heart'
 export const inject = ['tools', 'webServer', 'agents', 'systemPrompt']
 
 export const Config = z.object({
+  /** 时区设置；默认 Asia/Shanghai (UTC+8)。保证安静时段和节律时区对齐。 */
+  timeZone: z.string().default('Asia/Shanghai'),
   /** 数据目录；留空 = ~/.dsh/heart。数据永远在插件包之外。 */
   root: z.string().default(''),
   /** 本设备标识，写进每条记忆的 [device] 标记，如 pc / phone。 */
@@ -166,6 +170,11 @@ export function apply(ctx, config) {
   // 宿主的 config 会被重启重写，这里以 heart/config.json 为准。
   trace(root, 'apply:start')
   config = { ...config, ...readHeartConfig(root) }
+  const timeZone = config.timeZone || 'Asia/Shanghai'
+  setHeartTimeZone(timeZone)
+  if (!process.env.TZ || process.env.TZ === 'UTC' || process.env.TZ === 'Etc/UTC') {
+    process.env.TZ = timeZone
+  }
   const externalMemory = readMemoryMode(root) === 'external'
   trace(root, 'apply:config pulse=' + !!config.pulse + ' seconds=' + config.pulseSeconds)
   const device = String(config.device || process.env.DSH_HEART_DEVICE || 'agent').trim() || 'agent'

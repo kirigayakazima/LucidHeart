@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { dateOf, ensureLayout, inQuietHours, readSpeak, resolveRoot } from './store.js'
+import { dateOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts, getHeartTimeZone } from './store.js'
 import { findActiveAgent } from './target.js'
 
 export const TRIGGER_DEFAULT = {
@@ -72,9 +72,10 @@ export function shouldTriggerReturned({ prev, next, triggerState, config = {}, s
     return { ok: false, reason: 'not-from-away' }
   }
 
+  const tz = config.timeZone || getHeartTimeZone()
   const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
   const quietTo = speakState?.quietTo || config.quietTo || '08:00'
-  if (inQuietHours(now, quietFrom, quietTo)) {
+  if (inQuietHours(now, quietFrom, quietTo, tz)) {
     return { ok: false, reason: 'quiet-hours' }
   }
 
@@ -107,8 +108,8 @@ export function shouldTriggerReturned({ prev, next, triggerState, config = {}, s
 
 const IDLE_BUCKET_END_HOURS = [12, 18, 23]
 
-function idleBucket(now) {
-  const hour = now.getHours()
+function idleBucket(now, timeZone) {
+  const hour = getZonedParts(now, timeZone).hour
   return hour >= 8 ? IDLE_BUCKET_END_HOURS.findIndex((end) => hour < end) : -1
 }
 
@@ -145,15 +146,16 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
     }
   }
 
+  const tz = config.timeZone || getHeartTimeZone()
   const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
   const quietTo = speakState?.quietTo || config.quietTo || '08:00'
-  const bucket = idleBucket(now)
-  if (bucket === -1 || inQuietHours(now, quietFrom, quietTo)) {
+  const bucket = idleBucket(now, tz)
+  if (bucket === -1 || inQuietHours(now, quietFrom, quietTo, tz)) {
     return { ok: false, reason: 'quiet-hours' }
   }
 
   const cap = Number(config.idleTurnDailyCap) || 6
-  const today = dateOf(now)
+  const today = dateOf(now, tz)
   const used = triggerState.idleDate === today ? Number(triggerState.idleCount) || 0 : 0
   if (used >= cap) {
     return { ok: false, reason: 'daily-cap', used, cap }
@@ -189,8 +191,9 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
 }
 
 /** 今天各类别已用次数；跨日自动清零。 */
-export function idleCategoryState(triggerState = {}, now = new Date()) {
-  const today = dateOf(now)
+export function idleCategoryState(triggerState = {}, now = new Date(), config = {}) {
+  const tz = config?.timeZone || getHeartTimeZone()
+  const today = dateOf(now, tz)
   const counts =
     triggerState.idleCategoryDate === today ? { ...(triggerState.idleCategoryCounts || {}) } : {}
   return { today, counts }
