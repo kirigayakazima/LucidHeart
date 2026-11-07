@@ -4,9 +4,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import childProcess from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { syncBuiltinESMExports } from 'node:module'
 import { voiceContract, saveOffloadAudio, offloadDryVoice } from '../lib/offload.js'
 import { readPcm16, writePcm16 } from '../lib/acoustic.js'
 import { runSpeak } from '../lib/runner.js'
+import { Artifacts } from '../lib/artifacts.js'
 
 test('新音色先走PC，校验音色/音频hash后在本机落盘，不使用Windows路径', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rvc-offload-'))
@@ -115,4 +119,57 @@ test('一个长语音块失败时取消同批推理且不生成部分音频', as
   assert.equal(calls, 2)
   assert.equal(cancelled, true)
   assert.equal(fs.existsSync(outWav), false)
+})
+
+test('timeout, 503, 403 and disconnect reconcile to the same Feiyu CPU profile and dry input', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rvc-reconcile-test-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const profilePath = path.join(root, 'profile.json')
+  fs.writeFileSync(profilePath, JSON.stringify({ schema: 'lucidheart-voice-profile-v1', id: contract.id,
+    engine: 'rvc-onnx', modelsDir: '.', index: 'voice.mobile.index', pitch: 0,
+    provider: 'CUDAExecutionProvider',
+    assets: Object.fromEntries(Object.entries(contract.assets).map(([name, sha256]) => [name, { sha256 }])) }))
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  t.mock.method(AbortSignal, 'timeout', ms => timeout(ms === 30_000 ? 1 : ms))
+  t.mock.method(childProcess, 'spawn', (_, args) => {
+    const child = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    queueMicrotask(() => {
+      const output = args[args.indexOf('--output') + 1]
+      assert.equal(args[args.indexOf('--profile') + 1], profilePath)
+      assert.equal(args[args.indexOf('--pitch') + 1], '-4')
+      const dryOnly = args.includes('--dry-only')
+      if (!dryOnly) {
+        assert.equal(args[args.indexOf('--provider') + 1], 'CPUExecutionProvider')
+        assert.equal(args[args.indexOf('--input') + 1], path.join(path.dirname(output), 'dry.wav'))
+        assert.ok(fs.existsSync(args[args.indexOf('--input') + 1]))
+      }
+      fs.writeFileSync(output, writePcm16(new Int16Array(16000), 16000))
+      child.stdout.emit('data', JSON.stringify({ ok: true, profileId: contract.id, pitch: -4,
+        executionProvider: 'CPUExecutionProvider' }))
+      child.emit('close', 0)
+    })
+    return child
+  })
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+  const artifacts = new Artifacts(path.join(root, 'out'))
+  // Keep the loop alive while exercising AbortSignal's unref'ed timer.
+  const keepAlive = setTimeout(() => {}, 3000)
+  t.after(() => clearTimeout(keepAlive))
+  for (const error of [null, 'PC_RVC_HTTP_503', 'PC_RVC_HTTP_403', 'fetch failed']) {
+    const result = await runSpeak({ text: '你好', voiceProfile: profilePath, acoustic: { pitch: -4 }, artifacts,
+      offloadBridge: { async callPcRvc({ voice }) {
+        assert.equal(voice.id, contract.id)
+        assert.equal(voice.settings.pitch, -4)
+        if (error) throw new Error(error)
+        return new Promise(() => {})
+      } } })
+    assert.equal(result.mode, 'phone_onnx_fallback')
+    assert.equal(result.profileId, 'feiyu-rvc-v1')
+    assert.equal(result.offload.status, 'fallback')
+    assert.deepEqual(fs.readdirSync(path.dirname(result.audioPath)), ['voice.wav'])
+    result.releaseArtifact()
+  }
 })

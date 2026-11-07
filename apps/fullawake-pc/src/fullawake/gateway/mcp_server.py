@@ -10,9 +10,10 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query, status
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
@@ -23,24 +24,45 @@ from fullawake.core.auth import verify_token
 from fullawake.core.config import config
 from fullawake.core.session import get_session_status
 from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, VoiceCompute
+from fullawake.capabilities.voice_artifacts import DAY
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
+class VoiceDownload(FileResponse):
+    def __init__(self, file, release, **kwargs):
+        super().__init__(file, **kwargs)
+        self.release = release
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.release()
 
 
 class FullAwakeMCPGateway:
     """Gateway orchestrating FullAwake capabilities and exposing them via MCP."""
 
     def __init__(self) -> None:
+        self.voice = VoiceCompute()
+
+        @asynccontextmanager
+        async def lifespan(_app):
+            if config.voice_enabled:
+                self.voice.artifacts.sweep()
+            yield
+
         self.app = FastAPI(
             title="FullAwake Gateway",
             description="Sensory and embodiment bridge for Xiaoman (DSHA)",
             version="0.2.1",
+            lifespan=lifespan,
         )
         self.capabilities: List[BaseCapability] = []
         self.tools: Dict[str, ToolDefinition] = {}
         self.sessions: Dict[str, asyncio.Queue] = {}
-        self.voice = VoiceCompute()
 
         # Configure CORS for LAN access
         self.app.add_middleware(
@@ -142,12 +164,14 @@ class FullAwakeMCPGateway:
         @app.get('/v1/voice/download/{task}/{stem}', dependencies=[Depends(verify_token)])
         async def voice_download_endpoint(task: str, stem: str):
             file_path = self.voice.get_separated_file(task, stem)
-            if not file_path or not file_path.is_file():
+            release = self.voice.artifacts.pin(file_path, 3600) if file_path else None
+            if not release:
                 raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
-            return FileResponse(str(file_path), media_type="audio/wav")
+            return VoiceDownload(str(file_path), release, media_type="audio/wav")
 
         @app.post('/v1/voice/sing', dependencies=[Depends(verify_token)])
-        async def voice_sing_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a'), pitch: int = Query(0)):
+        async def voice_sing_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a'),
+                                      pitch: int = Query(0), heartbeat: bool = Query(False)):
             if not config.voice_enabled:
                 raise HTTPException(status_code=503, detail='VOICE_DISABLED')
             if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
@@ -157,22 +181,46 @@ class FullAwakeMCPGateway:
                 body.extend(chunk)
                 if len(body) > 60 * 1024 * 1024:
                     raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
-            try:
-                return await self.voice.process_singing_pipeline(task, bytes(body), format, pitch)
-            except (ValueError, OSError, TimeoutError) as error:
-                logger.exception("Voice singing pipeline exception: %s", error)
-                code = str(error)
-                if not code.startswith('VOICE_'):
-                    code = 'VOICE_SINGING_FAILED'
-                raise HTTPException(status_code=422, detail=code)
+            async def generate_song():
+                try:
+                    return await self.voice.process_singing_pipeline(task, bytes(body), format, pitch)
+                except (ValueError, OSError, TimeoutError) as error:
+                    logger.exception("Voice singing pipeline exception: %s", error)
+                    code = str(error)
+                    if not code.startswith('VOICE_'):
+                        code = 'VOICE_SINGING_FAILED'
+                    raise HTTPException(status_code=422, detail=code) from error
+
+            if not heartbeat:
+                return await generate_song()
+
+            async def stream_result():
+                job = asyncio.create_task(generate_song())
+                try:
+                    while not job.done():
+                        # JSON whitespace keeps the connection alive without changing the result shape.
+                        yield b'\n'
+                        await asyncio.wait({job}, timeout=5)
+                    try:
+                        result = job.result()
+                    except HTTPException as error:
+                        result = {'ok': False, 'error': error.detail}
+                    yield json.dumps(result).encode()
+                finally:
+                    if not job.done():
+                        job.cancel()
+                    await asyncio.shield(asyncio.gather(job, return_exceptions=True))
+
+            return StreamingResponse(stream_result(), media_type='application/json')
 
         @app.get('/v1/voice/sing/download/{task}', dependencies=[Depends(verify_token)])
         async def voice_sing_download_endpoint(task: str):
             file_path = self.voice.get_singing_song_file(task)
-            if not file_path or not file_path.is_file():
+            release = self.voice.artifacts.pin(file_path, 7 * DAY) if file_path else None
+            if not release:
                 raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
             media_type = "audio/mpeg" if file_path.suffix.lower() == ".mp3" else "audio/wav"
-            return FileResponse(str(file_path), media_type=media_type, filename=file_path.name)
+            return VoiceDownload(str(file_path), release, media_type=media_type, filename=file_path.name)
 
         # ==========================================
         # MCP SSE Transport (Standard for DSH)

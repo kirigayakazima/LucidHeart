@@ -128,11 +128,11 @@ export class MemoryIndexer {
     }
 
     // 5. 若有覆盖关系，记录图谱边
-    if (entry.supersedesId) {
+    for (const id of entry.supersedesIds || (entry.supersedesId ? [entry.supersedesId] : [])) {
       this.db.prepare(`
         INSERT OR REPLACE INTO edges (source_id, target_id, edge_type, weight, created_at)
         VALUES (?, ?, 'supersedes', 1.0, ?);
-      `).run(entry.id, entry.supersedesId, entry.updatedAt || new Date().toISOString());
+      `).run(entry.id, id, entry.updatedAt || new Date().toISOString());
     }
   }
 
@@ -141,12 +141,13 @@ export class MemoryIndexer {
    * @param {string} query
    * @param {Object} options
    * @param {'xiaoman_private'|'axing_private'|'shared'|'all'} [options.scope='all']
-   * @param {string} [options.kind]
+   * @param {string|string[]} [options.kind]
    * @param {number} [options.limit=5]
    * @param {boolean} [options.projection=false]
+   * @param {boolean} [options.exactScope=false]
    * @returns {Array<any>}
    */
-  search(query, { scope = 'all', kind, limit = 5, projection = false } = {}) {
+  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false } = {}) {
     const ftsQuery = projection ? buildProjectionQuery(query) : buildFtsQuery(query);
     if (!ftsQuery) return [];
 
@@ -161,18 +162,19 @@ export class MemoryIndexer {
     const params = [ftsQuery];
 
     if (scope && scope !== 'all') {
-      if (scope === 'shared') {
-        sql += ` AND m.scope = 'shared'`;
+      if (exactScope || scope === 'shared') {
+        sql += ` AND m.scope = ?`;
       } else {
         // 当前作用域只能看自身私有 + 双端共享
         sql += ` AND (m.scope = ? OR m.scope = 'shared')`;
-        params.push(scope);
       }
+      params.push(scope);
     }
 
     if (kind) {
-      sql += ` AND m.kind = ?`;
-      params.push(kind);
+      const kinds = Array.isArray(kind) ? kind : [kind];
+      sql += ` AND m.kind IN (${kinds.map(() => '?').join(', ')})`;
+      params.push(...kinds);
     }
 
     sql += ` ORDER BY f.rank ASC, m.confidence DESC, m.created_at DESC LIMIT ?;`;

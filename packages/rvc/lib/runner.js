@@ -2,13 +2,13 @@
 // 负责在 PC GPU 极速模式、手机端离线 ONNX 模式及模拟测试之间自适应调度。
 
 import fs from 'node:fs'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, rmdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runProfileSpeak, readVoiceProfile, renderDryVoice } from './voice-profile.js'
-import { voiceContract, saveOffloadAudio, offloadDryVoice } from './offload.js'
+import { voiceContract, saveOffloadAudio, offloadDryVoice, requestPcVoice } from './offload.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -173,11 +173,29 @@ export function executePcSayvoice(text, acoustic, outWav) {
  * @returns {Promise<object>}
  */
 export async function runSpeak(params) {
+  const { artifacts } = params
+  if (!artifacts || params.mock || params.outWav) return synthesize(params)
+  const dir = artifacts.begin()
+  const output = path.join(dir, 'voice.wav')
+  let result
+  try {
+    const rendered = await synthesize({ ...params, outWav: output, artifactDir: dir })
+    if (path.resolve(rendered.audioPath) !== output) return rendered
+    const artifact = artifacts.describe(output, 'voice')
+    result = rendered
+    return { ...result, artifactId: artifact.artifactId, releaseArtifact: () => artifacts.finish(dir) }
+  } finally {
+    artifacts.cleanJob(dir, output, Boolean(result))
+    if (!result) artifacts.finish(dir)
+  }
+}
+
+async function synthesize(params) {
   const { text, acoustic, outWav, modelsDir, offloadBridge, mock } = params
 
   let profilePath = params.voiceProfile
   if (!profilePath && !mock) {
-    const phoneFeiyu = '/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json'
+    const phoneFeiyu = path.join(modelsDir || '/sdcard/rvc/models/feiyu-rvc-v1', 'voice-profile.json')
     const pcFeiyu = path.resolve(__dirname, '../../local/feiyu/rvc-onnx-phasefix/voice-profile.json')
     if (fs.existsSync(phoneFeiyu)) {
       profilePath = phoneFeiyu
@@ -189,8 +207,15 @@ export async function runSpeak(params) {
   if (profilePath) {
     if (mock) throw new Error('Voice profile validation requires a real worker; mock mode cannot certify a new model')
     const profile = readVoiceProfile(profilePath)
-    const effective = { ...profile, pitch: acoustic?.pitch ?? profile.pitch,
+    if (path.basename(path.dirname(path.resolve(profilePath))) === 'feiyu-rvc-v1' && profile.id !== 'feiyu-rvc-v1') {
+      throw new Error('Expected the feiyu-rvc-v1 voice profile')
+    }
+    const pitch = acoustic?.pitch ?? profile.pitch
+    if (![0, -4].includes(pitch)) throw new Error('RVC pitch must be 0 or -4')
+    const effective = { ...profile, pitch,
       brightness: acoustic?.brightness ?? profile.brightness, ttsRate: acoustic?.rate ?? profile.ttsRate }
+    const feiyuContract = profile.id === 'feiyu-rvc-v1' ? voiceContract(effective) : null
+    if (feiyuContract && profile.index !== 'voice.mobile.index') throw new Error('Invalid Feiyu retrieval index')
     const localParams = { ...params, voiceProfile: profilePath }
     const offload = { attempted: false, status: 'unavailable' }
     let dir, input
@@ -198,12 +223,12 @@ export async function runSpeak(params) {
       if (typeof offloadBridge?.callPcRvc === 'function') {
         try {
           offload.attempted = true
-          const contract = voiceContract(effective)
+          const contract = feiyuContract || voiceContract(effective)
           const started = Date.now()
           let punctuationSeconds
           try {
-            dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-rvc-dry-'))
-            const dryFile = path.join(dir, 'dry.wav')
+            if (!params.artifactDir) dir = await mkdtemp(path.join(os.tmpdir(), 'dsh-rvc-dry-'))
+            const dryFile = path.join(params.artifactDir || dir, 'dry.wav')
             const timeout = AbortSignal.timeout(150_000)
             const signal = params.signal ? AbortSignal.any([params.signal, timeout]) : timeout
             punctuationSeconds = await renderDryVoice({ ...localParams, outWav: dryFile, signal })
@@ -219,7 +244,7 @@ export async function runSpeak(params) {
             saved = await offloadDryVoice({ dryWav: await readFile(input), punctuationSeconds,
               bridge: offloadBridge, contract, signal: params.signal, outWav })
           } else {
-            const result = await offloadBridge.callPcRvc({ text, voice: contract, signal: params.signal })
+            const result = await requestPcVoice(offloadBridge, { text, voice: contract }, params.signal)
             params.signal?.throwIfAborted()
             saved = saveOffloadAudio(result, contract, outWav)
           }
@@ -232,11 +257,26 @@ export async function runSpeak(params) {
         }
       }
       params.signal?.throwIfAborted()
-      const local = await runProfileSpeak({ ...localParams, input })
+      const fallback = offload.status === 'failed' && feiyuContract
+      const local = await runProfileSpeak({ ...localParams, input,
+        provider: fallback ? 'CPUExecutionProvider' : undefined })
+      if (fallback) {
+        if (local.validation.executionProvider !== 'CPUExecutionProvider' ||
+            local.profileId !== profile.id || local.acoustic.pitch !== pitch) {
+          throw new Error('Local RVC fallback did not match the Feiyu CPU voice contract')
+        }
+        return { ...local, mode: 'phone_onnx_fallback', offload: { ...offload, status: 'fallback', provider: 'CPUExecutionProvider' } }
+      }
       return { ...local, offload }
     } finally {
-      if (dir) await rm(dir, { recursive: true, force: true }).catch(error =>
-        console.warn('[@dsh/rvc] 干声临时目录清理失败:', error.message))
+      if (dir) {
+        try {
+          for (const file of ['dry.wav', 'dry.dry.mp3']) await rm(path.join(dir, file), { force: true })
+          await rmdir(dir)
+        } catch (error) {
+          console.warn('[@dsh/rvc] 干声临时目录清理失败:', error.message)
+        }
+      }
     }
   }
 
@@ -253,15 +293,20 @@ export async function runSpeak(params) {
   }
 
   // 1. 尝试 PC 端 GPU 极速算力分流 (若连接了 PC 且 FullAwake 桥接在线)
-  if (offloadBridge && typeof offloadBridge.callPcRvc === 'function') {
+  const env = detectEnvironment()
+  if (env.isPhone && (!modelsDir || path.basename(path.resolve(modelsDir)) === 'feiyu-rvc-v1')) {
+    throw new Error('Missing feiyu-rvc-v1 voice profile; cannot verify the phone voice contract')
+  }
+  if (!env.isPhone && offloadBridge && typeof offloadBridge.callPcRvc === 'function') {
     try {
       console.log('[@dsh/rvc] 检测到 PC FullAwake 算力桥在线，尝试委派 PC GPU 极速合成...')
-      const pcRes = await offloadBridge.callPcRvc({
+      const pcRes = await requestPcVoice(offloadBridge, {
         text,
         pitch: acoustic.pitch,
         brightness: acoustic.brightness,
         rate: acoustic.rate,
-      })
+      }, params.signal)
+      params.signal?.throwIfAborted()
       if (pcRes && pcRes.ok && pcRes.audioPath) {
         return {
           ok: true,
@@ -273,12 +318,12 @@ export async function runSpeak(params) {
         }
       }
     } catch (err) {
+      params.signal?.throwIfAborted()
       console.warn('[@dsh/rvc] PC 算力分流失败，自动无缝回退至手机本地推理:', err.message)
     }
   }
 
   // 2. 手机端本地 ONNX 推理
-  const env = detectEnvironment()
   if (env.localSayvoicePath) {
     console.log(`[@dsh/rvc] 使用手机本地 ONNX 引擎执行推理 (${env.localSayvoicePath}) ...`)
     return await executePhoneSayvoice(env.localSayvoicePath, text, acoustic, outWav, modelsDir)

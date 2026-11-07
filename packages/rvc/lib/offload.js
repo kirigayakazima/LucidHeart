@@ -3,6 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
+import { addAbortListener } from 'node:events'
 import { DRY_SAMPLE_RATE, VOICE_SAMPLE_RATE, joinVoiceChunks, planVoiceChunks, readPcm16, writePcm16 } from './acoustic.js'
 
 const defaults = { pitch: 0, brightness: 0, indexMethod: 'cosine1', indexRatio: .3,
@@ -18,6 +19,22 @@ export function voiceContract(profile) {
   }
   return { id: profile.id, assets,
     settings: Object.fromEntries(Object.entries(defaults).map(([key, value]) => [key, profile[key] ?? value])) }
+}
+
+export async function requestPcVoice(bridge, payload, signal) {
+  const timeout = AbortSignal.timeout(30_000)
+  const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout
+  requestSignal.throwIfAborted()
+  // Bound the caller even if an older/custom bridge does not honor AbortSignal.
+  let listener
+  try {
+    const aborted = new Promise((_, reject) => {
+      listener = addAbortListener(requestSignal, () => reject(requestSignal.reason))
+    })
+    return await Promise.race([aborted, bridge.callPcRvc({ ...payload, signal: requestSignal })])
+  } finally {
+    listener?.[Symbol.dispose]()
+  }
 }
 
 function validateOffloadAudio(result, contract) {
@@ -69,9 +86,9 @@ export async function offloadDryVoice({ dryWav, punctuationSeconds, bridge, cont
       const padded = new Int16Array(contextEnd - contextStart + 640)
       padded.set(dry.subarray(contextStart, contextEnd))
       try {
-        const result = await bridge.callPcRvc({
-          audioBase64: writePcm16(padded, DRY_SAMPLE_RATE).toString('base64'), voice: contract, signal: workSignal,
-        })
+        const result = await requestPcVoice(bridge, {
+          audioBase64: writePcm16(padded, DRY_SAMPLE_RATE).toString('base64'), voice: contract,
+        }, workSignal)
         const data = validateOffloadAudio(result, contract)
         if (spans.length > 1 && result.provider !== 'CUDAExecutionProvider') throw new Error('PC CUDA is unavailable')
         converted[index] = readPcm16(data, VOICE_SAMPLE_RATE)

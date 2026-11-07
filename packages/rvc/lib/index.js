@@ -7,7 +7,9 @@ import { getOptionalService, getVoiceServices } from './services.js'
 import { findSong, renderSong } from './singing.js'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { Artifacts } from './artifacts.js'
 
 const pluginVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
 
@@ -58,6 +60,14 @@ export function apply(ctx, config = {}) {
   const mock = Boolean(config.mock)
   let latestMood = {}
   const songs = new Map()
+  const root = path.resolve(config.songsDir || '/sdcard/rvc')
+  const songArtifacts = new Artifacts(path.join(root, 'out'))
+  const voiceArtifacts = process.platform === 'win32' && !config.songsDir
+    ? new Artifacts(path.join(os.homedir(), '.dsh', 'audio', 'rvc-cache')) : songArtifacts
+  if (!mock) {
+    songArtifacts.sweep()
+    if (voiceArtifacts !== songArtifacts) voiceArtifacts.sweep()
+  }
   const lifetime = new AbortController()
   ctx.effect?.(() => () => lifetime.abort())
 
@@ -149,6 +159,7 @@ export function apply(ctx, config = {}) {
             voiceProfile: config.voiceProfile,
             profilePython: config.profilePython,
             signal: exec?.signal,
+            artifacts: voiceArtifacts,
           })
           if (res.acoustic) acoustic = res.acoustic
         } catch (err) {
@@ -160,6 +171,7 @@ export function apply(ctx, config = {}) {
         }
 
         if (exec?.signal?.aborted) {
+          res.releaseArtifact?.()
           return { ok: false, cancelled: true, plugin_version: pluginVersion,
             audio_file: res.audioPath, sent_to_qq: false, heart_observation: 'cancelled',
             message: '本轮已取消，生成的语音未自动投递。' }
@@ -193,6 +205,7 @@ export function apply(ctx, config = {}) {
           }
         }
 
+        res.releaseArtifact?.()
         // E. 发声经验回流心智 (heart.observe)
         let heartObservation = 'service_unavailable'
         if (heart && typeof heart.observe === 'function') {
@@ -209,6 +222,7 @@ export function apply(ctx, config = {}) {
                 brightness: acoustic.brightness,
                 emotion: acoustic.emotion,
                 mode: res.mode,
+                profileId: res.profileId,
               },
               summary: `通过 RVC 合成发声 (${res.mode}, 音高 ${acoustic.pitch})`,
               timestamp: new Date().toISOString(),
@@ -227,6 +241,8 @@ export function apply(ctx, config = {}) {
           audio_file: res.audioPath,
           duration_ms: res.durationMs,
           mode: res.mode,
+          profileId: res.profileId,
+          artifactId: res.artifactId,
           offload: res.offload || { attempted: false, status: 'not_applicable' },
           sent_to_qq: qqSent,
           qq_delivery: qqDelivery,
@@ -275,7 +291,6 @@ export function apply(ctx, config = {}) {
         const title = String(args.song_title || '').trim().replace(/^《(.+)》$/, '$1').trim()
         const taskName = String(args.task_name || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)
         const pitch = args.pitch === -2 || args.pitch === -4 ? -4 : 0
-        const root = path.resolve(config.songsDir || '/sdcard/rvc')
         const source = await findSong(root, input, title, taskName)
         if (!source) return { ok: false, status: 'file_not_found', error: '满宝还没找到这首歌的本地原曲。' }
         if (config.mock) return { ok: false, status: 'mock_disabled', error: '模拟模式不生成歌曲。' }
@@ -298,9 +313,10 @@ export function apply(ctx, config = {}) {
 
         const jobId = `${taskName || 'song'}_${randomUUID().replaceAll('-', '').slice(0, 16)}`
         const output = path.join(root, 'out', `sing_${jobId}`, `song_${jobId}.mp3`)
-        const job = { source, jobId, pitch, output, signal, modelsDir: config.modelsDir || '/sdcard/rvc/models/feiyu-rvc-v1' }
+        const job = { source, jobId, pitch, output, signal, modelsDir: config.modelsDir || '/sdcard/rvc/models/feiyu-rvc-v1',
+          voiceProfile: config.voiceProfile, artifacts: songArtifacts }
         const result = { ok: true, status: 'dispatched', task_name: taskName || 'song', job_id: jobId,
-          input_audio: source.file, expected_output: output, qq_auto_delivery: Boolean(target),
+          input_audio: source.file, expected_output: output, artifactId: songArtifacts.id(output), qq_auto_delivery: Boolean(target),
           notice: target ? '工具负责发送进度和成曲，无需再次确认。' : '成曲会保存到 expected_output。' }
         songs.set(key, result)
 
@@ -316,9 +332,9 @@ export function apply(ctx, config = {}) {
         async function finish() {
           await say('好呀，满宝来唱！我先用电脑准备伴奏和变声，顺利的话大约一分钟哦～')
           signal.throwIfAborted()
-          let mode
+          let rendered
           try {
-            mode = await renderSong(job, () => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。'))
+            rendered = await renderSong(job, () => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。'))
           } catch (error) {
             if (!signal.aborted) {
               console.warn(`[@dsh/rvc] 唱歌任务 ${jobId} 失败:`, error.message)
@@ -340,14 +356,19 @@ export function apply(ctx, config = {}) {
             }
           }
           if (signal.aborted) return
+          const mode = rendered.mode === 'phone_onnx_fallback' ? 'phone_local' : rendered.mode
           await heart?.observe?.({ type: 'audio', source: 'rvc', confidence: 1,
-            evidence: { audioPath: output, pitch, mode }, summary: '通过 RVC 合成歌曲',
+            evidence: { audioPath: output, pitch, mode, artifactId: result.artifactId,
+              profileId: rendered.profileId, execution: rendered }, summary: '通过 RVC 合成歌曲',
             timestamp: new Date().toISOString() })
         }
 
         void finish().catch(error => {
           if (!signal.aborted) console.warn('[@dsh/rvc] 唱歌任务收尾告警:', error.message)
-        }).finally(() => songs.delete(key))
+        }).finally(() => {
+          songs.delete(key)
+          if (job.artifactDir) songArtifacts.finish(job.artifactDir)
+        })
         return result
       },
     })

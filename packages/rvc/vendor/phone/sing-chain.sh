@@ -24,6 +24,28 @@ if [ -x "/root/.dsh/bili-duty/.venv/bin/python" ]; then
 fi
 export PYTHONPATH="/root/.dsh/voice/lib:/root/.dsh/voice/onnx-lib:${PYTHONPATH:-}"
 
+# The plugin supplies a profile for fallback. Require its exact model assets
+# before the legacy ONNX CLI can select a model by filename.
+BUNDLED="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${RVC_VOICE_PROFILE:-}" ]; then
+  PYTHONPATH="$BUNDLED/../../scripts:$PYTHONPATH" "$PY" - "$RVC_VOICE_PROFILE" "$MODELS" "$PITCH" <<'PY' || exit 1
+import json
+import sys
+from pathlib import Path
+from voice_profile_speak import verify_assets
+
+filename, models = (Path(value).resolve(strict=True) for value in sys.argv[1:3])
+profile = json.loads(filename.read_text(encoding='utf-8-sig'))
+required = {'model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index'}
+if (profile.get('id') != 'feiyu-rvc-v1' or profile.get('engine') != 'rvc-onnx'
+        or profile.get('index') != 'voice.mobile.index' or sys.argv[3] not in ('0', '-4')
+        or (filename.parent / profile['modelsDir']).resolve() != models
+        or not required.issubset(profile['assets'])):
+    raise ValueError('Invalid Feiyu singing fallback contract')
+verify_assets(profile, models)
+PY
+fi
+
 AUTH_TOKEN="xiaoman-pc-bridge-secret-2026"
 
 # 0) 优先尝试 PC 端全曲 GPU 极速管线 (分离 + 变声 + 混音，整首约 40~60 秒)
@@ -44,7 +66,6 @@ if echo "$PC_STATUS" | grep -q '"online":true'; then
       "http://127.0.0.1:28765/v1/voice/sing/download/${NAME}" \
       -o "$OUTDIR/song_${NAME}.mp3"
     if [ -s "$OUTDIR/song_${NAME}.mp3" ]; then
-      cp -f "$OUTDIR/song_${NAME}.mp3" /root/.dsh/voice/sing/ 2>/dev/null || true
       cp -f "$OUTLOG" "$LOG" 2>/dev/null || true
       echo "=== $(TZ=UTC-8 date '+%F %T') 完成 $NAME → $OUTDIR/song_${NAME}.mp3"
       exit 0
@@ -113,12 +134,17 @@ else
   for cand in /sdcard/rvc/rvc_onnx.py /root/.dsh/voice/rvc_onnx.py; do
     if [ -f "$cand" ]; then RVC_LOCAL="$cand"; break; fi
   done
+  INDEX_ARGS=()
+  if [ -n "${RVC_VOICE_PROFILE:-}" ]; then
+    RVC_LOCAL="$BUNDLED/rvc_onnx.py"
+    INDEX_ARGS=(--index-path "$MODELS/voice.mobile.index" --index-ratio 0.3)
+  fi
   if [ -n "$RVC_LOCAL" ]; then
     if ! PYTHONPATH=/root/.dsh/voice/onnx-lib $PY -u "$RVC_LOCAL" "$OUTDIR/vocals.wav" \
       --models_dir "$MODELS" \
       --output "$OUTDIR/voc_new.wav" \
       --work_dir "$OUTDIR/.work_rvc" \
-      --segment_seconds 15 --threads 4 --pitch "$PITCH"; then
+      --segment_seconds 15 --threads 4 --pitch "$PITCH" "${INDEX_ARGS[@]}"; then
       echo "RVC 转换失败"; exit 1
     fi
   else
@@ -135,13 +161,15 @@ for cand in /sdcard/rvc/mix.py /root/.dsh/voice/mix.py; do
 done
 
 if [ -n "$MIX_SCRIPT" ]; then
+  MIX_OUTPUT="$OUTDIR/song_${NAME}.mp3"
+  if [ -n "${RVC_VOICE_PROFILE:-}" ]; then MIX_OUTPUT="$OUTDIR/mix.mp3"; fi
   $PY "$MIX_SCRIPT" "$OUTDIR/voc_new.wav" "$OUTDIR/accompaniment.wav" \
-    "$OUTDIR/song_${NAME}.mp3" || { echo "混音失败"; exit 1; }
+    "$MIX_OUTPUT" || { echo "混音失败"; exit 1; }
+  if [ -n "${RVC_VOICE_PROFILE:-}" ]; then mv -- "$MIX_OUTPUT" "$OUTDIR/song_${NAME}.mp3" || exit 1; fi
 else
   echo "错误: 未找到 mix.py 混音脚本"
   exit 1
 fi
 
-cp -f "$OUTDIR/song_${NAME}.mp3" /root/.dsh/voice/sing/ 2>/dev/null || true
 cp -f "$OUTLOG" "$LOG" 2>/dev/null || true
 echo "=== $(TZ=UTC-8 date '+%F %T') 完成 $NAME → $OUTDIR/song_${NAME}.mp3"

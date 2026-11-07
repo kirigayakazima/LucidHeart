@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
+import { open, rename, rm, stat } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { Readable, Transform } from 'node:stream'
@@ -51,16 +51,32 @@ async function requireResponse(response) {
 
 export async function runPcSong({ source, jobId, pitch, output, signal }) {
   if (source.size > maxBytes) throw new Error('Song exceeds PC upload limit')
-  const query = new URLSearchParams({ task: jobId, pitch, format: path.extname(source.file).slice(1).toLowerCase() })
+  const query = new URLSearchParams({ task: jobId, pitch, format: path.extname(source.file).slice(1).toLowerCase(), heartbeat: 'true' })
   const upload = createReadStream(source.file)
+  const stalled = new AbortController()
+  const uploadSignal = AbortSignal.any([signal, stalled.signal, AbortSignal.timeout(300_000)])
+  let timer
+  function refreshDeadline() {
+    clearTimeout(timer)
+    timer = setTimeout(() => stalled.abort(new Error('PC singing gateway timed out')), 30_000)
+  }
   try {
+    refreshDeadline()
     const response = await requireResponse(await fetch(`${gateway}/v1/voice/sing?${query}`, {
       method: 'POST', headers: { ...auth, 'Content-Type': 'application/octet-stream', 'Content-Length': String(source.size) },
-      body: upload, duplex: 'half', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]),
+      body: upload, duplex: 'half', redirect: 'error', signal: uploadSignal,
     }))
-    const result = await response.json()
-    if (result?.ok !== true || result.task !== jobId) throw new Error('Invalid PC singing result')
+    let reply = ''
+    refreshDeadline()
+    for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+      refreshDeadline()
+      reply += chunk
+      if (reply.length > 16_384) throw new Error('PC singing response exceeds limit')
+    }
+    const result = JSON.parse(reply)
+    if (result?.ok !== true || result.task !== jobId) throw new Error(result?.error || 'Invalid PC singing result')
   } finally {
+    clearTimeout(timer)
     upload.destroy()
   }
   const partial = `${output}.part`
@@ -86,14 +102,15 @@ export async function runPcSong({ source, jobId, pitch, output, signal }) {
   }
 }
 
-export async function runLocalSong({ source, jobId, pitch, output, signal, modelsDir }) {
+export async function runLocalSong({ source, jobId, pitch, output, signal, modelsDir, voiceProfile }) {
   const localSignal = AbortSignal.any([signal, AbortSignal.timeout(30 * 60_000)])
   localSignal.throwIfAborted()
   await new Promise((resolve, reject) => {
     const grouped = process.platform === 'linux'
     const child = spawn('bash', [localScript, source.file, jobId, String(pitch), modelsDir], {
       stdio: 'ignore', detached: grouped, windowsHide: true,
-      env: { ...process.env, RVC_LOCAL_ONLY: '1', RVC_OUTPUT_DIR: path.dirname(output) },
+      env: { ...process.env, RVC_LOCAL_ONLY: '1', RVC_OUTPUT_DIR: path.dirname(output),
+        RVC_VOICE_PROFILE: voiceProfile || path.join(modelsDir, 'voice-profile.json') },
     })
     function stop() {
       if (!child.pid) return
@@ -112,15 +129,22 @@ export async function runLocalSong({ source, jobId, pitch, output, signal, model
 }
 
 export async function renderSong(job, onFallback) {
-  await mkdir(path.dirname(job.output), { recursive: true })
+  job.artifactDir = job.artifacts.begin(`sing_${job.jobId}`)
+  let complete = false
   try {
-    await runPcSong(job)
-    return 'pc_gpu_pipeline'
-  } catch (error) {
-    job.signal.throwIfAborted()
-    console.warn('[@dsh/rvc] PC 唱歌分流失败:', error.message)
-    await onFallback()
-    await runLocalSong(job)
-    return 'phone_local'
+    try {
+      await runPcSong(job)
+      complete = true
+      return { mode: 'pc_gpu_pipeline' }
+    } catch (error) {
+      job.signal.throwIfAborted()
+      console.warn('[@dsh/rvc] PC 唱歌分流失败:', error.message)
+      await onFallback()
+      await runLocalSong(job)
+      complete = true
+      return { mode: 'phone_onnx_fallback', profileId: 'feiyu-rvc-v1' }
+    }
+  } finally {
+    job.artifacts.cleanJob(job.artifactDir, job.output, complete)
   }
 }

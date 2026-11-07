@@ -3,10 +3,12 @@
  */
 
 import path from 'node:path';
-import { generateMemoryId, validateMemoryEntry } from './types.js';
+import { generateMemoryId, supersedeMemory, validateMemoryEntry } from './types.js';
 import { MemoryStore } from './store.js';
 import { MemoryIndexer } from './indexer.js';
 import { formatCompactOutline, formatConversationProjection } from './budget.js';
+import { CommitmentLedger } from './commitments.js';
+import { findContradictions } from './contradictions.js';
 
 export class MemoryService {
   /**
@@ -18,6 +20,7 @@ export class MemoryService {
     if (!dataDir) throw new Error('dataDir is required for MemoryService');
     this.dataDir = dataDir;
     this.store = new MemoryStore(dataDir);
+    this.commitments = new CommitmentLedger(this.store);
     this.indexer = new MemoryIndexer(dbPath || path.join(dataDir, 'index.db'));
     try {
       this.initFromStore();
@@ -38,11 +41,11 @@ export class MemoryService {
     if (this.projectionsDirty) this.reindex();
   }
 
-  commit(entry, action, { previous, reason } = {}) {
+  commit(entry, action, { previous = [], reason } = {}) {
     this.projectionsDirty = true;
     this.store.appendJournal(entry, action, reason);
-    this.indexer.upsertAll(previous ? [previous, entry] : [entry]);
-    if (entry.status !== 'candidate' || previous) {
+    this.indexer.upsertAll([...previous, entry]);
+    if (entry.status !== 'candidate' || previous.length) {
       this.store.syncMarkdownView(this.indexer.getAllActive());
     }
     this.projectionsDirty = false;
@@ -65,7 +68,18 @@ export class MemoryService {
    * @param {string[]} [params.entities]
    * @returns {any}
    */
-  remember({
+  remember(params = {}) {
+    return this.#remember(params);
+  }
+
+  intake(params) {
+    this.ensureProjections();
+    const candidate = params.provenance?.origin === 'model_inference';
+    if (this.indexer.hasIntakeMatch(params.content, params.scope, candidate)) return;
+    return this.#remember(params, true);
+  }
+
+  #remember({
     content,
     kind = 'fact',
     scope = 'xiaoman_private',
@@ -78,7 +92,7 @@ export class MemoryService {
     importance,
     tags = [],
     entities = [],
-  } = {}) {
+  }, autoCorrect = false) {
     if (!content || typeof content !== 'string' || content.trim().length === 0) {
       throw new Error('Memory content must not be empty');
     }
@@ -119,16 +133,23 @@ export class MemoryService {
 
     // 一条 supersede 事件同时记录新事实和旧事实的失效关系。
     this.ensureProjections();
-    let previous;
+    let targets = [];
     if (supersedesId) {
       const old = this.indexer.getById(supersedesId);
       if (old?.status !== 'active') {
         throw new Error(`Target memory ${supersedesId} is not active`);
       }
-      previous = { ...old, status: 'superseded', updatedAt: now, validTo: now };
+      targets = [old];
+    } else if (autoCorrect) {
+      targets = findContradictions(entry, this.indexer);
+      const spokenAt = Date.parse(entry.provenance?.timestamp);
+      if (targets.some((old) => Date.parse(old.provenance?.timestamp) > spokenAt)) return;
+      entry.supersedesId = targets[0]?.id || null;
+      if (targets.length > 1) entry.supersedesIds = targets.map(({ id }) => id);
     }
 
-    this.commit(entry, supersedesId ? 'supersede' : 'create', { previous });
+    const previous = targets.map((old) => supersedeMemory(old, entry.id, now));
+    this.commit(entry, previous.length ? 'supersede' : 'create', { previous });
     return entry;
   }
 
@@ -220,9 +241,11 @@ export class MemoryService {
   reindex() {
     const t0 = Date.now();
     this.projectionsDirty = true;
-    const entries = this.store.loadAllFromJournal();
+    const commitments = new Map();
+    const entries = this.store.loadAllFromJournal(commitments);
     this.indexer.rebuildIndex(entries.values());
     this.store.syncMarkdownView(this.indexer.getAllActive());
+    this.commitments.entries = commitments;
     this.projectionsDirty = false;
     const durationMs = Date.now() - t0;
     return {

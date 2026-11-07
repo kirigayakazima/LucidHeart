@@ -21,6 +21,13 @@ def digest(path):
     return h.hexdigest()
 
 
+def verify_assets(profile, models):
+    for name, asset in profile['assets'].items():
+        file = (models / name).resolve()
+        if not file.is_relative_to(models) or digest(file) != asset['sha256']:
+            raise ValueError(f'Asset path/hash mismatch: {name}')
+
+
 async def save_edge_dry(text, voice, rate, dry, track_punctuation):
     import edge_tts
 
@@ -95,10 +102,7 @@ def main():
     if not 0 <= brightness <= 3.5:
         raise ValueError('Brightness must be within 0..3.5dB')
     if not args.dry_only:
-        for name, asset in profile['assets'].items():
-            file = (models / name).resolve()
-            if not file.is_relative_to(models) or digest(file) != asset['sha256']:
-                raise ValueError(f'Asset path/hash mismatch: {name}')
+        verify_assets(profile, models)
     rate = args.rate if args.rate is not None else profile.get('ttsRate', '+0%')
     if not isinstance(rate, str) or not re.fullmatch(r'[+-]\d+%', rate) or not -20 <= int(rate[:-1]) <= 20:
         raise ValueError('TTS rate must be a signed percentage within -20%..+20%')

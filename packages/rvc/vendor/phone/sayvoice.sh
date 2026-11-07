@@ -21,14 +21,7 @@ BRIGHTNESS="2.5"     # 默认高频补偿 2.5 dB
 RATE=""             # 语速调节（如 +0%, +10%, -5%）
 OUT_WAV=""
 ENGINE="auto"
-MODELS_DIR="${RVC_MODELS_DIR:-}"
-if [ -z "$MODELS_DIR" ]; then
-  if [ -d "/sdcard/rvc/models/feiyu-rvc-v1" ]; then
-    MODELS_DIR="/sdcard/rvc/models/feiyu-rvc-v1"
-  else
-    MODELS_DIR="/sdcard/rvc/models/Dv5"
-  fi
-fi
+MODELS_DIR="${RVC_MODELS_DIR:-/sdcard/rvc/models/feiyu-rvc-v1}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -167,7 +160,8 @@ if PYTHONPATH=/root/.dsh/voice/onnx-lib python3 -u "$RVC_SCRIPT" "$DRY_AUDIO" \
   
   # 成功后清理临时干声与临时工作区
   rm -f "$DRY_AUDIO" 2>/dev/null || true
-  rm -rf "$WORK_DIR" 2>/dev/null || true
+  find -P "$WORK_DIR" -type f \( -name 'chunk_*.wav' -o -name manifest.json \) -delete 2>/dev/null || true
+  find -P "$WORK_DIR" -depth -type d -empty -delete 2>/dev/null || true
   echo "[sayvoice] 转换完成！整条链路约 50 秒。" >&2
   echo "$OUT_WAV"
 else

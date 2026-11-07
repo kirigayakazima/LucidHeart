@@ -5,6 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
+import { addAbortListener } from 'node:events'
 
 const worker = fileURLToPath(new URL('../scripts/voice_profile_speak.py', import.meta.url))
 
@@ -19,7 +20,7 @@ export function readVoiceProfile(filename) {
   return profile
 }
 
-async function runWorker({ voiceProfile, profilePython, text, acoustic, outWav, signal, input, dryOnly }) {
+async function runWorker({ voiceProfile, profilePython, text, acoustic, outWav, signal, input, dryOnly, provider }) {
   const filename = path.resolve(voiceProfile)
   const profile = readVoiceProfile(filename)
   const output = outWav || path.join(os.homedir(), '.dsh', 'audio', `voice_profile_${randomUUID()}.wav`)
@@ -31,16 +32,27 @@ async function runWorker({ voiceProfile, profilePython, text, acoustic, outWav, 
   if (acoustic?.pitch !== undefined) args.push('--pitch', String(acoustic.pitch))
   if (acoustic?.brightness !== undefined) args.push('--brightness', String(acoustic.brightness))
   if (dryOnly) args.push('--dry-only')
+  if (provider) args.push('--provider', provider)
   const result = await new Promise((resolve, reject) => {
+    signal?.throwIfAborted()
     const env = profile.pythonPath
       ? { ...process.env, PYTHONPATH: [profile.pythonPath, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter) }
       : process.env
-    const proc = spawn(python, args, { stdio: ['ignore', 'pipe', 'pipe'], signal, windowsHide: true, env })
+    const grouped = process.platform === 'linux'
+    const proc = spawn(python, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: grouped, windowsHide: true, env })
+    const abort = signal && addAbortListener(signal, () => {
+      if (!proc.pid) return
+      try { grouped ? process.kill(-proc.pid, 'SIGKILL') : proc.kill() } catch {}
+    })
     let stdout = '', stderr = ''
     proc.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-1024 * 1024) })
     proc.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-16384) })
-    proc.on('error', reject)
+    let processError
+    proc.on('error', error => { processError = error })
     proc.on('close', code => {
+      abort?.[Symbol.dispose]()
+      if (signal?.aborted) return reject(signal.reason)
+      if (processError) return reject(processError)
       if (code !== 0) return reject(new Error(`Voice profile worker failed (${code}): ${stderr.slice(-3000)}`))
       try {
         const line = stdout.trim().split(/\r?\n/).at(-1)

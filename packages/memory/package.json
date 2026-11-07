@@ -1,6 +1,6 @@
 {
   "name": "@dsh/memory",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "LucidHeart Sovereign Memory Core - Local-First, Markdown Ground Truth, Built-in SQLite FTS5 Indexing & Token Budgeting",
   "type": "module",
   "main": "lib/index.js",
@@ -25,6 +25,12 @@
     },
     "./budget": {
       "default": "./lib/budget.js"
+    },
+    "./commitments": {
+      "default": "./lib/commitments.js"
+    },
+    "./contradictions": {
+      "default": "./lib/contradictions.js"
     },
     "./package.json": "./package.json"
   },

@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import stat
 from functools import cached_property
 from pathlib import Path
 import tempfile
@@ -12,6 +14,7 @@ import time
 import wave
 
 from fullawake.core.config import config
+from fullawake.capabilities.voice_artifacts import VoiceArtifacts
 
 ASSETS = ('model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index')
 DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio': .3,
@@ -21,6 +24,21 @@ DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio':
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 ASR_SAMPLE_RATE = 16000
 AUDIO_UNCLEAR = {'ok': False, 'error': 'AUDIO_UNCLEAR', 'text': ''}
+
+
+async def communicate(process, timeout):
+    task = asyncio.create_task(process.communicate())
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout)
+    except asyncio.TimeoutError as error:
+        raise TimeoutError('VOICE_TIMEOUT') from error
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await task
 
 
 def silk_as_wav(audio: bytes) -> io.BytesIO:
@@ -113,6 +131,14 @@ class VoiceCompute:
     def __init__(self):
         self.active_voice_workers = 0
         self.text_worker_active = False
+        self._artifacts = None
+
+    @property
+    def artifacts(self):
+        root = Path(config.voice_work_dir).absolute()
+        if self._artifacts is None or self._artifacts.root != root:
+            self._artifacts = VoiceArtifacts(root)
+        return self._artifacts
 
     @cached_property
     def asr_model(self):
@@ -164,17 +190,14 @@ class VoiceCompute:
         worker = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'scripts' / 'voice_profile_speak.py'
         if not python.is_file() or not worker.is_file():
             raise ValueError('VOICE_RUNTIME_UNAVAILABLE')
-        root = Path(config.voice_work_dir).resolve()
-        root.mkdir(parents=True, exist_ok=True)
+        cache = self.artifacts
+        cache.prepare(cache.root)
         started = time.monotonic()
         self.active_voice_workers += 1
         if is_text:
             self.text_worker_active = True
         try:
-            with tempfile.TemporaryDirectory(prefix='rvc-', dir=root) as folder:
-                work = Path(folder).resolve()
-                if work.parent != root or not work.name.startswith('rvc-'):
-                    raise ValueError('VOICE_WORK_PATH_INVALID')
+            with cache.job(Path(tempfile.mkdtemp(prefix='rvc-', dir=cache.root))) as work:
                 profile_file, output = work / 'profile.json', work / 'output.wav'
                 profile_file.write_text(json.dumps(profile), encoding='utf8')
                 cmd = [str(python), str(worker), '--profile', str(profile_file),
@@ -198,7 +221,7 @@ class VoiceCompute:
                 try:
                     while not task.done():
                         await asyncio.wait({task}, timeout=.25)
-                        if time.monotonic() - started > 290 or (disconnected and await disconnected()):
+                        if time.monotonic() - started > 30 or (disconnected and await disconnected()):
                             raise TimeoutError('VOICE_TIMEOUT_OR_DISCONNECTED')
                     stdout, stderr = await task
                     if process.returncode:
@@ -212,7 +235,10 @@ class VoiceCompute:
                         raise ValueError('VOICE_SYNTHESIS_FAILED')
                 finally:
                     if process.returncode is None:
-                        process.kill()
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
                         await process.wait()
                     if not task.done():
                         await task
@@ -230,18 +256,17 @@ class VoiceCompute:
                 self.text_worker_active = False
 
     def get_separated_file(self, task: str, stem: str):
-        import re
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
-        root = Path(config.voice_work_dir).resolve() / "separated" / clean_task
+        root = self.artifacts.task_dir('separated', clean_task)
         if stem in ("vocals", "vocal"):
             candidate = root / "vocals.wav"
         elif stem in ("accompaniment", "no_vocals", "inst", "bgm"):
             candidate = root / "no_vocals.wav"
-            if not candidate.is_file():
+            if not self.artifacts.safe(candidate, stat.S_ISREG):
                 candidate = root / "accompaniment.wav"
         else:
             return None
-        return candidate if candidate.is_file() else None
+        return candidate if self.artifacts.safe(candidate, stat.S_ISREG) else None
 
     async def separate(self, task: str, audio_bytes: bytes, audio_format: str = "m4a") -> dict:
         if not config.voice_enabled:
@@ -251,16 +276,17 @@ class VoiceCompute:
         if len(audio_bytes) > 60 * 1024 * 1024:
             raise ValueError('VOICE_AUDIO_TOO_LARGE')
 
-        import re
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
         if not clean_task:
             raise ValueError('VOICE_TASK_INVALID')
 
-        root = Path(config.voice_work_dir).resolve() / "separated"
-        task_dir = root / clean_task
-        task_dir.mkdir(parents=True, exist_ok=True)
+        cache = self.artifacts
+        with cache.job(cache.task_dir('separated', clean_task)) as destination:
+            work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
+            return await self._separate(clean_task, audio_bytes, audio_format, work, destination)
 
-        clean_fmt = re.sub(r'[^a-zA-Z0-9]', '', audio_format).lower() or 'm4a'
+    async def _separate(self, clean_task, audio_bytes, audio_format, task_dir, destination):
+        clean_fmt = audio_format.lower() if audio_format.lower() in ('m4a', 'mp3', 'wav', 'flac') else 'm4a'
         in_file = task_dir / f"input.{clean_fmt}"
         in_file.write_bytes(audio_bytes)
 
@@ -288,7 +314,7 @@ class VoiceCompute:
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await process.communicate()
+        stdout, stderr = await communicate(process, timeout=300)
         elapsed = time.monotonic() - started
 
         if process.returncode != 0:
@@ -306,12 +332,8 @@ class VoiceCompute:
         if not found_voc or not found_bgm:
             raise ValueError('VOICE_SEPARATION_OUTPUT_MISSING')
 
-        target_voc = task_dir / "vocals.wav"
-        target_bgm = task_dir / "no_vocals.wav"
-        if found_voc[0].resolve() != target_voc.resolve():
-            target_voc.write_bytes(found_voc[0].read_bytes())
-        if found_bgm[0].resolve() != target_bgm.resolve():
-            target_bgm.write_bytes(found_bgm[0].read_bytes())
+        found_voc[0].replace(destination / 'vocals.wav')
+        found_bgm[0].replace(destination / 'no_vocals.wav')
 
         return {
             "ok": True,
@@ -322,16 +344,15 @@ class VoiceCompute:
         }
 
     def get_singing_song_file(self, task: str):
-        import re
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
-        root = Path(config.voice_work_dir).resolve() / "singing" / clean_task
+        root = self.artifacts.task_dir('singing', clean_task)
         candidates = [
             root / f"song_{clean_task}.mp3",
             root / "song.mp3",
             root / f"song_{clean_task}.wav",
         ]
         for c in candidates:
-            if c.is_file():
+            if self.artifacts.safe(c, stat.S_ISREG):
                 return c
         return None
 
@@ -343,7 +364,6 @@ class VoiceCompute:
         if len(audio_bytes) > 60 * 1024 * 1024:
             raise ValueError('VOICE_AUDIO_TOO_LARGE')
 
-        import re
         import logging
         logger = logging.getLogger('fullawake.gateway')
 
@@ -357,10 +377,13 @@ class VoiceCompute:
         if pitch not in (0, -4):
             pitch = 0
 
-        root = Path(config.voice_work_dir).resolve() / "singing" / clean_task
-        root.mkdir(parents=True, exist_ok=True)
+        cache = self.artifacts
+        with cache.job(cache.task_dir('singing', clean_task)) as destination:
+            work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
+            return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger)
 
-        clean_fmt = re.sub(r'[^a-zA-Z0-9]', '', audio_format).lower() or 'm4a'
+    async def _sing(self, clean_task, audio_bytes, audio_format, pitch, root, destination, logger):
+        clean_fmt = audio_format.lower() if audio_format.lower() in ('m4a', 'mp3', 'wav', 'flac') else 'm4a'
         in_file = root / f"input.{clean_fmt}"
         in_file.write_bytes(audio_bytes)
 
@@ -395,7 +418,7 @@ class VoiceCompute:
                 stderr=asyncio.subprocess.PIPE,
                 env=worker_env,
             )
-            stdout_sep, stderr_sep = await proc_sep.communicate()
+            stdout_sep, stderr_sep = await communicate(proc_sep, timeout=300)
             if proc_sep.returncode != 0:
                 logger.error("Singing Demucs failed: %s", stderr_sep.decode('utf8', 'replace')[-500:])
                 raise ValueError('VOICE_SEPARATION_FAILED')
@@ -441,7 +464,7 @@ class VoiceCompute:
             stderr=asyncio.subprocess.PIPE,
             env=worker_env,
         )
-        stdout_rvc, stderr_rvc = await proc_rvc.communicate()
+        stdout_rvc, stderr_rvc = await communicate(proc_rvc, timeout=300)
         if proc_rvc.returncode != 0 or not voc_new_wav.is_file():
             logger.error("Singing RVC failed: %s", stderr_rvc.decode('utf8', 'replace')[-500:])
             raise ValueError('VOICE_RVC_CONVERSION_FAILED')
@@ -452,7 +475,7 @@ class VoiceCompute:
         # Stage 3: Mixing to final MP3
         logger.info("[Singing] Stage 3: Mixing to MP3 for %s...", clean_task)
         t_mix_start = time.monotonic()
-        final_mp3 = root / f"song_{clean_task}.mp3"
+        final_mp3 = root / 'mix.mp3'
         mix_script = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone' / 'mix.py'
         if not mix_script.is_file():
             mix_script = Path(r'D:\CodePackage\DSHA\projects\lucidheart\packages\rvc\vendor\phone\mix.py')
@@ -468,11 +491,12 @@ class VoiceCompute:
             stderr=asyncio.subprocess.PIPE,
             env=worker_env,
         )
-        stdout_mix, stderr_mix = await proc_mix.communicate()
+        stdout_mix, stderr_mix = await communicate(proc_mix, timeout=300)
         if proc_mix.returncode != 0 or not final_mp3.is_file():
             logger.error("Singing mix failed: %s", stderr_mix.decode('utf8', 'replace')[-500:])
             raise ValueError('VOICE_MIX_FAILED')
 
+        published = final_mp3.replace(destination / f'song_{clean_task}.mp3')
         t_mix = time.monotonic() - t_mix_start
         total_elapsed = time.monotonic() - started
         logger.info("[Singing] All stages completed in %.2fs (sep=%.1fs, rvc=%.1fs, mix=%.1fs)", total_elapsed, t_sep, t_rvc, t_mix)
@@ -487,5 +511,6 @@ class VoiceCompute:
                 "mixing": round(t_mix, 2),
             },
             "downloadUrl": f"/v1/voice/sing/download/{clean_task}",
+            "artifactId": self.artifacts.artifact_id(published),
             "mode": "pc_gpu_pipeline",
         }

@@ -26,9 +26,30 @@ export const MemoryScopes = ['xiaoman_private', 'axing_private', 'shared'];
  * - superseded: 已被新事实覆盖状态 (历史版本，保留用于溯源，默认检索不返回)
  * - revoked: 已彻底注销/遗忘状态 (用户要求删除，索引物理隔离)
  */
-export const MemoryStatuses = ['candidate', 'active', 'superseded', 'revoked'];
+export const MemoryStatuses = /** @type {const} */ (['candidate', 'active', 'superseded', 'revoked']);
+
+/** @typedef {typeof MemoryStatuses[number]} MemoryStatus */
+
+export const CommitmentStatuses = /** @type {const} */ (['pending', 'fulfilled', 'expired', 'cancelled']);
+
+/**
+ * @typedef {Object} CommitmentEntry
+ * @property {string} id
+ * @property {string} title
+ * @property {'user'|'xiaoman'} initiator
+ * @property {string} [targetTime]
+ * @property {typeof CommitmentStatuses[number]} status
+ * @property {string} createdAt
+ * @property {string} [fulfilledAt]
+ * @property {string} evidence
+ * @property {'direct'|'group'} channel
+ */
 
 export const MemoryOrigins = ['user_statement', 'shared_experience', 'model_inference'];
+
+export function supersedeMemory(previous, replacementId, endedAt) {
+  return { ...previous, status: 'superseded', supersededBy: replacementId, updatedAt: endedAt, validTo: endedAt };
+}
 
 /**
  * @typedef {Object} MemoryProvenance

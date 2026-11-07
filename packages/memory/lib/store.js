@@ -7,6 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { supersedeMemory } from './types.js';
 
 export class MemoryStore {
   /**
@@ -28,7 +29,7 @@ export class MemoryStore {
   /**
    * 追加一条记忆变更到日志流 (Append-only Journal)
    * @param {any} entry
-   * @param {'create'|'update'|'supersede'|'revoke'} action
+   * @param {'create'|'update'|'supersede'|'revoke'|'commitment'} action
    * @param {string} [reason]
    */
   appendJournal(entry, action = 'create', reason) {
@@ -57,7 +58,7 @@ export class MemoryStore {
    * 从 JSONL 还原所有有效记忆条目 (回放状态机)
    * @returns {Map<string, any>}
    */
-  loadAllFromJournal() {
+  loadAllFromJournal(commitments) {
     const entries = new Map();
     if (!fs.existsSync(this.journalPath)) return entries;
 
@@ -70,16 +71,19 @@ export class MemoryStore {
         const { action, entry } = record;
         if (!entry || !entry.id) continue;
 
-        if (action === 'create' || action === 'update') {
+        if (action === 'commitment') {
+          commitments?.set(entry.id, entry);
+        } else if (action === 'create' || action === 'update') {
           entries.set(entry.id, entry);
         } else if (action === 'supersede') {
           entries.set(entry.id, entry);
-          const old = entries.get(entry.supersedesId);
-          if (old?.status === 'active') {
-            const endedAt = entry.updatedAt || record.timestamp || old.updatedAt;
-            old.status = 'superseded';
-            old.updatedAt = endedAt;
-            old.validTo = endedAt;
+          for (const id of entry.supersedesIds || [entry.supersedesId]) {
+            const old = entries.get(id);
+            if (old?.status === 'active' ||
+                (entry.status === 'active' && old?.status === 'superseded' && !old.supersededBy)) {
+              const endedAt = entry.updatedAt || record.timestamp || old.updatedAt;
+              entries.set(id, supersedeMemory(old, entry.id, endedAt));
+            }
           }
         } else if (action === 'revoke') {
           const existing = entries.get(entry.id) || entry;
