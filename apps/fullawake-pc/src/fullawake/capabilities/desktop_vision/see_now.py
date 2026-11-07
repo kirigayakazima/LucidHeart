@@ -20,7 +20,7 @@ class FrameCandidate:
 
 
 class DifferentialScreenSampler:
-    def __init__(self, min_diff_threshold=0.12, shot_cut_threshold=0.45,
+    def __init__(self, min_diff_threshold=0.06, shot_cut_threshold=0.35,
                  max_buffer_seconds=30.0, target_grid=9):
         if target_grid not in (4, 9):
             raise ValueError('Expected 4 or 9 cells')

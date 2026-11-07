@@ -1,9 +1,9 @@
 (() => {
   const key = '__fullawakeWatchClock';
-  if (globalThis[key]) {
-    globalThis[key]();
+  if (globalThis[key] && !globalThis[key].stopped) {
     return;
   }
+
   const source = crypto.randomUUID();
   const canvas = document.createElement('canvas');
   let segment = 0;
@@ -18,6 +18,30 @@
   let again = false;
   let controlId;
   let controlApplied = false;
+  let enabled = true;
+
+  chrome.storage.local.get(['enabled']).then(res => {
+    enabled = res.enabled !== false;
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.enabled) {
+      enabled = changes.enabled.newValue !== false;
+      if (!enabled) {
+        invalidate();
+      } else {
+        void tick();
+      }
+    }
+  });
+
+  chrome.runtime.onMessage.addListener(msg => {
+    if (msg?.kind === 'watch-enabled') {
+      enabled = msg.enabled !== false;
+      if (!enabled) invalidate();
+      else void tick();
+    }
+  });
 
   function invalidate() {
     segment++;
@@ -35,7 +59,7 @@
     const epoch = segment;
     frameRequest = player.requestVideoFrameCallback((_now, frame) => {
       frameRequest = undefined;
-      if (stopped || epoch !== segment || player.paused || player.seeking || document.hidden) return;
+      if (stopped || !enabled || epoch !== segment || player.paused || player.seeking || document.hidden) return;
       if (!(player.videoWidth > 0 && player.videoHeight > 0)) return;
       canvas.width = Math.min(384, player.videoWidth);
       canvas.height = Math.max(1, Math.min(384, Math.round(canvas.width * player.videoHeight / player.videoWidth)));
@@ -76,6 +100,7 @@
   }
 
   async function tick() {
+    if (!enabled) return;
     if (busy) { again = true; return; }
     const match = /^\/video\/(BV[a-zA-Z0-9]+)/.exec(location.pathname);
     const player = document.querySelector('#bilibili-player video, .bpx-player-video-wrap video, video');
@@ -99,7 +124,7 @@
       video.addEventListener('pause', tick);
     }
     const at = Math.min(player.currentTime, player.duration);
-    const paused = stopped || player.paused || document.hidden || player.ended || player.readyState < 2;
+    const paused = stopped || !enabled || player.paused || document.hidden || player.ended || player.readyState < 2;
     const clock = { client: 'bilibili-web-player', source, segment, sequence: ++sequence, videoId,
       title: document.title.slice(0, 240), playbackPositionSec: at, durationSec: player.duration,
       paused, stopped, seeking: player.seeking, speed: player.playbackRate, subtitles: stopped ? [] : subtitles(player, at),
@@ -123,7 +148,7 @@
         again = true;
       }
     } catch {
-      // Extension reload or transport failure leaves the gateway to expire the clock.
+      // Extension reload or transport failure
     } finally {
       busy = false;
       if (again) { again = false; void tick(); }
@@ -133,13 +158,25 @@
 
   const timer = setInterval(tick, 1000);
   document.addEventListener('visibilitychange', tick);
-  globalThis[key] = () => {
+  document.addEventListener('play', tick, true);
+  document.addEventListener('playing', tick, true);
+  window.addEventListener('popstate', tick);
+
+  const instance = () => {
     if (stopped) return;
     stopped = true;
+    instance.stopped = true;
     clearInterval(timer);
     document.removeEventListener('visibilitychange', tick);
+    document.removeEventListener('play', tick, true);
+    document.removeEventListener('playing', tick, true);
+    window.removeEventListener('popstate', tick);
     invalidate();
     void tick();
   };
+  instance.stopped = false;
+  instance.active = true;
+  globalThis[key] = instance;
+
   void tick();
 })();

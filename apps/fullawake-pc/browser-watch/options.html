@@ -1,13 +1,14 @@
 <!doctype html>
 <html lang="zh-CN">
 <meta charset="utf-8">
-<title>LucidHeart 陪看</title>
-<h1>LucidHeart 陪看</h1>
+<title>LucidHeart 陪看设置</title>
+<h1>LucidHeart 陪看设置</h1>
 <form>
   <p><label>本机网关端口 <input id="port" type="number" min="1" max="65535" value="8765" required></label></p>
   <p><label>陪看采集令牌 <input id="token" type="password" minlength="24" maxlength="128" required></label></p>
+  <p><label><input id="enabled" type="checkbox" checked> 常驻自动接入（打开任意 B 站视频自动跟随陪看）</label></p>
   <button>保存</button> <output aria-live="polite"></output>
 </form>
-<p>在 B 站视频页点扩展图标开启，再点一次停止。画面仅发送至本机网关。</p>
+<p>说明：开启常驻后，打开任意 B 站视频小满桌宠将自动跟随陪看。点击浏览器工具栏图标可随时一键切换【ON / OFF】。</p>
 <script src="options.js"></script>
 </html>
