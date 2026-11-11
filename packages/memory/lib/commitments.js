@@ -43,8 +43,9 @@ function reminder(entry) {
 }
 
 export class CommitmentLedger {
-  constructor(store) {
+  constructor(store, ensureCurrent = () => {}) {
     this.store = store;
+    this.ensureCurrent = ensureCurrent;
     this.entries = new Map();
   }
 
@@ -53,13 +54,14 @@ export class CommitmentLedger {
       this.store.appendJournal(entry, 'commitment', note);
     } catch (error) {
       // 写入成功但刷盘报错时，以实际可重放的事件为准，重试不会重复登记或核销。
-      this.store.loadAllFromJournal(this.entries);
+      try { this.store.loadAllFromJournal(this.entries); } catch {}
       throw error;
     }
     this.entries.set(entry.id, entry);
   }
 
   get(id, now = Date.now(), timeZone = 'Asia/Shanghai') {
+    this.ensureCurrent();
     const entry = this.entries.get(id);
     if (!entry) return;
     const expired = entry.status === 'pending' && deadline(entry.targetTime, timeZone) < now;
@@ -67,6 +69,7 @@ export class CommitmentLedger {
   }
 
   record({ title, targetTime, evidence, channel, initiator = 'user' }, now = Date.now()) {
+    this.ensureCurrent();
     title = title?.trim().replace(/\s+/g, ' ');
     targetTime = targetTime?.trim() || undefined;
     evidence = evidence?.trim();
@@ -101,6 +104,7 @@ export class CommitmentLedger {
 
   /** Prefer the nearest upcoming deadline in 24h, then the nearest overdue one. */
   getActiveCommitmentCare(now = new Date(), timeZone = 'Asia/Shanghai') {
+    this.ensureCurrent();
     const at = now.getTime();
     let next;
     let overdue;
@@ -127,6 +131,7 @@ export class CommitmentLedger {
   }
 
   find(query) {
+    this.ensureCurrent();
     const words = tokenizeForFTS(query);
     if (!words) return [];
     const terms = words.split(' ');

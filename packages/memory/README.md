@@ -1,6 +1,6 @@
 # @dsh/memory
 
-本地源码 0.1.2。Core 独立于 DSH，适配器提供 `memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
+Core 独立于 DSH，适配器提供 `memory_intake`、`memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
 
 ## 当前存储和接口
 
@@ -12,11 +12,13 @@ Core 提供 remember/recall/inspect/correct/revoke/reindex/close。recall 默认
 
 ## 已知边界
 
-适配器 remember 仍默认 confidence 1 和 confirmed true。correct 的证据字段取自模型提交的事实陈述。journal 回放跳过坏行，兼容旧的双行覆盖和新的单行覆盖事件。覆盖与撤销后，派生 FTS 和 Markdown 只展示活跃条目。原始正文留在 journal 供审计。
+新摄取记录从 DSH 当前回合与工具调用定位消息，通过 QQ 驱动的偏移提取当前发言。可逐字核对或只需替换主语的第一人称陈述会标记为 `user_statement` 并确认。无法核对的改写、模型推断和缺少出处的记录进入候选。日志只存有界证据片段和消息引用，旧条目在重放时保留原始字段与确认状态。
 
-当前默认排序为FTS rank/confidence/created_at。Memory Shape是独立只读展示，影子分数不改变检索。两目录存在不意味着同时召回；dataDir是唯一选定权威，不自动合并。
+`correct` 的证据字段取自模型提交的事实陈述。纠错与自动覆盖使用单条 `supersede` Mutation，`replaces`、新条目和校验摘要一起追加，文件刷盘后才更新投影。新版 reader 兼容旧的双行和单行覆盖。坏行、截断或校验失败会关闭读取与写入，等待完整回放。原始 journal 保留作审计；FTS 和 Markdown 仍为派生数据。若刷盘已成功但投影更新失败，错误带 `durable: true` 和 `projection: 'degraded'`，重放可恢复已提交的纠错。
 
-源码含合成用例，但没有可比对的Mnemon现场基线和固定规模性能证据，因此不保留旧82%/100%、180ms/1.2ms等营销式对比。[下一版设计](../../../../docs/roadmap/NEXT-VERSION-DESIGN.md)覆盖来源、提交可靠性、纠错/撤销与旁路比较，尚未实现。
+会话骨架按 FTS 相关度选取最多三条完整事实，用包括包装在内的 200 UTF-8 字节作为 Token 保守上限。`retrievalPolicy` 默认 `fts`。选用 `shadow` 时，异步对同范围的 FTS 候选重排，将条目 ID、分项分数及耗时写入 `shadow-retrieval.jsonl`。两种模式返回同一份基线结果和提示词。dataDir 仍是单写者使用的唯一选定权威。
+
+[下一版设计](../../../../docs/roadmap/NEXT-VERSION-DESIGN.md)记录来源、提交可靠性、纠错与旁路比较的整体范围。当前本地验收覆盖来源契约、宿主取证和旧条目回放。
 
 运行本地回归：`node --test test/*.test.js`，使用支持node:sqlite/FTS5的Node（手机已确认Node24）。新增工具必须通过实际SDK参数/返回schema验证，不能仅直接调用execute。
 

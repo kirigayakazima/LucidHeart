@@ -34,7 +34,7 @@ function createTempSandbox() {
 
 test('DSHA LucidMemory Sovereign Core - 56 Benchmark Scenarios', async (t) => {
   const sandbox = createTempSandbox();
-  const memory = new MemoryService({ dataDir: sandbox.dir });
+  let memory = new MemoryService({ dataDir: sandbox.dir });
 
   await t.test('1. 中文口语改写与多别名检索 (Chinese Reformulation - 10 cases)', async () => {
     // 注入基础事实
@@ -259,7 +259,7 @@ test('DSHA LucidMemory Sovereign Core - 56 Benchmark Scenarios', async (t) => {
     assert.match(factsContent, /大肥鱼玩偶/);
     assert.match(factsContent, /上海市徐汇区/);
 
-    recoveredMemory.close();
+    memory = recoveredMemory;
   });
 
   await t.test('8. 上下文 Token 预算与渐进式披露 (Token Budgeting - 6 cases)', async () => {

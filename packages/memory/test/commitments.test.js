@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { apply, MemoryService } from '../lib/index.js';
 import { HeartService } from '../../heart/lib/service.js';
 import { maybeTrigger, readTrigger } from '../../heart/lib/trigger.js';
@@ -30,7 +31,7 @@ function setup(t, heart) {
   const emit = (event, target = agent) => listeners.get('session/event')(target.session, event);
   const turn = (text, { target = agent, channel = 'direct', speaker = '小舟', prefix = '', time = Date.now() } = {}) => {
     const message = {
-      role: 'user', content: [{ type: 'text', text: prefix + text }],
+      id: randomUUID(), role: 'user', content: [{ type: 'text', text: prefix + text }],
       source: { kind: 'user', qq: { channel, speaker, start: prefix.length, length: text.length } },
     };
     listeners.get('agent/inbox/claimed')({ agent: target, message });
@@ -313,11 +314,12 @@ test('自动覆盖的 FTS 事务失败后可重放，重试不会多写一条', 
     write(entry);
   });
   const content = '用户住在上海';
-  h.turn(content);
-  const args = { content, evidence: content, kind: 'fact', origin: 'user_statement' };
+  h.turn('我住在上海');
+  const args = { content, evidence: '我住在上海', kind: 'fact', origin: 'user_statement' };
   await assert.rejects(h.run('memory_intake', args), /simulated FTS failure/);
   const replacement = h.journal().at(-1).entry;
-  assert.deepEqual(h.memory.indexer.search('住在').map(({ id }) => id), [old.id]);
+  assert.throws(() => h.memory.indexer.search('住在'), { code: 'MEMORY_PROJECTION_UNAVAILABLE' });
+  assert.deepEqual(h.memory.indexer.db.prepare('SELECT id FROM fts_memories').all().map(({ id }) => id), [old.id]);
   fail.mock.restore();
   assert.deepEqual(await h.run('memory_intake', args), { stored: false });
   assert.equal(h.journal().length, 2);

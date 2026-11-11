@@ -45,16 +45,21 @@ function describe(text) {
 }
 
 export function findContradictions(entry, indexer) {
-  if (!kinds.includes(entry.kind) || entry.status !== 'active' || entry.provenance?.origin !== 'user_statement') return [];
+  const provenance = entry.provenance;
+  const sourced = provenance?.claimType !== undefined;
+  const isStatement = sourced ? provenance.claimType === 'user_statement' && entry.confirmed : provenance?.origin === 'user_statement';
+  if (!kinds.includes(entry.kind) || entry.status !== 'active' || !isStatement) return [];
   const next = describe(entry.content);
   if (!next || next.historic) return [];
-  const { speaker, channel } = entry.provenance;
+  const { speaker, channel } = sourced ? entry.source : provenance;
+  if (!speaker) return [];
   const subject = next.owner || speaker;
 
-  return indexer.search(next.query, { scope: entry.scope, exactScope: true, kind: kinds, limit: 3 }).filter((old) => {
-    if (old.provenance && old.provenance.speaker !== speaker) return false;
+  return indexer.search(next.query, { scope: entry.scope, exactScope: true, kind: kinds, limit: 3, shadow: false }).filter((old) => {
+    const oldSpeaker = old.provenance?.claimType !== undefined ? old.source?.speaker : old.provenance?.speaker;
+    if (old.provenance && oldSpeaker !== speaker) return false;
     const previous = describe(old.content);
-    const previousSubject = previous?.owner || old.provenance?.speaker || (channel === 'direct' ? speaker : '');
+    const previousSubject = previous?.owner || oldSpeaker || (channel === 'direct' ? speaker : '');
     return previous?.dimension === next.dimension && previousSubject === subject && previous.value !== next.value;
   });
 }

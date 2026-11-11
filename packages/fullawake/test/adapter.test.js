@@ -4,9 +4,12 @@ import http from 'node:http'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { apply, name } from '../lib/index.js'
+import { setTimeout as sleep } from 'node:timers/promises'
+import { WebSocketServer } from 'ws'
+import { apply } from '../lib/index.js'
 import { HeartService } from '../../heart/lib/service.js'
 import { ensureLayout } from '../../heart/lib/store.js'
+import { readTrigger, writeTrigger } from '../../heart/lib/trigger.js'
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'fullawake-adapter-test-'))
 
@@ -441,3 +444,100 @@ test('watch autoplay uses one image in an isolated DSH model call', async () => 
     await gateway.close()
   }
 })
+
+for (const mode of ['interrupt', 'played', 'text_delivered']) {
+  test(`watch voice lease settles Heart quota only on ${mode}`, { timeout: 8000 }, async () => {
+    const watch = watchFixture()
+    const gateway = await startMockGateway(watch)
+    const socketServer = new WebSocketServer({ server: gateway.server, path: '/ws/bridge' })
+    const host = new MockCordisHost()
+    const ctx = host.createContext('dsh-fullawake')
+    const root = tmpDir()
+    writeTrigger(root, { idleCount: 0 })
+    const before = fs.readFileSync(path.join(root, 'trigger.json'))
+    const heart = new HeartService(ctx, root, { agency2PCQuota: true })
+    heart.evaluateActivity = () => ({ suitable: true })
+    const observed = Promise.withResolvers()
+    const generated = Promise.withResolvers()
+    const received = Promise.withResolvers()
+    const abortDelay = Promise.withResolvers()
+    const types = []
+    let interruptAt
+    heart.observe = async item => {
+      if (item.evidence?.interrupted || item.evidence?.outcome === 'dispatched') observed.resolve(item)
+    }
+    host.services.set('heart', heart)
+    host.services.set('attachments', { async saveImage() { return { id: 'watch-image', mediaType: 'image/png' } } })
+    host.services.set('llm', { async *stream({ signal }) {
+      generated.resolve()
+      if (mode === 'interrupt') {
+        if (!signal.aborted) await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }))
+        abortDelay.resolve(performance.now() - interruptAt)
+        assert.equal(signal.reason, 'user_interrupt')
+        return
+      }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '{"text":"这段剪得很利落。","intent":"nod"}' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } })
+    socketServer.on('connection', socket => {
+      let seq = 0
+      socket.on('message', raw => {
+        const frame = JSON.parse(raw)
+        types.push(frame.type)
+        const { sessionId, connectionId, payload } = frame
+        const send = (type, body) => socket.send(JSON.stringify({ protocol: 'lucid.voice/1', type,
+          sessionId, connectionId, commandSeq: ++seq, payload: body }))
+        if (frame.type === 'session.handshake') {
+          send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: true, turnLifecycle: true })
+        } else if (frame.type === 'audio.prepare') {
+          send('audio.prepared', { epoch: payload.epoch, utteranceId: payload.utteranceId })
+          if (mode === 'interrupt') void generated.promise.then(() => {
+            interruptAt = performance.now()
+            send('audio.interrupt', { abortedEpoch: payload.epoch, utteranceId: payload.utteranceId,
+              reason: 'near_end_speech', localAudioStopped: false, elapsedAudioMs: 0 })
+          })
+        } else if (frame.type === 'audio.speak' || frame.type === 'pet.text') {
+          received.resolve({ frame, finish: () => send('audio.result', {
+            epoch: payload.epoch, utteranceId: payload.utteranceId, status: mode,
+          }) })
+        } else if (frame.type === 'audio.interrupt_ack') received.resolve({ frame })
+      })
+    })
+    apply(ctx, { gatewayUrl: gateway.url, voiceEpochProtocol: true })
+    const exec = { agent: { id: 'owner' } }
+    try {
+      const start = host.tools.get('pc_watch_auto').execute
+      const deadline = performance.now() + 2000
+      let started
+      do {
+        started = await start({ enabled: true, voice: mode !== 'text_delivered' }, exec)
+        if (started.status === 'offline') await sleep(20)
+      } while (started.status === 'offline' && performance.now() < deadline)
+      assert.equal(started.status, 'started')
+      const { frame, finish } = await received.promise
+      assert.deepEqual(fs.readFileSync(path.join(root, 'trigger.json')), before)
+      if (mode === 'interrupt') {
+        assert.equal(frame.type, 'audio.interrupt_ack')
+        const delay = await abortDelay.promise
+        assert(delay < 1000)
+        const observation = await observed.promise
+        assert.deepEqual(observation.evidence, { interrupted: true, elapsedAudioMs: 0 })
+        assert.deepEqual(types, ['session.handshake', 'audio.prepare', 'audio.interrupt_ack'])
+        assert.deepEqual(fs.readFileSync(path.join(root, 'trigger.json')), before)
+      } else {
+        assert.equal(frame.type, mode === 'played' ? 'audio.speak' : 'pet.text')
+        finish()
+        await observed.promise
+        assert.equal(readTrigger(root).idleCount, 1)
+        assert.equal(readTrigger(root).idleCategoryCounts.bilibili, 1)
+      }
+      assert.deepEqual(watch.dispatched, [])
+    } finally {
+      ctx.dispose()
+      for (const socket of socketServer.clients) socket.terminate()
+      await new Promise(resolve => socketServer.close(resolve))
+      await gateway.close()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+}

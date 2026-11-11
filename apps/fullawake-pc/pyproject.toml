@@ -1,10 +1,11 @@
 [project]
 name = "fullawake"
-version = "0.2.5"
+version = "0.2.7"
 description = "Sensory and embodiment gateway connecting phone Xiaoman (DSHA) to PC desktop capabilities"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "anyio>=4.0",
     "mcp>=1.2.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.28.0",
@@ -17,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 widget = ["wsproto>=1.2.0", "PySide6-Addons>=6.8,<6.12; sys_platform == 'win32'"]
+vad = ["sounddevice>=0.5.6,<0.6", "webrtcvad-wheels>=2.0.14,<3"]
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
@@ -32,6 +34,8 @@ packages = ["src/fullawake"]
 [tool.uv.sources]
 wsproto = { index = "tsinghua" }
 pyside6-addons = { index = "tsinghua" }
+sounddevice = { index = "tsinghua" }
+webrtcvad-wheels = { index = "tsinghua" }
 
 [[tool.uv.index]]
 name = "tsinghua"

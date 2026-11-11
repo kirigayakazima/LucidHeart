@@ -46,6 +46,49 @@ uv run --no-sync python -m fullawake.widget --watch
 
 挂件支持 `--gateway-port`、`--name` 与 `--portrait`。旧本机音频监视仍可用 `scripts/start_widget.ps1 -Legacy` 启动，使用 127.0.0.1:8766 和原有 `/clock` 接口。
 
+## 小满心智 2.0 · PC 语音打断
+
+Phase 1 候选提供 `/ws/bridge`。手机从 ADB 回环 `ws://127.0.0.1:28765/ws/bridge` 主动连接，PC 网关在 8765 接受无 Origin 的回环请求，并校验 `Authorization: Bearer <FULLAWAKE_AUTH_TOKEN>`。沿用桌宠的 `FULLAWAKE_WATCH_TOKEN` 启用条件。握手成功后才尝试打开麦克风，断线会停止采集并撤下该连接的音频。
+
+- `VOICE_VAD_ENABLED` 默认 `true`。设为 `false` 后重启网关即可关闭麦克风打断，握手会返回 `vadSupported: false`。可用 `FULLAWAKE_VAD_DEVICE` 选择支持 16 kHz 单声道的设备索引。
+- `EPOCH_REVOCATION_ENABLED` 默认 `true`。设为 `false` 后重启网关即可禁用整个新桥接路由。旧版陪看继续走 `/v1/watch/reaction`。
+- 手机为每次新连接生成 `connectionId`。握手的 `initialEpoch` 是最低可用值，手机签发每次发言的 Epoch。PC 保留 60 秒撤销记录，并在整条连接内拒绝旧水位，即使撤销记录已过期。忙碌或检测到近端说话时收到的语音指令会被丢弃，后续发言应使用新 Epoch。
+- PC 收到 `audio.speak` 后使用本地配置的 `feiyu-rvc-v1` 合成，复用现有 RVC worker。由桌宠确认本地停声后，网关才报告 `localAudioStopped: true`。本阶段的采集验收以耳机为条件，扬声器回声消除尚未接入。
+
+在 FullAwake PC 目录安装和运行测试。
+
+```powershell
+uv pip install --python .venv/Scripts/python.exe --index-url https://pypi.tuna.tsinghua.edu.cn/simple sounddevice webrtcvad-wheels
+$env:PYTHONPATH = 'src'
+$env:QT_QPA_PLATFORM = 'offscreen'
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+延迟探针需要桌宠源码和一段裁掉开头静音的 16 kHz 单声道 PCM16 WAV。它在隔离回环端口使用真实 WebRTC VAD、WebSocket 和 Qt 播放器，注入语音 PCM 并保持音频输出静音。结果按播放器停止状态计时。
+
+```powershell
+$env:PYTHONPATH = 'src;..\..\..\dsh-pet-indesktop'
+.\.venv\Scripts\python.exe scripts/measure_voice_interrupt.py '.\speech.wav' --samples 50
+```
+
+### Phase 2 手机建连与陪看结算
+
+手机 FullAwake 0.2.6 默认关闭 `voiceEpochProtocol`。打开后，插件主动连接本地 ADB 反向地址，`bridgeUrl` 留空时从 `gatewayUrl` 推导。启用陪看租约需要本阶段的 PC 网关和桌宠代码，握手回执用 `turnLifecycle: true` 声明能力。旧网关与旧 HTTP 陪看可继续使用关闭状态。
+
+- 手机先用 `audio.prepare` 取得 `audio.prepared`，再启动模型。手机对同一租约发 `audio.speak` 或 `pet.text`。打断时手机立即取消 LLM 并回复 `audio.interrupt_ack`，PC 同时取消在途合成或播放。
+- 在手机 Heart 配置打开 `agency2PCQuota` 才启用自动陪看的两阶段记账。收到关联的 `audio.result`，且桌宠明确报告播完或文字已显示，才写入 `trigger.json`。打断、掉线、未展示及超时释放预留。手动陪看工具由发起回合负责配额归属。
+- 独立于陪看的 Heart 节律 `agent.followup` 沿用原记账时机。宿主接口确认入队，相关通道尚缺逐回合的实际送达回执。
+
+在 LucidHeart 仓库根目录执行 `pnpm test`。PC 网关回归入口为 `tests/test_voice_bridge.py`，桌宠回归入口为 `tests/test_fullawake_bridge.py`。
+
+### Phase 3 陪看仲裁
+
+`watchDecisionMode` 默认 `legacy`，沿用现有陪看。PC 在只读时钟摘要中提供最新画面候选的时间和差分值。Heart 在手机侧计算决策，按沉睡、北京时间静音期、最近一次打断后的 30 秒冷却及当日配额顺序门控。配额判断包含在途预留。
+
+- `shadow` 只请求时钟摘要，把候选时间和差分值交给 `heart.observe()`，并记录 Heart 仲裁结果。该模式可在桌宠离线时运行。分镜、模型、TTS、动作下发和配额预留均不参与；手动陪看感想工具返回 `shadow`。
+- `heart` 由 Heart 先决定是否选择 `SPEAK`。只有 `SPEAK` 可以进入自动陪看生成，且需要开启 `voiceEpochProtocol`、`agency2PCQuota` 并取得租约及配额预留。桌宠确认交付后沿用 Phase 2 结算。其他动作保留在决策日志。
+- 决策写入 Heart 数据目录的 `logs/core.log`，事件为 `agency_decision`，字段包括前后状态、门控原因和候选评分。记录不带图像、标题或字幕。旧 PC 网关未提供差分值时，Heart 将该候选判为证据不足。
+
 ## 实时陪看
 
 1. 在 PC 启动 FullAwake 0.2.5 前设置一枚独立采集令牌。语音网关启动脚本继承该环境变量。启动后检查 `/health`。分镜渲染使用主权 `dsh-video-storyboard` 的本地源码及 `PATH` 上的 Node.js。

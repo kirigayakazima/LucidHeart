@@ -3,7 +3,8 @@
  */
 
 import { MemoryService } from './service.js';
-import { readConversationInput, registerIntake } from './intake.js';
+import { buildIntakeMetadata, readConversationInput, registerIntake } from './intake.js';
+import { isInjectedMessage, resolveHostContext } from './host-context.js';
 import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
 import { getZonedParts } from './store.js';
 import { registerProjects } from './projects.js';
@@ -12,7 +13,7 @@ import * as types from './types.js';
 import * as budget from './budget.js';
 import * as tokenizer from './tokenizer.js';
 
-export { MemoryService, CommitmentLedger, findContradictions, types, budget, tokenizer };
+export { MemoryService, CommitmentLedger, findContradictions, resolveHostContext, types, budget, tokenizer };
 
 export const name = '@dsh/memory';
 export const inject = ['tools', 'systemPrompt'];
@@ -49,7 +50,7 @@ const textOutput = {
  */
 export function apply(ctx, config = {}) {
   const dataDir = config.dataDir || process.env.DSH_MEMORY_DATA_DIR || `${process.env.HOME || process.env.USERPROFILE}/.dsh/memory`;
-  const memory = new MemoryService({ dataDir });
+  const memory = new MemoryService({ dataDir, retrievalPolicy: config.retrievalPolicy });
   const scope = config.scope || (process.platform === 'win32' ? 'axing_private' : 'xiaoman_private');
   if (!types.MemoryScopes.includes(scope)) { memory.close(); throw new Error('Invalid memory scope'); }
   if (typeof ctx.effect === 'function') ctx.effect(() => () => memory.close());
@@ -75,14 +76,16 @@ export function apply(ctx, config = {}) {
       currentTurn.delete(session);
       acceptedInput.delete(session);
     }
-    if (event.type === 'user/message' && event.data.source?.kind === 'user') {
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
       const projected = currentTurn.get(session);
       if (projected?.projectId && projected.message.id === event.data.id) {
         memory.projects.markReminded(projected.projectId, new Date(event.time));
       }
       const input = readConversationInput(event.data);
-      if (input) acceptedInput.set(session, { ...input, timestamp: new Date(event.time).toISOString() });
+      if (input) acceptedInput.set(session, { ...input, event });
       else acceptedInput.delete(session);
+    } else if (event.type === 'user/message' && !isInjectedMessage(event.data)) {
+      acceptedInput.delete(session);
     }
   }, { global: true });
 
@@ -201,14 +204,15 @@ export function apply(ctx, config = {}) {
         kind: { type: 'string', description: 'fact(默认事实) | preference(喜好习惯) | relationship(约定和关系) | episodic(重要经历)' },
       },
       output: textOutput,
-      async execute(args) {
+      async execute(args, exec) {
+        if (exec?.signal?.aborted) return { message: '记忆写入已取消。' };
+        const content = String(args.content || '').trim();
+        const kind = args.kind || 'fact';
+        const host = resolveHostContext(exec, acceptedInput.get(exec?.agent?.session)?.event);
         const entry = memory.remember({
-          content: String(args.content || ''),
-          kind: args.kind || 'fact',
-          scope,
-          confidence: 1.0,
-          confirmed: true,
+          content, kind, scope, ...buildIntakeMetadata(host, { content, kind }),
         });
+        if (entry.status === 'candidate') return { message: `已保存待确认的记忆候选 [${entry.id}]` };
         return { message: `已成功保存记忆 [${entry.id}]: ${entry.content}` };
       },
     });

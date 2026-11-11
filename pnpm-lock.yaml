@@ -22,6 +22,10 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: '>=3.18.0'
         version: 3.18.5
+    devDependencies:
+      ws:
+        specifier: 8.22.1
+        version: 8.22.1
 
   packages/heart:
     dependencies:
@@ -197,6 +201,18 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  ws@8.22.1:
+    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
 snapshots:
 
   '@deepseek-ai/cordis@4.0.5':
@@ -309,3 +325,5 @@ snapshots:
       '@standard-schema/spec': 1.1.0
 
   '@standard-schema/spec@1.1.0': {}
+
+  ws@8.22.1: {}

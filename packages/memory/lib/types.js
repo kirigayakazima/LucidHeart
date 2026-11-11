@@ -1,4 +1,10 @@
-import { IntakeWeights } from './schema.js';
+import { ClaimTypes, ConversationChannels, EvidenceStatuses, IntakeWeights, ProvenanceOrigins, RetentionClasses } from './schema.js';
+
+export { ClaimTypes, ProvenanceOrigins, RetentionClasses };
+
+/** @typedef {'user_request'|'autonomous'|'external'|'unknown'} ProvenanceOrigin */
+/** @typedef {'user_statement'|'observation'|'model_inference'|'legacy_unknown'} ClaimType */
+/** @typedef {'stable'|'episodic'|'pinned'|'unknown'} RetentionClass */
 
 /**
  * @dsh/memory - Core Types and Constants
@@ -54,12 +60,65 @@ export function supersedeMemory(previous, replacementId, endedAt) {
 }
 
 /**
- * @typedef {Object} MemoryProvenance
+ * @typedef {Object} LegacyMemoryProvenance
  * @property {'user_statement'|'shared_experience'|'casual_chat'|'model_inference'} origin
  * @property {string} speaker
  * @property {'direct'|'group'} channel
  * @property {string} timestamp ISO timestamp
  */
+
+/**
+ * @typedef {Object} SourceProvenance
+ * @property {ProvenanceOrigin} origin
+ * @property {ClaimType} claimType
+ * @property {'resolved'|'unavailable'|'unknown'} [evidenceStatus]
+ */
+/** @typedef {LegacyMemoryProvenance|SourceProvenance} MemoryProvenance */
+
+/**
+ * @typedef {Object} MemorySource
+ * @property {string} [sessionId]
+ * @property {string} [device]
+ * @property {string} [channel]
+ * @property {string} [speaker]
+ * @property {string} [messageId]
+ * @property {string} [observedAt]
+ * @property {string} [evidenceText]
+ */
+
+/**
+ * @typedef {Object} MemorySalience
+ * @property {number|null} importance
+ * @property {string} [reason]
+ * @property {string} [policyVersion]
+ */
+
+/**
+ * @typedef {Object} MemoryEntry
+ * @property {string} id
+ * @property {string} kind
+ * @property {string} scope
+ * @property {string} content
+ * @property {number} confidence
+ * @property {MemoryStatus} status
+ * @property {MemorySource} [source]
+ * @property {MemoryProvenance} [provenance]
+ * @property {MemorySalience} [salience]
+ * @property {RetentionClass} [retentionClass]
+ */
+
+const nonEmpty = value => typeof value === 'string' && !!value.trim();
+const isoTime = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value));
+const unit = value => Number.isFinite(value) && value >= 0 && value <= 1;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function validSource(source) {
+  return object(source) &&
+    ['sessionId', 'messageId', 'speaker', 'device'].every(key => source[key] === undefined || nonEmpty(source[key])) &&
+    (source.channel === undefined || ConversationChannels.includes(source.channel)) &&
+    (source.observedAt === undefined || isoTime(source.observedAt)) &&
+    (source.evidenceText === undefined || typeof source.evidenceText === 'string');
+}
 
 /**
  * 生成规范化的记忆唯一 ID
@@ -85,15 +144,29 @@ export function validateMemoryEntry(entry) {
   if (!entry.content || typeof entry.content !== 'string') return false;
   if (!Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1) return false;
   if (!MemoryStatuses.includes(entry.status)) return false;
-  if (entry.importance !== undefined &&
-      !(Number.isFinite(entry.importance) && entry.importance >= 0 && entry.importance <= 1)) return false;
+  if (entry.importance !== undefined && !unit(entry.importance)) return false;
+  if (entry.retentionClass !== undefined && !RetentionClasses.includes(entry.retentionClass)) return false;
+  if (entry.salience !== undefined) {
+    const salience = entry.salience;
+    if (!object(salience) || (salience.importance !== null && !unit(salience.importance)) ||
+        (salience.reason !== undefined && !nonEmpty(salience.reason)) ||
+        (salience.policyVersion !== undefined && !nonEmpty(salience.policyVersion))) return false;
+  }
   if (entry.provenance !== undefined) {
-    const source = entry.provenance;
-    if (!source || !MemoryOrigins.includes(source.origin) ||
-        typeof source.speaker !== 'string' || !source.speaker.trim() ||
-        !['direct', 'group'].includes(source.channel) ||
-        typeof source.timestamp !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(source.timestamp) ||
-        !Number.isFinite(Date.parse(source.timestamp))) return false;
+    const provenance = entry.provenance;
+    if (!object(provenance)) return false;
+    if (provenance.claimType === undefined) {
+      return MemoryOrigins.includes(provenance.origin) && nonEmpty(provenance.speaker) &&
+        ConversationChannels.includes(provenance.channel) && isoTime(provenance.timestamp);
+    }
+    if (!ProvenanceOrigins.includes(provenance.origin) || !ClaimTypes.includes(provenance.claimType) ||
+        (provenance.evidenceStatus !== undefined && !EvidenceStatuses.includes(provenance.evidenceStatus)) ||
+        (entry.source !== undefined && !validSource(entry.source))) return false;
+    if (provenance.evidenceStatus === 'resolved') {
+      const source = entry.source;
+      if (!source || !nonEmpty(source.sessionId) || !nonEmpty(source.messageId) || !nonEmpty(source.speaker) ||
+          !ConversationChannels.includes(source.channel) || !isoTime(source.observedAt) || !nonEmpty(source.evidenceText)) return false;
+    }
   }
   return true;
 }

@@ -49,6 +49,7 @@ class WatchPet(QWidget):
         self.action_until = 0
         self.drag = None
         self.utterance = ''
+        self.bridged = False
         self.envelope = None
         self.buffer = None
         self.bubble = QLabel(self)
@@ -93,10 +94,13 @@ class WatchPet(QWidget):
             event = json.loads(raw)
             if event['event'] == 'action':
                 self.utterance = event['utteranceId']
+                self.bridged = event.get('voiceBridge') is True
                 self.intent = event['intent']
                 self.action_until = time.monotonic() + event['durationMs'] / 1000
                 self.bubble.setText(event['text'])
                 self.bubble.show()
+                if event.get('bridgeText'):
+                    self.clock('idle', outcome='text_delivered' if self.bubble.isVisible() else 'discarded')
             elif event['event'] == 'playback_audio' and event['utteranceId'] == self.utterance:
                 data = base64.b64decode(event['audioBase64'], validate=True)
                 self.envelope = MouthEnvelope(data)
@@ -108,22 +112,37 @@ class WatchPet(QWidget):
             elif event['event'] == 'playback_clock' and event['mode'] == 'idle':
                 self.stop_audio()
                 self.bubble.hide()
+            elif event['event'] == 'interrupt' and self.utterance in ('', event['utteranceId']):
+                position = self.player.position() if self.utterance else 0
+                self.stop_audio()
+                self.intent = 'listen'
+                self.action_until = time.monotonic() + 2
+                self.bubble.hide()
+                self.socket.sendTextMessage(json.dumps({
+                    'event': 'interrupt_ack', 'interruptId': event['interruptId'],
+                    'utteranceId': event['utteranceId'], 'elapsedAudioMs': position,
+                }))
         except (ValueError, KeyError, TypeError, wave.Error, EOFError):
+            if self.bridged:
+                self.clock('idle', outcome='discarded')
             self.stop_audio()
 
-    def clock(self, mode, position=0):
+    def clock(self, mode, position=0, *, outcome=None):
         if self.utterance and self.socket.state() == QAbstractSocket.SocketState.ConnectedState:
             self.socket.sendTextMessage(json.dumps({'event': 'playback_clock', 'mode': mode,
-                'utteranceId': self.utterance, 'positionMs': position, 'mouth': self.mouth}))
+                'utteranceId': self.utterance, 'positionMs': position, 'mouth': self.mouth,
+                **({'outcome': outcome} if outcome is not None else {})}))
 
     def media_changed(self, status):
         if status in (QMediaPlayer.MediaStatus.EndOfMedia, QMediaPlayer.MediaStatus.InvalidMedia):
-            self.clock('idle')
+            played = status == QMediaPlayer.MediaStatus.EndOfMedia and self.buffer is not None
+            self.clock('idle', outcome=('played' if played else 'discarded') if self.bridged else None)
             self.stop_audio()
 
     def stop_audio(self):
         self.envelope = None
         self.utterance = ''
+        self.bridged = False
         self.mouth = 0
         if self.buffer is not None:
             self.player.stop()
@@ -169,6 +188,9 @@ class WatchPet(QWidget):
         if self.intent == 'smile' and not self.mouth:
             oval(101, 178, 15, 8, '#f7afae')
             oval(168, 178, 15, 8, '#f7afae')
+        if self.intent == 'listen':
+            oval(113, 160, 10, 8, '#392e50')
+            oval(161, 160, 10, 8, '#392e50')
         if self.intent == 'wave':
             oval(207 + math.sin(now * 12) * 7, 175, 18, 26, '#ffdfc6')
         painter.setPen(QColor('#fff3eb'))

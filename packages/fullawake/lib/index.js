@@ -3,6 +3,7 @@
 // 并基于 Heart Protocol v1 向 Heart 汇报 PC 在线/离线与设备感官观察。
 
 import { registerWatch } from './watch.js'
+import { FullAwakeBridgeClient } from './bridge-client.js'
 
 let compileTool = (t) => t
 try {
@@ -29,10 +30,13 @@ export const inject = ['tools']
 export const Config = z
   ? z.object({
       gatewayUrl: z.string().default('http://127.0.0.1:28765').description('FullAwake PC Gateway URL'),
-      authToken: z.string().default('xiaoman-pc-bridge-secret-2026').description('Bearer Token'),
+      authToken: z.string().default('').description('Bearer Token，留空时读取 FULLAWAKE_AUTH_TOKEN 或内置默认值'),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
       watchProvider: z.string().default('').description('自动陪看的 DSH 视觉模型提供者'),
       watchModel: z.string().default('').description('自动陪看的 DSH 视觉模型'),
+      watchDecisionMode: z.union(['legacy', 'shadow', 'heart']).default('legacy').description('陪看决策模式'),
+      voiceEpochProtocol: z.boolean().default(false).description('启用桌宠语音租约与本地打断'),
+      bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
     })
   : undefined
 
@@ -158,7 +162,28 @@ export function apply(ctx, config = {}) {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'))
   }
 
-  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken })
+  const getHeart = () => ctx.get?.('heart') ?? ctx.heart
+  let bridge
+  if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
+    bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
+      heartVersion: () => getHeart()?.version,
+    })
+    ctx.effect(() => {
+      const observeInterrupt = ({ elapsedAudioMs }) => {
+        void Promise.resolve().then(() => getHeart()?.observe?.({
+          type: 'sensor', source: 'fullawake', confidence: 1,
+          evidence: { interrupted: true, elapsedAudioMs }, summary: '用户开口打断语音',
+        })).catch(() => {})
+      }
+      bridge.on('interrupt', observeInterrupt)
+      bridge.connect()
+      return () => {
+        bridge.off('interrupt', observeInterrupt)
+        bridge.stop()
+      }
+    })
+  }
+  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge })
 
   // 2. PC 状态检测与 Heart 联动
   async function checkPCStatus() {

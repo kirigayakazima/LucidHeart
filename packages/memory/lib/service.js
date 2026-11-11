@@ -8,7 +8,7 @@ import { MemoryStore } from './store.js';
 import { MemoryIndexer } from './indexer.js';
 import { formatCompactOutline } from './budget.js';
 import { projectConversation } from './projection.js';
-import { isCandidateOrigin } from './schema.js';
+import { isCandidateProvenance } from './schema.js';
 import { CommitmentLedger } from './commitments.js';
 import { ProjectLedger } from './projects.js';
 import { findContradictions } from './contradictions.js';
@@ -19,13 +19,20 @@ export class MemoryService {
    * @param {string} options.dataDir 存储根路径，如 ~/.dsh/memory
    * @param {string} [options.dbPath] SQLite路径，缺省为 dataDir/index.db
    */
-  constructor({ dataDir, dbPath } = {}) {
+  constructor({ dataDir, dbPath, retrievalPolicy, onShadowEvaluation } = {}) {
     if (!dataDir) throw new Error('dataDir is required for MemoryService');
     this.dataDir = dataDir;
     this.store = new MemoryStore(dataDir);
-    this.commitments = new CommitmentLedger(this.store);
-    this.projects = new ProjectLedger(this.store);
-    this.indexer = new MemoryIndexer(dbPath || path.join(dataDir, 'index.db'));
+    const ensureCurrent = () => this.ensureProjections();
+    this.commitments = new CommitmentLedger(this.store, ensureCurrent);
+    this.projects = new ProjectLedger(this.store, ensureCurrent);
+    this.indexer = new MemoryIndexer(dbPath || path.join(dataDir, 'index.db'), {
+      retrievalPolicy,
+      onShadowEvaluation: report => {
+        if (this.projectionsDirty || this.store.journalRevision() !== this.projectionRevision) return;
+        return onShadowEvaluation ? onShadowEvaluation(report) : this.store.appendShadowEvaluation(report);
+      },
+    });
     try {
       this.initFromStore();
     } catch (error) {
@@ -42,17 +49,34 @@ export class MemoryService {
   }
 
   ensureProjections() {
-    if (this.projectionsDirty) this.reindex();
+    try {
+      if (this.projectionsDirty || this.store.journalRevision() !== this.projectionRevision) this.reindex();
+    } catch (error) {
+      this.indexer.invalidate();
+      this.projectionsDirty = true;
+      throw error;
+    }
   }
 
   commit(entry, action, { previous = [], reason } = {}) {
     this.projectionsDirty = true;
-    this.store.appendJournal(entry, action, reason);
-    this.indexer.upsertAll([...previous, entry]);
-    if (entry.status !== 'candidate' || previous.length) {
-      this.store.syncMarkdownView(this.indexer.getAllActive());
+    let durable = false;
+    try {
+      const revision = previous.length
+        ? this.store.appendMutation(entry, previous.map(old => old.id), this.projectionRevision)
+        : this.store.appendJournal(entry, action, reason, this.projectionRevision);
+      durable = true;
+      this.indexer.upsertAll([...previous, entry]);
+      if (entry.status !== 'candidate' || previous.length) {
+        this.store.syncMarkdownView(this.indexer.getAllActive());
+      }
+      this.projectionRevision = revision;
+      this.projectionsDirty = false;
+    } catch (error) {
+      this.indexer.invalidate();
+      if (durable) Object.assign(error, { durable: true, projection: 'degraded' });
+      throw error;
     }
-    this.projectionsDirty = false;
   }
 
   /**
@@ -68,6 +92,8 @@ export class MemoryService {
    * @param {any} [params.source]
    * @param {import('./types.js').MemoryProvenance} [params.provenance]
    * @param {number} [params.importance]
+   * @param {import('./types.js').MemorySalience} [params.salience]
+   * @param {import('./types.js').RetentionClass} [params.retentionClass]
    * @param {string[]} [params.tags]
    * @param {string[]} [params.entities]
    * @returns {any}
@@ -78,7 +104,7 @@ export class MemoryService {
 
   intake(params) {
     this.ensureProjections();
-    const candidate = isCandidateOrigin(params.provenance?.origin);
+    const candidate = isCandidateProvenance(params.provenance);
     if (this.indexer.hasIntakeMatch(params.content, params.scope, candidate)) return;
     return this.#remember(params, true);
   }
@@ -94,6 +120,8 @@ export class MemoryService {
     source = {},
     provenance,
     importance,
+    salience,
+    retentionClass,
     tags = [],
     entities = [],
   }, autoCorrect = false) {
@@ -103,8 +131,10 @@ export class MemoryService {
 
     const now = new Date().toISOString();
     // 置信度低于 0.6 且未经用户明确确认的，进入 candidate 状态 (不进入检索索引)
-    const inferred = isCandidateOrigin(provenance?.origin);
-    const status = !inferred && (confidence >= 0.6 || confirmed) ? 'active' : 'candidate';
+    const inferred = isCandidateProvenance(provenance);
+    const sourced = provenance?.claimType !== undefined;
+    const trustedConfirmation = !inferred && (!sourced || provenance.claimType === 'user_statement') && !!confirmed;
+    const status = !inferred && (confidence >= 0.6 || trustedConfirmation) ? 'active' : 'candidate';
 
     const entry = {
       id: generateMemoryId(kind),
@@ -114,9 +144,11 @@ export class MemoryService {
       confidence,
       ...(provenance !== undefined && { provenance }),
       ...(importance !== undefined && { importance }),
+      ...(salience !== undefined && { salience }),
+      ...(retentionClass !== undefined && { retentionClass }),
       validFrom: validFrom || now,
       validTo: null,
-      source: {
+      source: sourced ? source : {
         sessionId: source.sessionId || 'unknown',
         device: source.device || 'phone',
         channel: source.channel || 'qq',
@@ -124,7 +156,7 @@ export class MemoryService {
       },
       status,
       supersedesId: supersedesId || null,
-      confirmed: !inferred && !!confirmed,
+      confirmed: trustedConfirmation,
       tags: Array.isArray(tags) ? tags : [],
       entities: Array.isArray(entities) ? entities : [],
       createdAt: now,
@@ -139,6 +171,7 @@ export class MemoryService {
     this.ensureProjections();
     let targets = [];
     if (supersedesId) {
+      if (status !== 'active') throw new Error('Candidate memory cannot supersede an active entry');
       const old = this.indexer.getById(supersedesId);
       if (old?.status !== 'active') {
         throw new Error(`Target memory ${supersedesId} is not active`);
@@ -146,8 +179,8 @@ export class MemoryService {
       targets = [old];
     } else if (autoCorrect) {
       targets = findContradictions(entry, this.indexer);
-      const spokenAt = Date.parse(entry.provenance?.timestamp);
-      if (targets.some((old) => Date.parse(old.provenance?.timestamp) > spokenAt)) return;
+      const spokenAt = Date.parse(entry.source?.observedAt ?? entry.provenance?.timestamp);
+      if (targets.some((old) => Date.parse(old.source?.observedAt ?? old.provenance?.timestamp) > spokenAt)) return;
       entry.supersedesId = targets[0]?.id || null;
       if (targets.length > 1) entry.supersedesIds = targets.map(({ id }) => id);
     }
@@ -205,6 +238,11 @@ export class MemoryService {
     if (!target) {
       throw new Error(`Target memory ${targetId} not found to correct`);
     }
+    if (target.status === 'superseded' && typeof target.supersededBy === 'string' && typeof newContent === 'string') {
+      const replacement = this.inspect(target.supersededBy);
+      if (replacement?.status === 'active' && replacement.content === newContent.trim() &&
+          replacement.kind === (options.kind || target.kind) && replacement.scope === (options.scope || target.scope)) return replacement;
+    }
 
     return this.remember({
       content: newContent,
@@ -242,21 +280,26 @@ export class MemoryService {
    * @returns {{ restoredCount: number, durationMs: number }}
    */
   reindex() {
+    return this.replayJournal();
+  }
+
+  replayJournal() {
     const t0 = Date.now();
     this.projectionsDirty = true;
-    const commitments = new Map();
-    const projects = new Map();
-    const entries = this.store.loadAllFromJournal(commitments, projects);
-    this.projects.entries = projects;
-    this.indexer.rebuildIndex(entries.values());
-    this.store.syncMarkdownView(this.indexer.getAllActive());
-    this.commitments.entries = commitments;
-    this.projectionsDirty = false;
-    const durationMs = Date.now() - t0;
-    return {
-      restoredCount: entries.size,
-      durationMs,
-    };
+    this.indexer.invalidate();
+    try {
+      const { entries, commitments, projects, revision } = this.store.replayJournal();
+      this.indexer.rebuildIndex(entries.values());
+      this.store.syncMarkdownView(this.indexer.getAllActive());
+      this.commitments.entries = commitments;
+      this.projects.entries = projects;
+      this.projectionRevision = revision;
+      this.projectionsDirty = false;
+      return { restoredCount: entries.size, durationMs: Date.now() - t0 };
+    } catch (error) {
+      this.indexer.invalidate();
+      throw error;
+    }
   }
 
   close() {

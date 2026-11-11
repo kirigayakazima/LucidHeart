@@ -141,6 +141,9 @@ class WatchCapability(BaseCapability):
         self.cached_sheet = None
         self.subscribers = set()
         self.player = None
+        self.bridge_output = None
+        self.bridge_receipt = None
+        self.interrupt_receipt = None
 
     @property
     def enabled(self):
@@ -185,7 +188,9 @@ class WatchCapability(BaseCapability):
                 queue.get_nowait()
             queue.put_nowait(event)
 
-    def cancel_output(self):
+    def cancel_output(self, *, bridge_utterance=None, interrupt_id=None):
+        if bridge_utterance is not None:
+            return self._stop_bridge(bridge_utterance, interrupt_id)
         if self.pending:
             _, _, waiter, _ = self.pending
             if not waiter.done():
@@ -194,6 +199,48 @@ class WatchCapability(BaseCapability):
         if self.active:
             self.active = None
             self.publish({'event': 'playback_clock', 'mode': 'idle', 'mouth': 0, 'positionMs': 0, 'utteranceId': ''})
+
+    def play_bridge(self, utterance, text, audio, duration_ms, intent='talk'):
+        if not self.player or self.pending or self.bridge_output or is_desktop_locked():
+            return None
+        if self.active:
+            if time.monotonic() < self.active[1]:
+                return None
+            self.cancel_output()
+        self.bridge_output = utterance
+        self.bridge_receipt = asyncio.get_running_loop().create_future()
+        metadata = {'utteranceId': utterance, 'voiceBridge': True}
+        self.publish({'event': 'action', 'intent': intent, 'text': text,
+                      'durationMs': duration_ms, 'bridgeText': audio is None, **metadata}, player_only=True)
+        if audio is not None:
+            self.publish({'event': 'playback_audio', 'audioBase64': audio, **metadata}, player_only=True)
+        return self.bridge_receipt
+
+    def _complete_bridge(self, outcome):
+        self.bridge_output = None
+        receipt, self.bridge_receipt = self.bridge_receipt, None
+        if receipt and not receipt.done():
+            receipt.set_result(outcome)
+
+    def _stop_bridge(self, utterance, interrupt_id):
+        if self.bridge_output != utterance:
+            return None
+        self._complete_bridge('discarded')
+        if not self.player:
+            return None
+        if interrupt_id is None:
+            self.publish({'event': 'playback_clock', 'mode': 'idle', 'utteranceId': utterance}, player_only=True)
+            return None
+        receipt = asyncio.get_running_loop().create_future()
+        self.interrupt_receipt = (interrupt_id, utterance, receipt)
+
+        def clear(_):
+            if self.interrupt_receipt and self.interrupt_receipt[2] is receipt:
+                self.interrupt_receipt = None
+
+        receipt.add_done_callback(clear)
+        self.publish({'event': 'interrupt', 'utteranceId': utterance, 'interruptId': interrupt_id}, player_only=True)
+        return receipt
 
     async def accept_clock(self, clock, now):
         old = self.clock
@@ -258,7 +305,8 @@ class WatchCapability(BaseCapability):
         self.pending = None
         if waiter.done():
             return
-        allowed = not gone and self.player is not None and self.valid_cue(request.watchSessionId, request.cueId, now)
+        allowed = (not gone and self.player is not None and self.bridge_output is None and
+                   self.valid_cue(request.watchSessionId, request.cueId, now))
         if allowed:
             self.cues.clear()
             self.active = (event['utteranceId'], now + max(4, event.get('audioDurationMs', 0) / 1000 + 2))
@@ -279,11 +327,13 @@ class WatchCapability(BaseCapability):
         session, timeline, clock = self.session, self.timeline, self.clock
         end = clock.playbackPositionSec
         start = max(self.start, end - duration)
+        latest = self.sampler.frames[-1] if self.sampler.frames else None
         result = {'status': 'paused' if not self.playing(now) else 'playing', 'watchSessionId': session, 'timelineId': timeline,
                   'videoId': clock.videoId, 'title': clock.title, 'playbackPositionSec': end,
                   'watchedInterval': [start, end], 'frameCount': 0, 'timecodes': [],
                   'tokenCost': 0, 'sceneAtSec': None, 'cueId': None, 'control': self.command_result,
-                  'latestCandidateSec': self.sampler.frames[-1].timestamp_sec if self.sampler.frames else None,
+                  'latestCandidateSec': latest.timestamp_sec if latest else None,
+                  'latestCandidateDiff': latest.diff_score if latest else None,
                   'widgetOnline': self.player is not None,
                   'subtitles': [{'start': a, 'end': b, 'text': text} for a, b, text in self.subtitles
                                 if start <= a < b <= end], 'emotionHint': 'calm'}
@@ -366,7 +416,7 @@ class WatchCapability(BaseCapability):
             reaction = await read_input(request, Reaction, 1_410_000)
             now = time.monotonic()
             if (not self.player or not self.valid_cue(reaction.watchSessionId, reaction.cueId, now) or
-                    self.pending or (self.active and now < self.active[1])):
+                    self.pending or self.bridge_output or (self.active and now < self.active[1])):
                 return {'status': 'discarded'}
             event = {'event': 'action', 'intent': reaction.intent, 'text': reaction.text,
                      'durationMs': 4000, 'utteranceId': uuid.uuid4().hex}
@@ -407,15 +457,36 @@ class WatchCapability(BaseCapability):
                         event = await asyncio.wait_for(queue.get(), timeout=0.25)
                     except asyncio.TimeoutError:
                         continue
+                    if event.get('voiceBridge') and self.bridge_output != event['utteranceId']:
+                        continue
                     await socket.send_json(event)
 
             async def listen():
                 while True:
                     raw = await socket.receive_text()
-                    if not player or len(raw) > 1024 or not self.active or not self.playing(time.monotonic()):
+                    if not player or len(raw) > 1024:
                         continue
-                    value = json.loads(raw)
-                    if not isinstance(value, dict) or value.get('utteranceId') != self.active[0]:
+                    try:
+                        value = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if not isinstance(value, dict):
+                        continue
+                    utterance = value.get('utteranceId')
+                    if value.get('event') == 'interrupt_ack':
+                        elapsed = value.get('elapsedAudioMs')
+                        if self.interrupt_receipt and type(elapsed) is int and 0 <= elapsed <= 10_000:
+                            interrupt_id, expected_utterance, receipt = self.interrupt_receipt
+                            if (value.get('interruptId') == interrupt_id and utterance == expected_utterance
+                                    and not receipt.done()):
+                                receipt.set_result(elapsed)
+                        continue
+                    if self.bridge_output and utterance == self.bridge_output:
+                        if value.get('mode') == 'idle':
+                            outcome = value.get('outcome') if value.get('event') == 'playback_clock' else None
+                            self._complete_bridge(outcome if outcome in ('played', 'text_delivered') else 'discarded')
+                        continue
+                    if not self.active or not self.playing(time.monotonic()) or utterance != self.active[0]:
                         continue
                     if value.get('mode') == 'idle':
                         self.cancel_output()
@@ -437,4 +508,7 @@ class WatchCapability(BaseCapability):
                 self.subscribers.discard(queue)
                 if self.player is queue:
                     self.player = None
+                    self._complete_bridge('discarded')
+                    if self.interrupt_receipt and not self.interrupt_receipt[2].done():
+                        self.interrupt_receipt[2].set_result(None)
                     self.cancel_output()

@@ -37,9 +37,11 @@ function decodeSummary(content) {
   } catch { return { status: 'invalid' } }
 }
 
-export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken }) {
+export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge }) {
   const watchProvider = config.watchProvider || 'deepseek-official'
   const watchModel = config.watchModel || 'deepseek-flash'
+  const mode = config.watchDecisionMode ?? 'legacy'
+  const shadow = mode !== 'legacy' && mode !== 'heart'
   const lifetime = new AbortController()
   const manualCues = new Map()
   let auto = null
@@ -50,7 +52,11 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
   async function summary(args, signal) {
     if (!local) return { status: 'inactive' }
     const reply = await callGatewayTool('pc_watch_get_summary', args, signal)
-    return reply.ok ? decodeSummary(reply.content) : { status: 'offline' }
+    if (!reply.ok) return { status: 'offline' }
+    const result = decodeSummary(reply.content)
+    return shadow && (result.png || (result.data && result.data.tokenCost !== 0))
+      ? { status: 'invalid' }
+      : result
   }
 
   async function gate(execution, voice = false) {
@@ -78,7 +84,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     } catch {}
   }
 
-  async function deliver(cue, reaction, voice, execution, signal) {
+  async function deliver(cue, reaction, voice, execution, signal, turn, onDelivered) {
     const text = typeof reaction?.text === 'string' ? reaction.text.trim() : ''
     const intent = reaction?.intent
     if (!text || [...text].length > 120 || !INTENTS.includes(intent)) return { status: 'skipped' }
@@ -87,6 +93,19 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     let status = 'discarded'
     try {
       if (!(await gate(execution)) || !(await fresh(cue, signal))) return { status }
+      if (bridge) {
+        if (!turn || (voice && !(await gate(execution, true)))) return { status }
+        signal.throwIfAborted()
+        const sent = voice ? bridge.speak({ text }, turn) : bridge.showText(turn, text, intent)
+        if (!sent) return { status }
+        const result = await turn.done
+        if (result.status === (voice ? 'played' : 'text_delivered')) {
+          lastReaction = performance.now()
+          status = 'dispatched'
+          onDelivered?.()
+        }
+        return { status }
+      }
       const payload = { watchSessionId: cue.watchSessionId, cueId: cue.cueId, text, intent }
       if (voice) {
         const rvc = service(ctx, 'rvcWatchVoice')
@@ -118,6 +137,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
   }
 
   async function infer(cue, png, signal) {
+    signal.throwIfAborted()
     const llm = service(ctx, 'llm')
     if (!llm?.stream) throw Error('WATCH_LLM_UNAVAILABLE')
     const { BlockAssembler, createUserMessage } = await import('@deepseek-ai/dsh-llm')
@@ -142,18 +162,31 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     try { return JSON.parse(answer) } catch { return null }
   }
 
+  function agencyService() {
+    return service(ctx, 'agency') ?? service(ctx, 'heart')?.agency
+  }
+
+  function endAgencyScene(job) {
+    if (!job?.agencyActive) return
+    job.agencyActive = false
+    try { agencyService()?.evaluate({ mode, active: false }) } catch {}
+  }
+
   function stopAuto() {
-    auto?.controller.abort()
+    const job = auto
     auto = null
+    job?.controller.abort()
+    endAgencyScene(job)
   }
 
   async function tick(job) {
     if (job.busy || job.controller.signal.aborted) return
     job.busy = true
-    let cue
+    let cue, turn, releaseQuota, reservationId
     try {
       const { data: clock } = await summary({ clockOnly: true }, job.controller.signal)
       if (auto !== job) return
+      if (clock?.status !== 'playing') endAgencyScene(job)
       if (!clock) {
         if (!job.idleSince) job.idleSince = performance.now()
         if (performance.now() - job.idleSince > 15 * 60_000) { stopAuto(); return }
@@ -168,20 +201,68 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
         job.timeline = clock.timelineId
         job.scene = -Infinity
       }
-      if (clock.status !== 'playing' || !clock.widgetOnline || !Number.isFinite(clock.latestCandidateSec) ||
-          clock.latestCandidateSec <= job.scene || clock.playbackPositionSec - clock.latestCandidateSec > 10 ||
-          performance.now() - job.lastAttempt < 12_000 || !(await gate(job.execution))) return
-      const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(REACTION_MS)])
+      const sceneAtSec = clock.latestCandidateSec
+      if (clock.status !== 'playing' || !Number.isFinite(sceneAtSec) || sceneAtSec < 0 ||
+          sceneAtSec <= job.scene || sceneAtSec > clock.playbackPositionSec ||
+          clock.playbackPositionSec - sceneAtSec > 10) return
+
+      if (mode !== 'legacy') {
+        const heart = service(ctx, 'heart')
+        const agency = agencyService()
+        if (!heart?.observe || !agency?.evaluate) return
+        const change = clock.latestCandidateDiff
+        const sceneChange = Number.isFinite(change) && change >= 0 && change <= 1 ? change : null
+        job.scene = sceneAtSec
+        job.agencyActive = true
+        const observation = await heart.observe({ type: 'vision', source: 'fullawake', confidence: 0.85,
+          summary: '陪看画面出现差分候选', evidence: { sceneAtSec, sceneChange } })
+        job.controller.signal.throwIfAborted()
+        if (observation?.accepted === false) return
+        const decision = agency.evaluate({ active: true, sceneAtSec, sceneChange, mode })
+        if (shadow || decision?.action !== 'SPEAK') return
+      }
+
+      const execution = bridge ? undefined : job.execution
+      if (!clock.widgetOnline || performance.now() - job.lastAttempt < 12_000 ||
+          (bridge && !bridge.turnLifecycle) || (mode === 'heart' && !bridge) || !(await gate(execution))) return
+      let signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(REACTION_MS)])
       const { data, png } = await summary({ durationSec: 12 }, signal)
-      if (!png || data.watchSessionId !== job.session || data.timelineId !== job.timeline || data.sceneAtSec <= job.scene) return
+      if (!png || data.watchSessionId !== job.session || data.timelineId !== job.timeline ||
+          (mode === 'heart' ? data.sceneAtSec !== sceneAtSec : data.sceneAtSec <= job.scene)) return
       job.lastAttempt = performance.now()
-      job.scene = data.sceneAtSec
       cue = data
+      let commit
+      if (bridge) {
+        if (job.voice && !(await gate(execution, true))) return
+        signal.throwIfAborted()
+        const heart = service(ctx, 'heart')
+        const quota = heart?.reserveAutonomousQuota?.('bilibili')
+        if (!quota?.ok || (mode === 'heart' && !quota.reservationId)) return
+        reservationId = quota.reservationId
+        releaseQuota = () => {
+          if (reservationId) heart.rollbackQuota(reservationId)
+          reservationId = null
+        }
+        commit = () => {
+          if (reservationId && heart.commitQuota(reservationId)) reservationId = null
+        }
+        turn = bridge.begin({ signal, cue })
+        if (!turn) return
+        signal = turn.signal
+        signal.addEventListener('abort', releaseQuota, { once: true })
+        if (!(await turn.prepared)) return
+      }
+      job.scene = data.sceneAtSec
       const reaction = await infer(data, png, signal)
-      if (reaction) await deliver(data, reaction, job.voice, job.execution, signal)
+      if (reaction) await deliver(data, reaction, job.voice, execution, signal, turn, commit)
     } catch {
       if (cue) await observe('discarded', cue, 'inference')
-    } finally { job.busy = false }
+    } finally {
+      if (turn && releaseQuota) turn.signal.removeEventListener('abort', releaseQuota)
+      turn?.controller.abort('watch_turn_closed')
+      releaseQuota?.()
+      job.busy = false
+    }
   }
 
   ctx.effect(() => {
@@ -198,8 +279,10 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     durationSec: { type: 'number', description: '1 至 30 秒，默认 15 秒' },
     clockOnly: { type: 'boolean', description: '只读取时钟和会话状态，不返回图像' },
   }, async (args, exec) => {
-    const { data, png, status } = await summary(args, exec?.signal)
+    const { data, png, status } = await summary(shadow ? { ...args, clockOnly: true } : args, exec?.signal)
     if (!data) return { status }
+    if (shadow) return { status: data.status, watchSessionId: data.watchSessionId, timelineId: data.timelineId,
+      playbackPositionSec: data.playbackPositionSec, tokenCost: 0, images: [] }
     let image = null
     if (png) {
       try { image = await attach(png) } catch {}
@@ -232,13 +315,20 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     intent: { type: 'string', required: true, description: 'nod、smile、wave 或 shock' },
     voice: { type: 'boolean', description: '使用 RVC 发声，默认开启（设为 false 则仅气泡）' },
   }, async (args, exec) => {
+    if (shadow) return { status: 'shadow' }
     const cue = manualCues.get(args.cueId)
     const remaining = cue ? Math.floor(cue.deadline - performance.now()) : 0
     if (!cue || cue.owner !== exec?.agent?.id || remaining <= 0) return { status: 'discarded' }
     manualCues.delete(args.cueId)
     const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(remaining), ...(exec.signal ? [exec.signal] : [])])
-    const useVoice = args.voice === undefined ? Boolean(service(ctx, 'rvcWatchVoice')?.prepare) : args.voice === true
-    return deliver(cue, args, useVoice, exec, signal)
+    const useVoice = args.voice === undefined ? Boolean(bridge || service(ctx, 'rvcWatchVoice')?.prepare) : args.voice === true
+    if (!bridge) return deliver(cue, args, useVoice, exec, signal)
+    const turn = bridge.begin({ cue, signal })
+    if (!turn) return { status: 'discarded' }
+    try {
+      if (!(await turn.prepared)) return { status: 'discarded' }
+      return await deliver(cue, args, useVoice, exec, turn.signal, turn)
+    } finally { turn.controller.abort('watch_turn_closed') }
   })
 
   tool('pc_watch_auto', '按用户请求开始或结束自动陪看。开启后常驻后台持续陪看（换视频自动无缝续播），小满的反应与语音直接发送给PC桌面桌宠，【严禁】在QQ聊天窗口重复转述、刷屏或同步每一句反应。QQ端只需回复一句简短确认即可。', {
@@ -249,14 +339,21 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     if (!owner || (auto && auto.owner !== owner)) return { status: 'unavailable' }
     if (!args.enabled) { stopAuto(); return { status: 'stopped' } }
     if (auto) return { status: 'already_started', watchSessionId: auto.session }
-    const rvc = service(ctx, 'rvcWatchVoice')
-    const useVoice = args.voice === undefined ? Boolean(rvc?.prepare) : args.voice === true
-    if (!service(ctx, 'llm')?.stream || !service(ctx, 'attachments')?.saveImage ||
-        (args.voice === true && !rvc?.prepare)) {
+    if (mode !== 'legacy' && (!agencyService()?.evaluate || !service(ctx, 'heart')?.observe)) {
       return { status: 'unconfigured' }
     }
+    let useVoice = false
+    if (!shadow) {
+      const rvc = service(ctx, 'rvcWatchVoice')
+      useVoice = args.voice === undefined ? Boolean(bridge || rvc?.prepare) : args.voice === true
+      if (!service(ctx, 'llm')?.stream || !service(ctx, 'attachments')?.saveImage ||
+          (args.voice === true && !bridge && !rvc?.prepare)) return { status: 'unconfigured' }
+      if ((bridge && !bridge.turnLifecycle) || (mode === 'heart' && !bridge)) return { status: 'offline' }
+    }
     const { data } = await summary({ clockOnly: true }, exec.signal)
-    if (!data?.widgetOnline || !data.watchSessionId || exec.signal?.aborted || lifetime.signal.aborted) return { status: 'inactive' }
+    if (!data?.watchSessionId || (!shadow && !data.widgetOnline) || exec.signal?.aborted || lifetime.signal.aborted) {
+      return { status: 'inactive' }
+    }
     if (auto) return { status: 'already_started' }
     auto = { owner, session: data.watchSessionId, controller: new AbortController(), voice: useVoice,
       execution: { agent: exec.agent }, timeline: data.timelineId, scene: -Infinity, lastAttempt: -Infinity, busy: false }

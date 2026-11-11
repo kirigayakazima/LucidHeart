@@ -4,7 +4,7 @@
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak } from './runner.js'
 import { getOptionalService, getVoiceServices } from './services.js'
-import { findSong, renderSong } from './sing.js'
+import { findSong, PcSongCancelled, renderSong } from './sing.js'
 import fs from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -13,6 +13,11 @@ import { randomUUID } from 'node:crypto'
 import { Artifacts } from './artifacts.js'
 
 const pluginVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+const songStageMessage = {
+  separation: '满宝去换装准备啦，正在切伴奏哦～',
+  rvc: '伴奏准备好啦，满宝开始变声录歌咯～',
+  mixing: '录好啦，正在做温暖的母带混音哦～',
+}
 
 let defineTool = (t) => t
 try {
@@ -360,16 +365,17 @@ export function apply(ctx, config = {}) {
         }
 
         async function finish() {
-          let progress = say('满宝去换装准备啦，正在切伴奏哦～')
           signal.throwIfAborted()
+          let progress = say('小满收到啦，这就去后台翻曲谱~')
           job.onStage = stage => {
-            if (stage === 'rvc') progress = progress.then(() => say('伴奏准备好啦，满宝开始变声录歌咯～'))
+            progress = progress.then(() => say(songStageMessage[stage]))
           }
           let rendered
           try {
             rendered = await renderSong(job, () => progress.then(() => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。')))
             await progress
           } catch (error) {
+            if (signal.aborted || error instanceof PcSongCancelled) return
             await progress
             if (!signal.aborted) {
               console.warn(`[@dsh/rvc] 唱歌任务 ${jobId} 失败:`, error.message)

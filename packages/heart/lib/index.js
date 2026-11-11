@@ -69,6 +69,7 @@ import { buildExpressionPolicy } from './expression.js'
 import { connectMotion, motionIntents } from './motion.js'
 
 export { HeartService } from './service.js'
+export { AgencyArbiter, AGENCY_ACTIONS, AGENCY_STATES } from './agency.js'
 export * from '../contracts/index.js'
 
 import {
@@ -136,6 +137,7 @@ export const Config = z.object({
   idleTurnMaxMinutes: z.number().default(180),
   /** 每天最多几次空闲回合。 */
   idleTurnDailyCap: z.number().default(6),
+  agency2PCQuota: z.boolean().default(false),
   /** 本地运行采样和崩溃证据，有界轮转；随插件加载自动恢复，不调用模型。 */
   runtimeDiagnostics: z.boolean().default(true),
   expressionEnabled: z.boolean().default(true),
@@ -217,6 +219,7 @@ export function apply(ctx, config) {
       return ctx.provide('heart', service)
     }
   })
+  ctx.effect(() => ctx.provide?.('agency', service.agency))
 
   ctx.effect(() =>
     ctx.tools.register(

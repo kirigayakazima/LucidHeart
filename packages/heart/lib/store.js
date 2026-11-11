@@ -1582,6 +1582,7 @@ export const DEFAULT_CONFIG = {
   idleTurnDefaultMinutes: 30,
   idleTurnMaxMinutes: 180,
   idleTurnDailyCap: 6,
+  agency2PCQuota: false,
   idleCategories: DEFAULT_IDLE_CATEGORIES,
 }
 

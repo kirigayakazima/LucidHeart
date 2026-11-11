@@ -100,6 +100,18 @@ def test_clock_filters_future_replay_and_cross_origin(bridge):
     assert summary(client)[0]['status'] == 'inactive'
 
 
+def test_clock_reports_latest_visual_difference_without_rendering(bridge):
+    client, watch = bridge
+    assert clock(client, 10, frame={'mediaTime': 10, 'jpeg': jpeg('black')}).is_success
+    initial, _ = summary(client, clockOnly=True)
+    assert initial['latestCandidateDiff'] is None
+    assert clock(client, 11, frame={'mediaTime': 11, 'jpeg': jpeg('white')}).is_success
+    metadata, images = summary(client, clockOnly=True)
+    assert metadata['latestCandidateSec'] == 11
+    assert 0.4 <= metadata['latestCandidateDiff'] <= 1
+    assert metadata['tokenCost'] == 0 and images == [] and watch.cached_sheet is None
+
+
 def test_stopping_share_clears_frames_and_allows_a_new_clock(bridge):
     client, watch = bridge
     first, _ = scene(client)

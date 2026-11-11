@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List
-from pydantic import BaseModel, Field
+from typing import List, Literal
+from pydantic import BaseModel, Field, field_validator
 
 
 class FullAwakeConfig(BaseModel):
@@ -18,6 +18,23 @@ class FullAwakeConfig(BaseModel):
     host: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_BIND_HOST', '0.0.0.0').strip(), description="Bind IP")
     port: int = Field(default=8765, description="Port for MCP SSE and HTTP gateway")
     voice_enabled: bool = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_ENABLED') == '1')
+    epoch_revocation_enabled: bool = Field(default_factory=lambda: os.getenv('EPOCH_REVOCATION_ENABLED', 'true'),
+                                           validate_default=True)
+    voice_vad_enabled: bool = Field(default_factory=lambda: os.getenv('VOICE_VAD_ENABLED', 'true'),
+                                    validate_default=True)
+    voice_vad_device: int | None = Field(default_factory=lambda: os.getenv('FULLAWAKE_VAD_DEVICE') or None,
+                                        validate_default=True)
+    vad_device_mode: Literal['headphone', 'speaker'] = Field(
+        default_factory=lambda: os.getenv('FULLAWAKE_VAD_DEVICE_MODE', 'headphone').strip().lower(),
+        validate_default=True,
+        description="Acoustic mode for VAD: 'headphone' (standard) or 'speaker' (with playback ducking)",
+    )
+
+    @field_validator('vad_device_mode', mode='before')
+    @classmethod
+    def validate_vad_device_mode(cls, v):
+        clean = str(v or 'headphone').strip().lower()
+        return clean if clean in ('headphone', 'speaker') else 'headphone'
     voice_profile: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROFILE', ''))
     voice_python: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PYTHON', ''))
     voice_provider: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROVIDER', 'CUDAExecutionProvider'))

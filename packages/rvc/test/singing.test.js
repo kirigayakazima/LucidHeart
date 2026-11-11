@@ -13,6 +13,31 @@ import { runPcSong } from '../lib/sing.js'
 
 const mp3 = Buffer.alloc(256)
 mp3.write('ID3')
+const jobsPath = '/v1/voice/sing/jobs'
+const remoteId = 'pc-song-01'
+const downloadPath = `/v1/voice/sing/download/${remoteId}`
+const ack = '小满收到啦，这就去后台翻曲谱~'
+const messagesByStage = [
+  '满宝去换装准备啦，正在切伴奏哦～',
+  '伴奏准备好啦，满宝开始变声录歌咯～',
+  '录好啦，正在做温暖的母带混音哦～',
+]
+
+function snapshot(stage) {
+  return Response.json({ jobId: remoteId, status: stage, stage,
+    ...(stage === 'completed' ? { result: { ok: true, task: remoteId, executionProvider: 'CUDAExecutionProvider' } } : {}),
+  })
+}
+
+function mockCompletedJob(t, download) {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    const route = new URL(url).pathname
+    if (route === '/health') return new Response()
+    if (route === jobsPath && options.method === 'POST') return snapshot('completed')
+    assert.equal(route, downloadPath)
+    return download()
+  })
+}
 
 test('singing client consumes fragmented stage events over loopback before publishing the download', async t => {
   const folder = await mkdtemp(path.join(os.tmpdir(), 'dsh-sing-stream-'))
@@ -24,15 +49,21 @@ test('singing client consumes fragmented stage events over loopback before publi
   const stages = []
   const seenRvc = Promise.withResolvers()
   const server = createServer(async (req, res) => {
+    if (req.url === '/health') return res.end()
     if (req.method === 'POST') {
       const received = []
       for await (const chunk of req) received.push(chunk)
       assert.deepEqual(Buffer.concat(received), audio)
+      if (new URL(req.url, 'http://localhost').pathname === jobsPath) {
+        res.statusCode = 404
+        return res.end()
+      }
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson' })
       res.write('{"type":"stage","stage":"separation"}\n{"type":"stage",')
       res.write('"stage":"rvc"}\n{"type":"heartbeat","stage":"rvc"}\n')
       await seenRvc.promise
-      res.end('{"type":"result","result":{"ok":true,"task":"song"}}\n')
+      res.end('{"type":"stage","stage":"mastering"}\n{"type":"stage","stage":"mixing"}\n'
+        + '{"type":"result","result":{"ok":true,"task":"song"}}')
       return
     }
     assert.equal(req.url, '/v1/voice/sing/download/song')
@@ -49,7 +80,7 @@ test('singing client consumes fragmented stage events over loopback before publi
       if (stage === 'rvc') seenRvc.resolve()
     },
   })
-  assert.deepEqual(stages, ['separation', 'rvc'])
+  assert.deepEqual(stages, ['separation', 'rvc', 'mixing'])
   assert.deepEqual(await readFile(output), audio)
   await assert.rejects(stat(`${output}.part`), { code: 'ENOENT' })
 })
@@ -90,49 +121,53 @@ async function fixture(t) {
     request: args => tools.get('rvc_sing').execute({ song_title: '樱花草', ...args }, exec) }
 }
 
-test('QQ 点歌先确认、后台返回、完成下载后只向原会话投递完整附件', { timeout: 3000 }, async t => {
+test('QQ 点歌后台按阶段去重播报，完成后只向原会话投递完整附件', { timeout: 20_000 }, async t => {
   const f = await fixture(t)
   const remote = Promise.withResolvers()
   const upload = Promise.withResolvers()
+  const stages = ['demucs', 'demucs', 'rvc_convert', 'demucs', 'mastering', 'mastering', 'completed']
   t.mock.method(globalThis, 'fetch', async (url, opts) => {
     const route = new URL(url)
     assert.equal(route.origin, 'http://127.0.0.1:28765')
+    if (route.pathname === '/health') return new Response()
     assert.match(opts.headers.Authorization, /^Bearer /)
     if (opts.method === 'POST') {
-      assert.equal(route.pathname, '/v1/voice/sing')
+      assert.equal(route.pathname, jobsPath)
       assert.equal(route.searchParams.get('format'), 'm4a')
       assert.equal(route.searchParams.get('pitch'), '-4')
       const chunks = []
       for await (const chunk of opts.body) chunks.push(chunk)
       assert.deepEqual(Buffer.concat(chunks), mp3)
-      upload.resolve(route.searchParams.get('task'))
-      await remote.promise
-      return Response.json({ ok: true, task: route.searchParams.get('task') })
+      upload.resolve()
+      return snapshot('queued')
     }
-    assert.equal(route.pathname, `/v1/voice/sing/download/${await upload.promise}`)
+    if (route.pathname === `${jobsPath}/${remoteId}`) {
+      await remote.promise
+      return snapshot(stages.shift())
+    }
+    assert.equal(route.pathname, downloadPath)
     return new Response(mp3)
   })
   const job = await f.request({ pitch: -2 })
   assert.equal(job.status, 'dispatched')
-  assert.match(f.messages[0].message, /正在切伴奏/)
+  assert.equal(f.messages[0].message, ack)
   assert.deepEqual(f.messages[0].peer, f.target)
-  assert.equal(await upload.promise, job.job_id)
+  await upload.promise
   assert.equal((await f.request({ pitch: -2 })).job_id, job.job_id)
   assert.equal(f.files.length, 0)
   f.ctx.qqbotMediaSender.resolveTargetForSession = () => ({ scope: 'c2c', targetId: 'later-chat' })
   remote.resolve()
   const observation = await f.observed.promise
   assert.equal(observation.evidence.mode, 'pc_gpu_pipeline')
+  assert.equal(observation.evidence.execution.provider, 'CUDAExecutionProvider')
+  assert.deepEqual(f.messages, [ack, ...messagesByStage].map(message => ({ peer: f.target, message })))
   assert.deepEqual(f.files, [{ peer: f.target, data: mp3, options: { fileName: '樱花草.mp3' } }])
   assert.deepEqual(await readFile(job.expected_output), mp3)
 })
 
 test('无效 PC 下载先播报降级，调用仅本地链路，再投递本地产物', { timeout: 3000 }, async t => {
   const f = await fixture(t)
-  t.mock.method(globalThis, 'fetch', async (url, opts) => {
-    if (opts.method === 'POST') return Response.json({ ok: true, task: new URL(url).searchParams.get('task') })
-    return new Response(JSON.stringify({ detail: 'not an MP3' }))
-  })
+  mockCompletedJob(t, () => Response.json({ detail: 'not an MP3' }))
   t.mock.method(childProcess, 'spawn', (command, args, { env }) => {
     assert.equal(command, 'bash')
     assert.equal(env.RVC_LOCAL_ONLY, '1')
@@ -150,7 +185,7 @@ test('无效 PC 下载先播报降级，调用仅本地链路，再投递本地�
   await assert.rejects(stat(`${job.expected_output}.part`), { code: 'ENOENT' })
 })
 
-test('后台 PC 失败且本地 worker 无法启动时，QQ 收到失败提示且不投递', { timeout: 3000 }, async t => {
+test('PC 连通探测 3 秒超时后直接降级，本地失败时不投递', { timeout: 6500 }, async t => {
   const f = await fixture(t)
   const failed = Promise.withResolvers()
   const send = f.ctx.qqbotSender.sendMarkdown
@@ -158,7 +193,18 @@ test('后台 PC 失败且本地 worker 无法启动时，QQ 收到失败提示�
     await send(peer, text)
     if (text.includes('没能把歌合成出来')) failed.resolve()
   }
-  t.mock.method(globalThis, 'fetch', async () => { throw new Error('gateway offline') })
+  let timedOut = false
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, { signal }) => {
+    assert.equal(new URL(url).pathname, '/health')
+    return new Promise((_resolve, reject) => {
+      const unexpected = setTimeout(() => reject(new Error('Expected gateway probe timeout')), 5_000)
+      signal.addEventListener('abort', () => {
+        clearTimeout(unexpected)
+        timedOut = signal.reason.name === 'TimeoutError'
+        reject(signal.reason)
+      }, { once: true })
+    })
+  })
   t.mock.method(childProcess, 'spawn', () => {
     const child = new EventEmitter()
     queueMicrotask(() => {
@@ -171,16 +217,62 @@ test('后台 PC 失败且本地 worker 无法启动时，QQ 收到失败提示�
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
   await f.request()
   await failed.promise
+  assert.equal(timedOut, true)
+  assert.equal(fetch.mock.callCount(), 1)
   assert.equal(f.messages.length, 3)
   assert.equal(f.files.length, 0)
+})
+
+test('回合取消停止 PC 轮询，并使用独立信号通知 PC 终止作业', { timeout: 7000 }, async t => {
+  const f = await fixture(t)
+  const polling = Promise.withResolvers()
+  const cancelled = Promise.withResolvers()
+  let cancelCount = 0
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const route = new URL(url).pathname
+    if (route === '/health') return new Response()
+    if (route === jobsPath && opts.method === 'POST') return snapshot('demucs')
+    if (route.endsWith('/cancel')) {
+      assert.equal(route, `${jobsPath}/${remoteId}/cancel`)
+      assert.equal(opts.method, 'POST')
+      assert.equal(opts.signal.aborted, false)
+      cancelCount += 1
+      cancelled.resolve()
+      return snapshot('cancelled')
+    }
+    assert.equal(route, `${jobsPath}/${remoteId}`)
+    return new Promise((_resolve, reject) => {
+      opts.signal.addEventListener('abort', () => reject(opts.signal.reason), { once: true })
+      polling.resolve()
+    })
+  })
+  const job = await f.request()
+  await polling.promise
+  f.controller.abort()
+  await cancelled.promise
+  await nextTick()
+  assert.equal(cancelCount, 1)
+  assert.deepEqual(f.messages.map(({ message }) => message), [ack, messagesByStage[0]])
+  assert.equal(f.files.length, 0)
+  await assert.rejects(stat(job.expected_output), { code: 'ENOENT' })
 })
 
 test('回合取消终止后台下载且不播报失败或发送成曲', { timeout: 3000 }, async t => {
   const f = await fixture(t)
   const downloading = Promise.withResolvers()
   const ended = Promise.withResolvers()
+  const cancelled = Promise.withResolvers()
   t.mock.method(globalThis, 'fetch', async (url, opts) => {
-    if (opts.method === 'POST') return Response.json({ ok: true, task: new URL(url).searchParams.get('task') })
+    const route = new URL(url).pathname
+    if (route === '/health') return new Response()
+    if (route === jobsPath && opts.method === 'POST') return snapshot('completed')
+    if (route === `${jobsPath}/${remoteId}/cancel`) {
+      assert.equal(opts.method, 'POST')
+      assert.equal(opts.signal.aborted, false)
+      cancelled.resolve()
+      return snapshot('completed')
+    }
+    assert.equal(route, downloadPath)
     downloading.resolve()
     return new Promise((_resolve, reject) => opts.signal.addEventListener('abort', () => {
       reject(opts.signal.reason)
@@ -190,10 +282,40 @@ test('回合取消终止后台下载且不播报失败或发送成曲', { timeou
   const job = await f.request()
   await downloading.promise
   f.controller.abort()
-  await ended.promise
+  await Promise.all([ended.promise, cancelled.promise])
   await nextTick()
   assert.equal(f.messages.length, 1)
   assert.equal(f.files.length, 0)
+  await assert.rejects(stat(job.expected_output), { code: 'ENOENT' })
+})
+
+test('上传完成后取消时，迟到的任务 ID 仍会收到取消请求', { timeout: 3000 }, async t => {
+  const f = await fixture(t)
+  const uploaded = Promise.withResolvers()
+  const acknowledgement = Promise.withResolvers()
+  const cancelled = Promise.withResolvers()
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const route = new URL(url).pathname
+    if (route === '/health') return new Response()
+    if (route === jobsPath && opts.method === 'POST') {
+      for await (const _chunk of opts.body) { /* drain the upload before aborting */ }
+      uploaded.resolve(opts.signal)
+      return acknowledgement.promise
+    }
+    assert.equal(route, `${jobsPath}/${remoteId}/cancel`)
+    assert.equal(opts.method, 'POST')
+    cancelled.resolve()
+    return snapshot('cancelled')
+  })
+  const job = await f.request()
+  const submissionSignal = await uploaded.promise
+  f.controller.abort()
+  assert.equal(submissionSignal.aborted, false)
+  acknowledgement.resolve(snapshot('queued'))
+  await cancelled.promise
+  await nextTick()
+  assert.equal(f.files.length, 0)
+  assert.deepEqual(f.messages.map(({ message }) => message), [ack])
   await assert.rejects(stat(job.expected_output), { code: 'ENOENT' })
 })
 
@@ -209,10 +331,7 @@ test('Heart 静音时不发送确认、不提交 PC 任务', async t => {
 test('QQ 明确拒收附件时告知用户，成曲仍可从本地取得', { timeout: 3000 }, async t => {
   const f = await fixture(t)
   f.ctx.qqbotMediaSender.sendFile = async () => ({ ok: false, error: 'QQ rejected upload' })
-  t.mock.method(globalThis, 'fetch', async (url, opts) => {
-    if (opts.method === 'POST') return Response.json({ ok: true, task: new URL(url).searchParams.get('task') })
-    return new Response(mp3)
-  })
+  mockCompletedJob(t, () => new Response(mp3))
   const job = await f.request()
   await f.observed.promise
   assert.match(f.messages.at(-1).message, /没能把音频送出去/)
@@ -222,10 +341,7 @@ test('QQ 明确拒收附件时告知用户，成曲仍可从本地取得', { tim
 test('未知会话只保存成曲，QQ 服务存在时也不猜投递目标', { timeout: 3000 }, async t => {
   const f = await fixture(t)
   f.ctx.qqbotMediaSender.resolveTargetForSession = () => undefined
-  t.mock.method(globalThis, 'fetch', async (url, opts) => {
-    if (opts.method === 'POST') return Response.json({ ok: true, task: new URL(url).searchParams.get('task') })
-    return new Response(mp3)
-  })
+  mockCompletedJob(t, () => new Response(mp3))
   const job = await f.request()
   await f.observed.promise
   assert.equal(job.qq_auto_delivery, false)

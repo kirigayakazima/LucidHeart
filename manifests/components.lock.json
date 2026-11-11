@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-07",
+  "updatedAt": "2026-11-11",
   "components": {
     "heart": {
       "id": "@dsh/heart",
@@ -18,7 +18,7 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.5",
+      "version": "0.2.7",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.13",
+      "version": "0.2.14",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, PC ONNX CPU offload and phone fallback."
@@ -96,7 +96,7 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."

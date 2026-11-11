@@ -1,6 +1,6 @@
 {
   "name": "dsh-fullawake",
-  "version": "0.2.5",
+  "version": "0.2.7",
   "description": "FullAwake PC 感官与能力扩展适配插件：桥接 Windows PC 视觉与文件能力，向 Heart 提供设备在线与状态观察。",
   "type": "module",
   "main": "lib/index.js",
@@ -36,9 +36,14 @@
     "@deepseek-ai/schemastery": ">=3.18.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-llm": { "optional": true }
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
   },
   "scripts": {
     "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "ws": "8.22.1"
   }
 }

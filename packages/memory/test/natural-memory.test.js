@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { apply, MemoryService } from '../lib/index.js';
 
 function setup(t) {
@@ -36,6 +37,7 @@ const time = Date.parse('2026-11-06T08:00:00.000Z');
 
 function userMessage(text, { channel = 'direct', speaker = 'user', prefix = '' } = {}) {
   return {
+    id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: prefix + text }],
     source: { kind: 'user', qq: { channel, speaker, start: prefix.length, length: text.length } },
@@ -67,13 +69,13 @@ test('精选摄取从当前发言取证，来源、重要性和置信度随 jour
   assert.deepEqual(await accept(preference), { stored: true });
   assert.deepEqual(await accept(preference), { stored: false });
 
-  enter(h, agent, '以后每年一起种一棵桂花树吧。', { channel: 'group', speaker: '小舟' });
-  const commitment = { content: '和小舟约定每年种一棵桂花树', kind: 'relationship',
+  enter(h, agent, '我们说定以后每年一起种一棵桂花树。', { channel: 'group', speaker: '小舟' });
+  const commitment = { content: '我们说定以后每年一起种一棵桂花树', kind: 'relationship',
     evidence: '每年一起种一棵桂花树', origin: 'shared_experience' };
   assert.deepEqual(await accept(commitment), { stored: true });
 
   enter(h, otherAgent, '我终于拿到潜水教练证了！');
-  const milestone = { content: '用户取得潜水教练证', kind: 'episodic', origin: 'user_statement', evidence: '我终于拿到潜水教练证了' };
+  const milestone = { content: '用户终于拿到潜水教练证了', kind: 'episodic', origin: 'user_statement', evidence: '我终于拿到潜水教练证了' };
   const inference = { ...milestone, content: '用户可能想长期从事潜水教学', origin: 'model_inference', importance: 1 };
   assert.deepEqual(await intake.execute(milestone, { agent: otherAgent }), { stored: true });
   assert.deepEqual(await intake.execute(inference, { agent: otherAgent }), { stored: true });
@@ -83,14 +85,19 @@ test('精选摄取从当前发言取证，来源、重要性和置信度随 jour
   assert.deepEqual(intake.output.render({}, { stored: true }), []);
 
   const [direct, shared, episode, candidate] = h.journal().map(({ entry }) => entry);
-  assert.deepEqual(direct.provenance, { origin: 'user_statement', speaker: '小舟', channel: 'group', timestamp: new Date(time).toISOString() });
+  assert.deepEqual(direct.provenance, { origin: 'user_request', claimType: 'user_statement', evidenceStatus: 'resolved' });
+  assert.equal(direct.source.speaker, '小舟');
+  assert.equal(direct.source.channel, 'group');
+  assert.equal(direct.source.messageId, message.id);
+  assert.equal(direct.source.observedAt, new Date(time).toISOString());
   assert.equal(direct.source.evidenceText, preference.evidence);
   assert.equal(direct.confidence, 0.95);
   assert.equal(direct.importance, 0.6);
-  assert.equal(direct.confirmed, false);
-  assert.equal(shared.provenance.origin, 'shared_experience');
-  assert.equal(episode.provenance.channel, 'direct');
-  assert.equal(candidate.provenance.origin, 'model_inference');
+  assert.equal(direct.confirmed, true);
+  assert.equal(shared.provenance.claimType, 'observation');
+  assert.equal(episode.source.channel, 'direct');
+  assert.equal(episode.confirmed, true);
+  assert.equal(candidate.provenance.claimType, 'model_inference');
   assert.equal(candidate.status, 'candidate');
   assert.equal(candidate.importance, 1);
   assert.ok(candidate.confidence < shared.confidence);
@@ -182,10 +189,12 @@ test('自然遗忘移除 FTS 行和 Markdown，重建后仍不可召回', async 
 });
 
 test('群聊和私聊共享单库，可双向检索、覆盖和遗忘', async (t) => {
-  const { journal, run, ftsIds } = setup(t);
-  const group = { channel: 'group' };
+  const h = setup(t);
+  const { journal, run, ftsIds } = h;
+  const group = { id: 'group', session: {} };
   const direct = { channel: 'direct' };
-  await run('memory_remember', { content: '周三在公园散步' }, group);
+  enter(h, group, '我周三在公园散步。', { channel: 'group', speaker: '小舟' });
+  await h.tools.get('memory_remember').execute({ content: '小舟周三在公园散步' }, { agent: group });
   const [first] = journal().map(({ entry }) => entry);
   assert.ok((await run('memory_recall', { query: '散步' }, direct)).message.includes(first.id));
   await run('memory_correct', { targetId: first.id, newContent: '周五在公园散步' }, direct);
@@ -239,7 +248,9 @@ test('兼容旧版双行覆盖记录，空日志重放清除派生残留', (t) =
   const old = memory.remember({ content: '之前常去北门' });
   const replacement = memory.correct(old.id, '现在常去南门');
   const events = journal();
-  events.splice(1, 0, { ...events[1], entry: memory.inspect(old.id) });
+  const { action, timestamp, entry } = events[1];
+  events[1] = { action, timestamp, entry };
+  events.splice(1, 0, { action: 'update', timestamp, entry: memory.inspect(old.id) });
   fs.writeFileSync(memory.store.journalPath, events.map((event) => JSON.stringify(event)).join('\n') + '\n');
 
   memory.reindex();

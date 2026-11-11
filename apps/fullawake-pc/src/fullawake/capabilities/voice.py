@@ -23,6 +23,7 @@ DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio':
             'synthesisMode': 'chunked', 'noiseScale': 1., 'intonationScale': 1.}
 
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
+MAX_SONG_BYTES = 60 * 1024 * 1024
 ASR_SAMPLE_RATE = 16000
 AUDIO_UNCLEAR = {'ok': False, 'error': 'AUDIO_UNCLEAR', 'text': ''}
 
@@ -133,6 +134,8 @@ class VoiceCompute:
         self.active_voice_workers = 0
         self.text_worker_active = False
         self._artifacts = None
+        self.sing_provider = None
+        self._sing_lock = asyncio.Lock()
 
     @property
     def artifacts(self):
@@ -344,7 +347,7 @@ class VoiceCompute:
             "accompanimentUrl": f"/v1/voice/download/{clean_task}/accompaniment",
         }
 
-    def get_singing_song_file(self, task: str):
+    def get_singing_song_file(self, task: str, audio_format: str | None = None):
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
         root = self.artifacts.task_dir('singing', clean_task)
         candidates = [
@@ -353,16 +356,19 @@ class VoiceCompute:
             root / f"song_{clean_task}.wav",
         ]
         for c in candidates:
+            if audio_format is not None and c.suffix != f'.{audio_format}':
+                continue
             if self.artifacts.safe(c, stat.S_ISREG):
                 return c
         return None
 
-    async def process_singing_pipeline(self, task: str, audio_bytes: bytes, audio_format: str = "m4a", pitch: int = 0, *, progress=None) -> dict:
+    async def process_singing_pipeline(self, task: str, audio_bytes: bytes, audio_format: str = "m4a",
+                                       pitch: int = 0, *, progress=None, queued=False) -> dict:
         if not config.voice_enabled:
             raise ValueError('VOICE_DISABLED')
         if not audio_bytes or len(audio_bytes) < 100:
             raise ValueError('VOICE_AUDIO_EMPTY')
-        if len(audio_bytes) > 60 * 1024 * 1024:
+        if len(audio_bytes) > MAX_SONG_BYTES:
             raise ValueError('VOICE_AUDIO_TOO_LARGE')
 
         import logging
@@ -378,14 +384,19 @@ class VoiceCompute:
         if pitch not in (0, -4):
             pitch = 0
 
-        cache = self.artifacts
-        with cache.job(cache.task_dir('singing', clean_task)) as destination:
-            work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
-            callbacks = {'progress': progress} if progress is not None else {}
-            return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger, **callbacks)
+        if not queued and self._sing_lock.locked():
+            raise ValueError('VOICE_BUSY')
+        async with self._sing_lock:
+            if self.sing_provider is not None:
+                await self.sing_provider.prepare()
+            cache = self.artifacts
+            with cache.job(cache.task_dir('singing', clean_task)) as destination:
+                work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
+                callbacks = {'progress': progress} if progress is not None else {}
+                return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger, **callbacks)
 
     async def _sing(self, clean_task, audio_bytes, audio_format, pitch, root, destination, logger, *, progress=None):
         return await render_song(
             self.artifacts, communicate, clean_task, audio_bytes, audio_format, pitch,
-            root, destination, logger, progress=progress,
+            root, destination, logger, progress=progress, resident=self.sing_provider,
         )

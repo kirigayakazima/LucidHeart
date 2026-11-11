@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { canSpeak, consumeSpeak, dateOf, timeOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts } from './store.js'
+import { canSpeak, consumeSpeak, dateOf, timeOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts, safeAtomicReplace } from './store.js'
 import { findActiveAgent } from './target.js'
 import { formatCommitmentCarePrompt } from './prompt.js'
 
@@ -14,6 +14,8 @@ export const TRIGGER_DEFAULT = {
 }
 
 const HOUR = 60 * 60 * 1000
+const QUOTA_ZONE = 'Asia/Shanghai'
+const reservations = new Map()
 
 function autonomousCooldownAt(state) {
   const last = Math.max(Date.parse(state.lastIdleTurnAt) || 0, Date.parse(state.lastTriggerAt) || 0)
@@ -26,21 +28,96 @@ function trace(root, msg) {
   } catch {}
 }
 
-export function readTrigger(root) {
+export function readTrigger(root, { strict = false } = {}) {
   const file = path.join(resolveRoot(root), 'trigger.json')
   try {
-    return { ...TRIGGER_DEFAULT, ...JSON.parse(fs.readFileSync(file, 'utf8')) }
-  } catch {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!state || typeof state !== 'object' || Array.isArray(state)) throw Error('Invalid trigger.json')
+    return { ...TRIGGER_DEFAULT, ...state }
+  } catch (error) {
+    if (strict && error.code !== 'ENOENT') throw error
     return { ...TRIGGER_DEFAULT }
   }
 }
 
 export function writeTrigger(root, patch) {
   const dir = ensureLayout(root)
-  const current = readTrigger(dir)
+  const current = readTrigger(dir, { strict: true })
   const next = { ...current, ...patch }
-  fs.writeFileSync(path.join(dir, 'trigger.json'), JSON.stringify(next, null, 2) + '\n', 'utf8')
+  const file = path.join(dir, 'trigger.json')
+  const temp = `${file}.${randomUUID()}.tmp`
+  try {
+    fs.writeFileSync(temp, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' })
+    safeAtomicReplace(temp, file)
+  } finally {
+    if (fs.existsSync(temp)) fs.unlinkSync(temp)
+  }
   return next
+}
+
+function quotaUsed(state, today) {
+  return state.idleDate === today ? Math.max(0, Number(state.idleCount) || 0) : 0
+}
+
+function heldQuota(root, now) {
+  const dir = resolveRoot(root)
+  const today = dateOf(now, QUOTA_ZONE)
+  const held = []
+  for (const [id, reservation] of reservations) {
+    if (reservation.expiresAt <= now.getTime()) reservations.delete(id)
+    else if (reservation.root === dir && reservation.date === today) held.push(reservation)
+  }
+  return held
+}
+
+export function countAutonomousReservations(root, now = new Date()) {
+  return heldQuota(root, now).length
+}
+
+export function reserveAutonomousQuota(root, category, config = {}, now = new Date()) {
+  const dir = resolveRoot(root)
+  const state = readTrigger(dir, { strict: true })
+  const today = dateOf(now, QUOTA_ZONE)
+  const held = heldQuota(dir, now)
+  if (quotaUsed(state, today) + held.length >= (Number(config.idleTurnDailyCap) || 6)) {
+    return { ok: false, reason: 'daily-cap' }
+  }
+  const { counts } = idleCategoryState(state, now, config)
+  const cat = idleCategoryRemaining(config, counts).find(item => item.id === category)
+  if (cat && held.filter(item => item.category === category).length >= cat.remaining) {
+    return { ok: false, reason: 'category-cap' }
+  }
+  const reservationId = randomUUID()
+  reservations.set(reservationId, { root: dir, category: cat?.id, date: today, expiresAt: now.getTime() + 30_000 })
+  return { ok: true, reservationId }
+}
+
+export function rollbackQuota(root, reservationId) {
+  if (reservations.get(reservationId)?.root !== resolveRoot(root)) return false
+  return reservations.delete(reservationId)
+}
+
+export function commitQuota(root, reservationId, config = {}, now = new Date()) {
+  const dir = resolveRoot(root)
+  const reservation = reservations.get(reservationId)
+  if (!reservation || reservation.root !== dir) return false
+  const today = dateOf(now, QUOTA_ZONE)
+  const state = readTrigger(dir, { strict: true })
+  const used = quotaUsed(state, today)
+  const { counts } = idleCategoryState(state, now, config)
+  const cat = idleCategoryRemaining(config, counts).find(item => item.id === reservation.category)
+  if (reservation.date !== today || reservation.expiresAt <= now.getTime() ||
+      used >= (Number(config.idleTurnDailyCap) || 6) || (cat && cat.remaining <= 0)) {
+    rollbackQuota(dir, reservationId)
+    return false
+  }
+  const patch = { idleDate: today, idleCount: used + 1 }
+  if (cat) {
+    counts[cat.id] = cat.used + 1
+    Object.assign(patch, { idleCategoryDate: today, idleCategoryCounts: counts })
+  }
+  writeTrigger(dir, patch)
+  return rollbackQuota(dir, reservationId)
 }
 
 /**
@@ -235,7 +312,7 @@ export function recordIdleCategory(root, id, config = {}, now = new Date()) {
   const { today, counts } = idleCategoryState(state, now, config)
   const used = Number(counts[id]) || 0
   const dailyCap = Number(cat.dailyCap) || 0
-  if (used >= dailyCap) {
+  if (used + heldQuota(root, now).filter(item => item.category === id).length >= dailyCap) {
     return { ok: false, reason: 'category-cap', id, used, dailyCap, label: cat.label }
   }
   counts[id] = used + 1
@@ -296,7 +373,16 @@ export function createSelfMessage(text) {
 export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new Date(), service = null) {
   const dir = resolveRoot(root)
   const speakState = readSpeak(dir)
-  const triggerState = readTrigger(dir)
+  const stored = readTrigger(dir)
+  const today = dateOf(now, QUOTA_ZONE)
+  const used = quotaUsed(stored, today)
+  const held = heldQuota(dir, now)
+  const { counts: availableCounts } = idleCategoryState(stored, now, config)
+  for (const item of held) {
+    if (item.category) availableCounts[item.category] = (Number(availableCounts[item.category]) || 0) + 1
+  }
+  const triggerState = held.length ? { ...stored, idleDate: today, idleCount: used + held.length,
+    idleCategoryDate: today, idleCategoryCounts: availableCounts } : stored
 
   const returned = shouldTriggerReturned({
     prev,
@@ -314,13 +400,11 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
   const kind = returned.ok ? 'returned' : idle.ok ? 'idle' : null
   if (!kind) return false
   const timeZone = 'Asia/Shanghai'
-  const today = dateOf(now, timeZone)
-  const used = triggerState.idleDate === today ? Number(triggerState.idleCount) || 0 : 0
   const cap = Number(config.idleTurnDailyCap) || 6
-  if (used >= cap) return false
+  if (used + held.length >= cap) return false
 
   const care = service && ctx.get?.('memory')?.commitments?.getActiveCommitmentCare?.(now, 'Asia/Shanghai')
-  if (care && (used >= 6 || next?.presence === 'asleep' ||
+  if (care && (used + held.length >= 6 || next?.presence === 'asleep' ||
       inQuietHours(now, '23:00', '08:00', 'Asia/Shanghai') || !canSpeak(dir, now).ok ||
       !service.evaluateActivity({ intent: 'companion_care', category: 'chat' }).suitable)) return false
 
@@ -354,12 +438,18 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
       : formatIdlePrompt(idle.since, now, config, idle.remaining)
 
   const message = createSelfMessage(prompt)
+  // The legacy host confirms enqueue only. Hold the shared slot across its
+  // synchronous callbacks so a Watch reservation cannot race this accounting.
+  let slot
   try {
+    slot = reserveAutonomousQuota(dir, care ? 'chat' : undefined, config, now)
+    if (!slot.ok) return false
     if (care) service.commitmentCareTurn = { agentId: agent.id, messageId: message.id, commitmentId: care.id }
     agent.followup(message)
-    const accounting = { idleDate: today, idleCount: used + 1, lastEvent: kind }
+    const current = readTrigger(dir, { strict: true })
+    const accounting = { idleDate: today, idleCount: quotaUsed(current, today) + 1, lastEvent: kind }
     if (care && config.idleCategories?.some(category => category.id === 'chat')) {
-      const { counts } = idleCategoryState(triggerState, now, config)
+      const { counts } = idleCategoryState(current, now, config)
       counts.chat = (Number(counts.chat) || 0) + 1
       Object.assign(accounting, { idleCategoryDate: today, idleCategoryCounts: counts })
     }
@@ -388,5 +478,7 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
     if (care) service.commitmentCareTurn = null
     trace(dir, 'trigger:error ' + String((error && error.message) || error))
     return false
+  } finally {
+    if (slot?.ok) rollbackQuota(dir, slot.reservationId)
   }
 }

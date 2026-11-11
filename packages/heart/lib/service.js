@@ -8,14 +8,12 @@ import {
   HEART_PROTOCOL_VERSION,
   HEART_CORE_VERSION,
   HEART_EVENTS,
-  ERROR_CODES,
   validateObservation,
   validateActivityIntent,
 } from '../contracts/index.js'
 import {
   readMood,
   updateMood,
-  resetMood,
 } from './mood.js'
 import {
   readSense,
@@ -25,6 +23,10 @@ import {
   readTrigger,
   idleCategoryState,
   idleCategoryRemaining,
+  reserveAutonomousQuota,
+  commitQuota,
+  rollbackQuota,
+  countAutonomousReservations,
 } from './trigger.js'
 import {
   readHeartConfig,
@@ -37,8 +39,15 @@ import {
 import { log } from './logger.js'
 import { activityOrigin } from './activity-origin.js'
 import { buildExpressionPolicy } from './expression.js'
+import { AgencyArbiter } from './agency.js'
+
+const INTERRUPT_COOLDOWN_MS = 30_000
+
+export { AgencyArbiter } from './agency.js'
 
 export class HeartService {
+  #arbiter = new AgencyArbiter()
+  #interruptUntil = 0
   /**
    * @param {import('@deepseek-ai/cordis').Context} ctx
    * @param {string} root
@@ -52,6 +61,52 @@ export class HeartService {
     this.version = HEART_CORE_VERSION
     this.name = 'heart'
     this._lastSnapshot = null
+    this.agency = Object.freeze({ evaluate: sensorContext => this.evaluateAgency(sensorContext) })
+  }
+
+  #liveConfig() {
+    const diskFile = path.join(resolveRoot(this.root), 'config.json')
+    let diskCustom = {}
+    try { diskCustom = JSON.parse(fs.readFileSync(diskFile, 'utf8')) } catch {}
+    return { ...readHeartConfig(this.root), ...this.config, ...diskCustom }
+  }
+
+  reserveAutonomousQuota(category) {
+    const config = this.#liveConfig()
+    if (config.agency2PCQuota !== true) return { ok: true, reservationId: null }
+    return reserveAutonomousQuota(this.root, category, config)
+  }
+
+  commitQuota(reservationId) {
+    return commitQuota(this.root, reservationId, this.#liveConfig())
+  }
+
+  rollbackQuota(reservationId) {
+    return rollbackQuota(this.root, reservationId)
+  }
+
+  evaluateAgency({ active, sceneChange, sceneAtSec, mode } = {}) {
+    const now = new Date()
+    const snapshot = this.getSnapshot()
+    const config = this.#liveConfig()
+    const speak = readSpeak(this.root)
+    const decision = this.#arbiter.evaluate({
+      ...snapshot,
+      idle: { ...snapshot.idle, totalReserved: countAutonomousReservations(this.root, now) },
+      agency: {
+        quietHours: inQuietHours(now, config.quietFrom || speak.quietFrom || '23:00',
+          config.quietTo || speak.quietTo || '08:00', 'Asia/Shanghai'),
+        cooldownRemainingMs: Math.max(0, this.#interruptUntil - performance.now()),
+      },
+    }, { active, sceneChange })
+    log.core(this.root, 'info', 'agency_decision', {
+      detail: {
+        ...decision,
+        mode: mode === 'shadow' ? 'shadow' : 'heart',
+        sceneAtSec: Number.isFinite(sceneAtSec) && sceneAtSec >= 0 ? sceneAtSec : null,
+      },
+    })
+    return decision
   }
 
   /**
@@ -63,12 +118,7 @@ export class HeartService {
     const mood = readMood(root)
     const sense = readSense(root)
     const trigger = readTrigger(root)
-    const diskFile = path.join(resolveRoot(root), 'config.json')
-    let diskCustom = {}
-    try {
-      if (fs.existsSync(diskFile)) diskCustom = JSON.parse(fs.readFileSync(diskFile, 'utf8'))
-    } catch {}
-    const liveConfig = { ...readHeartConfig(root), ...this.config, ...diskCustom }
+    const liveConfig = this.#liveConfig()
     const memoryMode = readMemoryMode(root)
     const today = dateOf()
 
@@ -140,6 +190,9 @@ export class HeartService {
     }
 
     const { type, source, timestamp, confidence, evidence, summary } = validated.data
+    if (type === 'sensor' && source === 'fullawake' && confidence === 1 && evidence?.interrupted === true) {
+      this.#interruptUntil = performance.now() + INTERRUPT_COOLDOWN_MS
+    }
     const observationId = randomUUID()
     const prevSnapshot = this.getSnapshot()
 
@@ -225,12 +278,7 @@ export class HeartService {
     const root = this.root
     const mood = readMood(root)
     const trigger = readTrigger(root)
-    const diskFile = path.join(resolveRoot(root), 'config.json')
-    let diskCustom = {}
-    try {
-      if (fs.existsSync(diskFile)) diskCustom = JSON.parse(fs.readFileSync(diskFile, 'utf8'))
-    } catch {}
-    const liveConfig = { ...readHeartConfig(root), ...this.config, ...diskCustom }
+    const liveConfig = this.#liveConfig()
     const speakState = readSpeak(root)
     const timeZone = 'Asia/Shanghai'
     const now = new Date()

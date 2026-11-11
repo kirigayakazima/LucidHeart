@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query, status
 from starlette.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,8 +25,12 @@ from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
 from fullawake.core.config import config
 from fullawake.core.session import get_session_status
-from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, VoiceCompute
+from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, MAX_SONG_BYTES, VoiceCompute
 from fullawake.capabilities.voice_artifacts import DAY
+from fullawake.capabilities.voice_sing_provider import (
+    CUDA, ResidentSingProvider, SingJobQueue, SingQueueFull, SingQueueUnavailable,
+)
+from fullawake.gateway.interrupt_controller import InterruptController
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -49,12 +53,18 @@ class FullAwakeMCPGateway:
 
     def __init__(self) -> None:
         self.voice = VoiceCompute()
+        self.sing_jobs = SingJobQueue(self._render_sing_job)
         self.watch = WatchCapability()
+        self.interrupts = InterruptController(self.watch, self.voice)
 
         @asynccontextmanager
         async def lifespan(_app):
             if config.voice_enabled:
                 self.voice.artifacts.sweep()
+                if config.voice_provider == CUDA and config.voice_profile:
+                    self.voice.sing_provider = ResidentSingProvider(config.voice_python, config.voice_profile)
+                    self.voice.sing_provider.start()
+                self.sing_jobs.start()
             expiry = asyncio.create_task(self.watch.expire_clocks()) if self.watch.enabled else None
             try:
                 yield
@@ -62,6 +72,12 @@ class FullAwakeMCPGateway:
                 if expiry:
                     expiry.cancel()
                     await asyncio.gather(expiry, return_exceptions=True)
+                try:
+                    await self.sing_jobs.close()
+                finally:
+                    if self.voice.sing_provider is not None:
+                        await self.voice.sing_provider.close()
+                        self.voice.sing_provider = None
 
         self.app = FastAPI(
             title="FullAwake Gateway",
@@ -85,6 +101,12 @@ class FullAwakeMCPGateway:
         self._register_default_capabilities()
         self._setup_routes()
 
+    async def _render_sing_job(self, job_id, audio, audio_format, pitch, *, progress):
+        if self.voice.sing_provider is None:
+            raise ValueError('VOICE_RVC_CUDA_UNAVAILABLE')
+        return await self.voice.process_singing_pipeline(job_id, audio, audio_format, pitch,
+                                                         progress=progress, queued=True)
+
     def register_capability(self, capability: BaseCapability) -> None:
         """Register a new capability module."""
         self.capabilities.append(capability)
@@ -101,6 +123,7 @@ class FullAwakeMCPGateway:
     def _setup_routes(self) -> None:
         app = self.app
         self.watch.mount(app)
+        self.interrupts.mount(app)
 
         @app.get("/health")
         async def health():
@@ -244,13 +267,61 @@ class FullAwakeMCPGateway:
             return StreamingResponse(stream_result(), media_type='application/x-ndjson' if progress else 'application/json')
 
         @app.get('/v1/voice/sing/download/{task}', dependencies=[Depends(verify_token)])
-        async def voice_sing_download_endpoint(task: str):
-            file_path = self.voice.get_singing_song_file(task)
+        async def voice_sing_download_endpoint(task: str, format: Literal['mp3', 'wav'] | None = None):
+            file_path = self.voice.get_singing_song_file(task, format)
             release = self.voice.artifacts.pin(file_path, 7 * DAY) if file_path else None
             if not release:
                 raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
             media_type = "audio/mpeg" if file_path.suffix.lower() == ".mp3" else "audio/wav"
             return VoiceDownload(str(file_path), release, media_type=media_type, filename=file_path.name)
+
+        async def verify_sing_client(request: Request):
+            if not config.voice_enabled:
+                raise HTTPException(status_code=503, detail='VOICE_DISABLED')
+            if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(status_code=403, detail='VOICE_CLIENT_NOT_ALLOWED')
+
+        sing_auth = [Depends(verify_token), Depends(verify_sing_client)]
+
+        async def read_song(request):
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_SONG_BYTES:
+                    raise HTTPException(status_code=413, detail='VOICE_REQUEST_TOO_LARGE')
+                body.extend(chunk)
+            if len(body) < 100:
+                raise HTTPException(status_code=422, detail='VOICE_AUDIO_EMPTY')
+            return bytes(body)
+
+        @app.post('/v1/voice/sing/jobs', status_code=202, dependencies=sing_auth)
+        async def submit_sing_job(request: Request, format: Literal['m4a', 'mp3', 'wav', 'flac'] = 'm4a',
+                                  pitch: int = Query(0)):
+            if pitch not in (0, -4):
+                raise HTTPException(status_code=422, detail='VOICE_PITCH_INVALID')
+            try:
+                with self.sing_jobs.upload_slot():
+                    audio = await asyncio.wait_for(read_song(request), timeout=90)
+                return self.sing_jobs.submit(audio, format, pitch)
+            except SingQueueFull as error:
+                raise HTTPException(status_code=429, detail='VOICE_SING_QUEUE_FULL') from error
+            except SingQueueUnavailable as error:
+                raise HTTPException(status_code=503, detail='VOICE_SING_QUEUE_UNAVAILABLE') from error
+            except TimeoutError as error:
+                raise HTTPException(status_code=408, detail='VOICE_UPLOAD_TIMEOUT') from error
+
+        @app.get('/v1/voice/sing/jobs/{job_id}', dependencies=sing_auth)
+        async def get_sing_job(job_id: str):
+            try:
+                return self.sing_jobs.get(job_id)
+            except KeyError as error:
+                raise HTTPException(status_code=404, detail='VOICE_SING_JOB_NOT_FOUND') from error
+
+        @app.post('/v1/voice/sing/jobs/{job_id}/cancel', dependencies=sing_auth)
+        async def cancel_sing_job(job_id: str):
+            try:
+                return await self.sing_jobs.cancel(job_id)
+            except KeyError as error:
+                raise HTTPException(status_code=404, detail='VOICE_SING_JOB_NOT_FOUND') from error
 
         # ==========================================
         # MCP SSE Transport (Standard for DSH)

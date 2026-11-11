@@ -444,6 +444,35 @@ def join_speech_segments(spans, chunks, total_samples):
     return output
 
 
+def create_sessions(models_dir, execution_providers, num_threads=4):
+    hubert = os.path.join(models_dir, "hubert.onnx")
+    rmvpe = os.path.join(models_dir, "rmvpe.onnx")
+    voice = os.path.join(models_dir, "model.onnx")
+    if not os.path.exists(voice):
+        candidates = [f for f in os.listdir(models_dir)
+                      if f.endswith(".onnx") and f not in ("hubert.onnx", "rmvpe.onnx")]
+        if candidates:
+            voice = os.path.join(models_dir, candidates[0])
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = num_threads
+    dll_dir = None
+    if "CUDAExecutionProvider" in execution_providers and sys.platform == "win32":
+        torch_lib = os.path.abspath(r"D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib")
+        if os.path.isdir(torch_lib):
+            if torch_lib not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+            try:
+                dll_dir = os.add_dll_directory(torch_lib)
+            except OSError:
+                pass
+    try:
+        return tuple(ort.InferenceSession(model, opts, providers=execution_providers)
+                     for model in (hubert, rmvpe, voice))
+    finally:
+        if dll_dir is not None:
+            dll_dir.close()
+
+
 def convert_audio(
     input_path: str,
     models_dir: str,
@@ -465,6 +494,7 @@ def convert_audio(
     execution_providers = None,
     pc_offload: bool = False,
     pc_url: str = "http://127.0.0.1:28765",
+    sessions=None,
 ):
     start_time = time.time()
     if execution_providers is None:
@@ -477,20 +507,6 @@ def convert_audio(
     os.makedirs(chunks_dir, exist_ok=True)
     manifest_path = os.path.join(work_dir, "manifest.json")
     
-    # Model files
-    hubert_path = os.path.join(models_dir, "hubert.onnx")
-    rmvpe_path = os.path.join(models_dir, "rmvpe.onnx")
-    voice_path = os.path.join(models_dir, "model.onnx")
-    if not os.path.exists(voice_path):
-        # Fallback to any .onnx in models_dir
-        onnx_candidates = [f for f in os.listdir(models_dir) if f.endswith(".onnx") and f not in ("hubert.onnx", "rmvpe.onnx")]
-        if onnx_candidates:
-            voice_path = os.path.join(models_dir, onnx_candidates[0])
-            
-    for p, name in [(hubert_path, "hubert.onnx"), (rmvpe_path, "rmvpe.onnx"), (voice_path, "voice onnx model")]:
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"Missing required model {name} at {p}")
-
     # Load entire input audio at 16kHz
     if progress_callback:
         progress_callback(1.0, "Loading input audio")
@@ -547,26 +563,11 @@ def convert_audio(
         except Exception:
             pass
 
-    # Initialize ONNX sessions
-    opts = ort.SessionOptions()
-    opts.intra_op_num_threads = num_threads
-    
-    if "CUDAExecutionProvider" in execution_providers and sys.platform == "win32":
-        try:
-            torch_lib = os.path.abspath(r"D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib")
-            if os.path.isdir(torch_lib):
-                if hasattr(os, "add_dll_directory"):
-                    os.add_dll_directory(torch_lib)
-                if torch_lib not in os.environ.get("PATH", ""):
-                    os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
-        except Exception:
-            pass
-
     if progress_callback:
         progress_callback(5.0, "Loading ONNX inference runtime")
-    hubert_sess = ort.InferenceSession(hubert_path, opts, providers=execution_providers)
-    rmvpe_sess = ort.InferenceSession(rmvpe_path, opts, providers=execution_providers)
-    voice_sess = ort.InferenceSession(voice_path, opts, providers=execution_providers)
+    hubert_sess, rmvpe_sess, voice_sess = (
+        sessions if sessions is not None else create_sessions(models_dir, execution_providers, num_threads)
+    )
     actual_provider = voice_sess.get_providers()[0] if hasattr(voice_sess, 'get_providers') else 'CPUExecutionProvider'
 
     index_table = None

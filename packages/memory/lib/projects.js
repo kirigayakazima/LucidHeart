@@ -4,15 +4,16 @@ import { getZonedParts, shanghaiDay } from './store.js';
 export class ProjectLedger {
   entries = new Map();
 
-  constructor(store) {
+  constructor(store, ensureCurrent = () => {}) {
     this.store = store;
+    this.ensureCurrent = ensureCurrent;
   }
 
   #save(entry) {
     try {
       this.store.appendJournal(entry, 'project');
     } catch (error) {
-      this.store.loadAllFromJournal(undefined, this.entries);
+      try { this.store.loadAllFromJournal(undefined, this.entries); } catch {}
       throw error;
     }
     this.entries.set(entry.id, entry);
@@ -20,6 +21,7 @@ export class ProjectLedger {
   }
 
   list(scope) {
+    this.ensureCurrent();
     return [...this.entries.values()].filter(entry => entry.scope === scope).map(entry => ({ ...entry }));
   }
 
@@ -34,6 +36,7 @@ export class ProjectLedger {
   }
 
   update({ scope, id, revision, progress, note, evidence, cancel }, now = new Date()) {
+    this.ensureCurrent();
     const entry = this.entries.get(id);
     if (entry?.scope !== scope) return { status: 'missing' };
     if (entry.revision !== revision) return { status: 'stale', project: { ...entry } };
@@ -62,6 +65,7 @@ export class ProjectLedger {
   }
 
   markReminded(id, now = new Date()) {
+    this.ensureCurrent();
     const entry = this.entries.get(id);
     const day = shanghaiDay(now);
     if (entry?.status === 'active' && entry.remindedOn !== day) this.#save({ ...entry, remindedOn: day });

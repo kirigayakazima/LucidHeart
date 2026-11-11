@@ -47,7 +47,7 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
   }
 
   const lines = ['【相关记忆参考 (紧凑摘要，如需详情请调用 memory_inspect)】:'];
-  let currentTokens = estimateTokens(lines[0]);
+  let currentTokens = 0;
   let addedCount = 0;
 
   for (const item of entries) {
@@ -55,25 +55,42 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
     const date = Number.isFinite(at.getTime()) ? shanghaiDay(at) : '';
     const scopeTag = item.scope === 'shared' ? '[共享]' : '';
     const line = `- [${item.id}] ${date} ${scopeTag} [${item.kind}] ${item.content}`;
-    const lineTokens = estimateTokens(line);
-
-    if (currentTokens + lineTokens > maxTokens && addedCount > 0) {
-      break;
-    }
+    const nextTokens = estimateTokens([...lines, line].join('\n'));
+    if (nextTokens > maxTokens) break;
 
     lines.push(line);
-    currentTokens += lineTokens;
+    currentTokens = nextTokens;
     addedCount++;
   }
 
   return {
-    text: lines.join('\n'),
+    text: addedCount ? lines.join('\n') : '',
     count: addedCount,
     usedTokens: currentTokens,
   };
 }
 
-export { formatConversationProjection } from './projection.js';
+export const CONVERSATION_TOKEN_BUDGET = 200;
+
+export function formatConversationProjection(entries, label = '小满的回忆', { maxTokens = CONVERSATION_TOKEN_BUDGET } = {}) {
+  const budget = Math.min(CONVERSATION_TOKEN_BUDGET, Math.floor(maxTokens));
+  if (!Number.isFinite(budget) || budget <= 0) return '';
+  const prefix = `[${label}: `;
+  const items = [];
+  let text = '';
+  for (const { content } of entries) {
+    const fact = content.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim().replace(/\{/g, '｛').replace(/\}/g, '｝');
+    if (!fact) continue;
+    const item = `${items.length + 1}. ${fact}`;
+    const next = prefix + [...items, item].join('; ') + ']';
+    // Bound the full projection conservatively for byte-based tokenizers.
+    if (Buffer.byteLength(next, 'utf8') > budget) continue;
+    items.push(item);
+    text = next;
+    if (items.length === 3) break;
+  }
+  return text;
+}
 
 /**
  * 手术式工具输出裁剪 (借鉴 tool-result-pruner 机制)

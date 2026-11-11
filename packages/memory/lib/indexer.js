@@ -9,15 +9,39 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import path from 'node:path';
 import { tokenizeForFTS, buildFtsQuery, buildProjectionQuery } from './tokenizer.js';
 
+const SHADOW_POOL = 24;
+const MAX_SHADOW_JOBS = 8;
+const DAY_MS = 86_400_000;
+const unit = (value, fallback) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
+
+function rankShadow(rows, at) {
+  const strongest = Math.max(0, ...rows.map(row => -row.rank));
+  return rows.map((row, index) => {
+    const entry = JSON.parse(row.raw_json);
+    const relevance = strongest > 0 ? unit(-row.rank / strongest, 0) : 0;
+    const importance = unit(entry.salience?.importance ?? entry.importance, 0.5);
+    const ageDays = (at - Date.parse(entry.updatedAt ?? entry.createdAt)) / DAY_MS;
+    const recency = Number.isFinite(ageDays) ? 1 / (1 + Math.max(0, ageDays) / 30) : 0;
+    const retention = entry.retentionClass === 'pinned' ? 1 : entry.retentionClass === 'stable' ? 0.5 : 0;
+    const score = 0.75 * relevance + 0.15 * importance + 0.07 * recency + 0.03 * retention;
+    return { id: entry.id, index, score, relevance, importance, recency, retention };
+  }).sort((a, b) => b.score - a.score || a.index - b.index);
+}
+
 export class MemoryIndexer {
+  #ready = true;
+  #generation = 0;
+  #shadowJobs = new Set();
   /**
    * @param {string} dbPath 数据库路径，或 ':memory:' 用于内存沙盒测试
    */
-  constructor(dbPath) {
+  constructor(dbPath, { retrievalPolicy = 'fts', onShadowEvaluation } = {}) {
+    if (!['fts', 'shadow'].includes(retrievalPolicy)) throw new Error('Invalid memory retrievalPolicy');
     this.dbPath = dbPath;
+    this.retrievalPolicy = retrievalPolicy;
+    this.onShadowEvaluation = onShadowEvaluation;
     this.db = new DatabaseSync(dbPath);
     this.initSchema();
   }
@@ -77,6 +101,7 @@ export class MemoryIndexer {
    * @param {any} entry
    */
   upsert(entry) {
+    this.#generation++;
     const stmt = this.db.prepare(`
       INSERT INTO memories (
         id, kind, scope, content, confidence, valid_from, valid_to,
@@ -147,7 +172,8 @@ export class MemoryIndexer {
    * @param {boolean} [options.exactScope=false]
    * @returns {Array<any>}
    */
-  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false } = {}) {
+  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false, shadow = true } = {}) {
+    this.#assertReady();
     const ftsQuery = projection ? buildProjectionQuery(query) : buildFtsQuery(query);
     if (!ftsQuery) return [];
 
@@ -180,12 +206,51 @@ export class MemoryIndexer {
     sql += ` ORDER BY f.rank ASC, m.confidence DESC, m.created_at DESC LIMIT ?;`;
     params.push(limit);
 
+    let entries;
     try {
       const rows = this.db.prepare(sql).all(...params);
-      return rows.map((r) => JSON.parse(r.raw_json));
+      entries = rows.map((r) => JSON.parse(r.raw_json));
     } catch {
       return [];
     }
+    if (shadow && this.retrievalPolicy === 'shadow' && entries.length && this.onShadowEvaluation) {
+      try { this.#scheduleShadow(sql, params, entries.slice(0, SHADOW_POOL).map(({ id }) => id), projection); } catch {}
+    }
+    return entries;
+  }
+
+  #scheduleShadow(sql, params, baselineIds, projection) {
+    if (this.#shadowJobs.size >= MAX_SHADOW_JOBS) return;
+    const generation = this.#generation;
+    const job = setImmediate(() => {
+      this.#shadowJobs.delete(job);
+      if (!this.#ready || generation !== this.#generation) return;
+      try {
+        const start = performance.now();
+        const at = Date.now();
+        const rows = this.db.prepare(sql).all(...params.slice(0, -1), SHADOW_POOL);
+        const ranked = rankShadow(rows, at);
+        const shadowIds = ranked.filter(row => row.relevance >= 0.6).slice(0, baselineIds.length).map(({ id }) => id);
+        const logged = this.onShadowEvaluation({
+          at: new Date(at).toISOString(), policyVersion: 'shadow-v1', surface: projection ? 'conversation' : 'recall',
+          baselineIds, shadowIds, scores: ranked.map(({ index, ...score }) => score),
+          elapsedMs: performance.now() - start,
+        });
+        void Promise.resolve(logged).catch(() => {});
+      } catch {}
+    });
+    job.unref?.();
+    this.#shadowJobs.add(job);
+  }
+
+  invalidate() {
+    this.#ready = false;
+    this.#generation++;
+  }
+
+  #assertReady() {
+    if (!this.#ready) throw Object.assign(Error('Memory projection unavailable until journal replay succeeds'),
+      { code: 'MEMORY_PROJECTION_UNAVAILABLE' });
   }
 
   /**
@@ -194,11 +259,13 @@ export class MemoryIndexer {
    * @returns {any|null}
    */
   getById(id) {
+    this.#assertReady();
     const row = this.db.prepare('SELECT raw_json FROM memories WHERE id = ?').get(id);
     return row ? JSON.parse(row.raw_json) : null;
   }
 
   hasIntakeMatch(content, scope, candidate) {
+    this.#assertReady();
     return !!this.db.prepare(`
       SELECT 1 FROM memories
       WHERE content = ? AND scope = ?
@@ -212,6 +279,7 @@ export class MemoryIndexer {
    * @returns {Array<any>}
    */
   getAllActive() {
+    this.#assertReady();
     const rows = this.db.prepare("SELECT raw_json FROM memories WHERE status = 'active' ORDER BY created_at ASC").all();
     return rows.map((r) => JSON.parse(r.raw_json));
   }
@@ -238,13 +306,18 @@ export class MemoryIndexer {
    * @param {Iterable<any>} entries
    */
   rebuildIndex(entries) {
+    this.invalidate();
     this.transaction(() => {
       this.db.exec('DELETE FROM fts_memories; DELETE FROM memories; DELETE FROM edges;');
       for (const entry of entries) this.upsert(entry);
     });
+    this.#ready = true;
   }
 
   close() {
+    this.invalidate();
+    for (const job of this.#shadowJobs) clearImmediate(job);
+    this.#shadowJobs.clear();
     try {
       this.db.close();
     } catch {}
