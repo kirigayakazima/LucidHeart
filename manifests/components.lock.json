@@ -109,6 +109,15 @@
       "layer": "Sensory",
       "source": "packages/voice-duplex",
       "description": "Opt-in loopback audio sandbox with Silero ONNX, AEC, epoch interruption and latency capture."
+    },
+    "heart-wake": {
+      "id": "dsh-heart-wake",
+      "name": "Heart Wake",
+      "type": "package",
+      "version": "0.1.0",
+      "layer": "Actuator",
+      "source": "packages/heart-wake",
+      "description": "Autonomous turn initiation tool guarded by anti-self-excitation single-turn lock, Asia/Shanghai quiet hours, and SQLite quota ledger."
     }
   },
   "externalTools": {

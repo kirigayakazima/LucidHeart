@@ -1,0 +1,19 @@
+{
+  "name": "dsh-heart-wake",
+  "version": "0.1.0",
+  "description": "受作息、回合和配额约束的 DSH 自唤醒工具",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": "./lib/index.js",
+  "files": ["lib", "cordis.patch.yml"],
+  "engines": { "node": ">=22.13.0" },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
