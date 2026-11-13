@@ -10,6 +10,8 @@ importers:
 
   packages/companion: {}
 
+  packages/evolution: {}
+
   packages/fullawake:
     dependencies:
       '@deepseek-ai/cordis':

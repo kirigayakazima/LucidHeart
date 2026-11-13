@@ -1,0 +1,13 @@
+{
+  "name": "dsh-evolution",
+  "version": "0.1.0",
+  "description": "双角色协作、真实成长手账与可执行回归评测",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": "./lib/index.js",
+  "files": ["lib", "fixtures", "cordis.patch.yml", "README.md"],
+  "engines": { "node": ">=24" },
+  "license": "MIT",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

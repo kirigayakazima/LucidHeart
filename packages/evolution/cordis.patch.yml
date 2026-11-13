@@ -1,0 +1,8 @@
+- insert:
+    - id: dsh-evolution
+      name: dsh-evolution
+      config:
+        dataDir: ""
+        coreGroupSessions: []
+        ownerDirectSessions: []
+        sisterUrl: ""
