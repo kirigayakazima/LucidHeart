@@ -13,6 +13,7 @@
     "test:sticker-look": "pnpm --filter dsh-sticker-look test",
     "test:memory": "pnpm --filter @dsh/memory test",
     "test:heart-wake": "pnpm --filter dsh-heart-wake test",
+    "test:companion": "pnpm --filter dsh-companion test",
     "test:memory-shape": "node --test tools/memory-shape/test/*.test.mjs"
   },
   "keywords": [

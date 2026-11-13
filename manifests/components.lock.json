@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-11",
+  "updatedAt": "2026-11-13",
   "components": {
     "heart": {
       "id": "@dsh/heart",
@@ -109,6 +109,15 @@
       "layer": "Sensory",
       "source": "packages/voice-duplex",
       "description": "Opt-in loopback audio sandbox with Silero ONNX, AEC, epoch interruption and latency capture."
+    },
+    "companion": {
+      "id": "dsh-companion",
+      "name": "Companion",
+      "type": "package",
+      "version": "0.1.0",
+      "layer": "Actuator",
+      "source": "packages/companion",
+      "description": "Companion activities, games, jukebox, projects, care, controlled growth and task ledger."
     },
     "heart-wake": {
       "id": "dsh-heart-wake",
