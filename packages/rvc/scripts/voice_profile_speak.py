@@ -89,6 +89,7 @@ def main():
     parser.add_argument('--intonation-scale', type=float, help='Experimental F0 contour range, 0.8..1.6; default 1')
     parser.add_argument('--seed', type=int, help='Seed latent and ORT noise for controlled auditions')
     parser.add_argument('--provider', choices=['CPUExecutionProvider', 'CUDAExecutionProvider'], help='Execution provider')
+    parser.add_argument('--pc-stitch', action='store_true', help='Use the FullAwake PC speech stitcher')
     args = parser.parse_args()
     started = time.perf_counter()
     profile_path = args.profile.resolve()
@@ -136,6 +137,10 @@ def main():
     spec = importlib.util.spec_from_file_location('lucidheart_phone_rvc', runtime)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if args.pc_stitch:
+        from fullawake.acoustic_stitcher import join_speech_segments
+        from functools import partial
+        module.join_speech_segments = partial(join_speech_segments, bounds=module.speech_mix_bounds)
     module.shape_intonation(module.np.array([], dtype=module.np.float32), intonation_scale)  # Validate before model loading.
     if args.seed is not None:
         if not 0 <= args.seed < 2 ** 32:

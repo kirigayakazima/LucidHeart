@@ -83,6 +83,63 @@ def test_epoch_switch_disables_route_without_touching_legacy_pet(bridge, monkeyp
             pytest.fail('Disabled voice bridge accepted')
 
 
+def test_renderer_heartbeat_expires_and_releases_lease(bridge):
+    client, gateway = bridge
+    with client.websocket_connect('/ws/pet?player=1&heartbeat=1') as pet:
+        first_ping = pet.receive_json()
+        assert first_ping['event'] == 'ping'
+        def start():
+            return [gateway.watch.play_bridge('speech', '你好', long_audio(), 10000)]
+        receipt, = client.portal.call(start)
+        assert pet.receive_json()['hasAudio']
+        audio = pet.receive_json()
+        assert audio['durationMs'] == 10_000 and len(audio['visemes']) == 500
+        with pytest.raises(WebSocketDisconnect) as ended:
+            while True:
+                pet.receive_json()
+        assert ended.value.code == 1011
+    assert receipt.result() == 'discarded'
+    assert gateway.watch.audio_leases.active is None and gateway.watch.player is None
+
+
+@pytest.mark.parametrize('trigger', ['http', 'pet'])
+def test_song_queues_behind_speech_and_explicit_interrupt_revokes(bridge, monkeypatch, tmp_path, trigger):
+    client, gateway = bridge
+    # Enable only this test's HTTP playback access without starting the production workers.
+    monkeypatch.setattr(config, 'voice_enabled', True)
+    song = tmp_path / 'song.mp3'
+    song.write_bytes(b'ID3' + bytes(200))
+    monkeypatch.setattr(gateway.voice, 'get_singing_song_file', lambda *_: song)
+    with client.websocket_connect('/ws/pet?player=1&heartbeat=1') as pet:
+        ping = pet.receive_json()
+        pet.send_json({'event': 'pong', 'nonce': ping['nonce']})
+        client.portal.call(lambda: [gateway.watch.play_bridge('speech', '你好', long_audio(), 10000)])
+        assert pet.receive_json()['event'] == 'action'
+        assert pet.receive_json()['event'] == 'playback_audio'
+        response = client.post('/v1/voice/sing/play/task-1')
+        assert response.json() == {'status': 'queued'}
+        pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': 'speech'})
+        action, source = pet.receive_json(), pet.receive_json()
+        assert source['event'] == 'playback_song' and source['task'] == 'task-1'
+        assert source['utteranceId'] == action['utteranceId']
+        if trigger == 'http':
+            assert client.post('/v1/voice/playback/interrupt').is_success
+        else:
+            pet.send_json({'event': 'interrupt_request'})
+        assert pet.receive_json()['mode'] == 'idle'
+        assert gateway.watch.audio_leases.active is None
+
+
+def test_renderer_receives_phone_heart_mood(bridge):
+    client, _ = bridge
+    with client.websocket_connect('/ws/pet?player=1&heartbeat=1') as pet:
+        ping = pet.receive_json()
+        pet.send_json({'event': 'pong', 'nonce': ping['nonce']})
+        assert client.post('/v1/pet/mood?mood=tired').status_code == 204
+        assert pet.receive_json() == {'event': 'heart_mood', 'mood': 'tired'}
+        assert client.post('/v1/pet/mood?mood=unknown').status_code == 422
+
+
 def test_handshake_opens_capture_and_disconnect_releases_it(bridge, monkeypatch):
     client, gateway = bridge
     stopped = Event()

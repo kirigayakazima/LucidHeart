@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Literal, Optional
@@ -120,9 +121,17 @@ class FullAwakeMCPGateway:
         self.register_capability(self.watch)
         self.register_capability(SafeFSCapability())
 
+    def _interrupt_desktop_playback(self):
+        peer = self.interrupts.peer
+        if peer:
+            self.interrupts.on_speech_start(peer)
+            self.interrupts.on_speech_end(peer)
+        else:
+            self.watch.interrupt_media()
+
     def _setup_routes(self) -> None:
         app = self.app
-        self.watch.mount(app)
+        self.watch.mount(app, self._interrupt_desktop_playback)
         self.interrupts.mount(app)
 
         @app.get("/health")
@@ -274,6 +283,32 @@ class FullAwakeMCPGateway:
                 raise HTTPException(status_code=404, detail="FILE_NOT_FOUND")
             media_type = "audio/mpeg" if file_path.suffix.lower() == ".mp3" else "audio/wav"
             return VoiceDownload(str(file_path), release, media_type=media_type, filename=file_path.name)
+
+        @app.post('/v1/voice/sing/play/{task}', dependencies=[Depends(verify_token)])
+        async def play_song_endpoint(task: str, request: Request):
+            if not config.voice_enabled or not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
+            if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}', task) or not self.voice.get_singing_song_file(task, 'mp3'):
+                raise HTTPException(404, 'FILE_NOT_FOUND')
+            playback = self.watch.queue_song(task)
+            if playback is None:
+                raise HTTPException(503, 'RENDERER_DISCONNECTED')
+            if playback == 'busy':
+                raise HTTPException(409, 'PLAYBACK_QUEUE_FULL')
+            return {'status': playback}
+
+        @app.post('/v1/voice/playback/interrupt', dependencies=[Depends(verify_token)])
+        async def interrupt_playback(request: Request):
+            if not native_loopback(request):
+                raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
+            self._interrupt_desktop_playback()
+            return {'status': 'revoked'}
+
+        @app.post('/v1/pet/mood', dependencies=[Depends(verify_token)], status_code=204)
+        async def update_pet_mood(request: Request, mood: Literal['calm', 'tired', 'excited', 'cheerful', 'engaged']):
+            if not native_loopback(request):
+                raise HTTPException(403, 'PET_MOOD_FORBIDDEN')
+            self.watch.update_heart_mood(mood)
 
         async def verify_sing_client(request: Request):
             if not config.voice_enabled:

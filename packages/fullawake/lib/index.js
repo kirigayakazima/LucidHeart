@@ -3,6 +3,7 @@
 // 并基于 Heart Protocol v1 向 Heart 汇报 PC 在线/离线与设备感官观察。
 
 import { registerWatch } from './watch.js'
+import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
 
 let compileTool = (t) => t
@@ -163,6 +164,14 @@ export function apply(ctx, config = {}) {
   }
 
   const getHeart = () => ctx.get?.('heart') ?? ctx.heart
+  function syncDesktopMood(snapshot) {
+    const mood = snapshot?.mood?.state
+    if (!pcOnline || !['calm', 'tired', 'excited', 'cheerful', 'engaged'].includes(mood)) return
+    void fetch(`${gatewayUrl}/v1/pet/mood?${new URLSearchParams({ mood })}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${authToken}` },
+      redirect: 'error', signal: AbortSignal.timeout(4000),
+    }).then(response => response.body?.cancel()).catch(() => {})
+  }
   let bridge
   if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
@@ -184,6 +193,7 @@ export function apply(ctx, config = {}) {
     })
   }
   registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge })
+  ctx.effect(() => registerTaskView(ctx, defineTool))
 
   // 2. PC 状态检测与 Heart 联动
   async function checkPCStatus() {
@@ -216,6 +226,7 @@ export function apply(ctx, config = {}) {
     const wasOnline = pcOnline
     pcOnline = currentOnline
     lastStatus = statusData
+    if (!wasOnline && currentOnline) syncDesktopMood(getHeart()?.getSnapshot?.())
 
     // 状态变化触发 Heart Protocol v1 观察接入
     const heart = typeof ctx.get === 'function' ? ctx.get('heart') : ctx.heart
@@ -291,13 +302,19 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => {
     // 启动时立即探测一次
     checkPCStatus().catch(() => {})
+    const stopMood = ctx.on?.('heart/state-changed', event => {
+      if (event.current?.mood?.state !== event.prev?.mood?.state) syncDesktopMood(event.current)
+    })
 
     const timer = setInterval(() => {
       checkPCStatus().catch(() => {})
     }, pollIntervalSeconds * 1000)
     if (typeof timer.unref === 'function') timer.unref()
 
-    return () => clearInterval(timer)
+    return () => {
+      clearInterval(timer)
+      if (typeof stopMood === 'function') stopMood()
+    }
   })
 
   // 5. 注册正式 DSH 工具

@@ -88,6 +88,26 @@ def test_one_active_plus_three_waiting_and_queued_cancel_reclaims_slot(monkeypat
         assert runs == [running.rsplit("/", 1)[-1], queued[0].rsplit("/", 1)[-1]]
 
 
+def test_song_rvc_eta_requires_two_observed_slices(monkeypatch, tmp_path):
+    next_slice = asyncio.Event()
+
+    async def render(job_id, audio, audio_format, pitch, *, progress):
+        progress('rvc', {'current': 1, 'total': 4})
+        await next_slice.wait()
+        progress('rvc', {'current': 2, 'total': 4})
+        await asyncio.Future()
+
+    with gateway_client(monkeypatch, tmp_path, render) as client:
+        url = submit(client)
+        assert 'etaSeconds' not in poll(client, url, 'rvc_convert')
+        client.portal.call(next_slice.set)
+        status = client.get(url).json()
+        assert status['sliceProgress'] == {'current': 2, 'total': 4}
+        assert status['etaSeconds'] >= 0
+        assert status['etaStage'] == 'rvc_convert'
+        assert 'etaSeconds' not in client.post(url + '/cancel').json()
+
+
 def test_cancel_terminates_active_process_tree_before_reporting_cancelled(monkeypatch, tmp_path):
     ready = tmp_path / "ready.json"
     child_program = "import time; time.sleep(60)"

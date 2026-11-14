@@ -15,7 +15,7 @@ CREATE INDEX IF NOT EXISTS task_expiry ON async_tasks(status, expires_at);
 const transitions = {
   pending: ['processing', 'failed'],
   processing: ['processing', 'completed', 'failed'],
-  completed: ['delivered'],
+  completed: ['delivered', 'failed'],
   delivered: [],
   failed: [],
 }
@@ -35,6 +35,11 @@ export function taskLedger(db, now) {
   }
   return {
     get, recoverStale,
+    active(target) {
+      return db.prepare(`SELECT * FROM async_tasks WHERE target=? AND expires_at>?
+        AND status IN ('pending','processing','completed') ORDER BY updated_at DESC,id LIMIT 100`)
+        .all(str(target, 'target'), now()).map(decode)
+    },
     create(kind, key, target, payload = null, ttl = dayMs) {
       kind = str(kind, 'kind', 80)
       key = key == null ? null : str(key, 'idempotency_key', 500)

@@ -10,6 +10,8 @@ import path from 'node:path'
 import { setImmediate as nextTick } from 'node:timers/promises'
 import { apply } from '../lib/index.js'
 import { runPcSong } from '../lib/sing.js'
+import { DatabaseSync } from 'node:sqlite'
+import { taskLedger, taskSchema } from '../../companion/lib/tasks/ledger.js'
 
 const mp3 = Buffer.alloc(256)
 mp3.write('ID3')
@@ -123,6 +125,11 @@ async function fixture(t) {
 
 test('QQ 点歌后台按阶段去重播报，完成后只向原会话投递完整附件', { timeout: 20_000 }, async t => {
   const f = await fixture(t)
+  const db = new DatabaseSync(':memory:')
+  t.after(() => db.close())
+  db.exec(taskSchema)
+  const ledger = taskLedger(db, Date.now)
+  f.ctx.companion = { tasks: ledger }
   const remote = Promise.withResolvers()
   const upload = Promise.withResolvers()
   const stages = ['demucs', 'demucs', 'rvc_convert', 'demucs', 'mastering', 'mastering', 'completed']
@@ -158,6 +165,8 @@ test('QQ 点歌后台按阶段去重播报，完成后只向原会话投递完�
   f.ctx.qqbotMediaSender.resolveTargetForSession = () => ({ scope: 'c2c', targetId: 'later-chat' })
   remote.resolve()
   const observation = await f.observed.promise
+  assert.equal(ledger.get(job.task_id).status, 'delivered')
+  assert.equal(ledger.get(job.task_id).result.output_path, job.expected_output)
   assert.equal(observation.evidence.mode, 'pc_gpu_pipeline')
   assert.equal(observation.evidence.execution.provider, 'CUDAExecutionProvider')
   assert.deepEqual(f.messages, [ack, ...messagesByStage].map(message => ({ peer: f.target, message })))
@@ -183,6 +192,31 @@ test('无效 PC 下载先播报降级，调用仅本地链路，再投递本地�
   assert.equal((await f.observed.promise).evidence.mode, 'phone_local')
   assert.deepEqual(f.files[0].data, mp3)
   await assert.rejects(stat(`${job.expected_output}.part`), { code: 'ENOENT' })
+})
+
+test('显式要求电脑外放时，成曲进入 PC 播放租约队列并保留 QQ 投递', async t => {
+  const f = await fixture(t)
+  const events = []
+  t.mock.method(globalThis, 'fetch', async (url, opts) => {
+    const route = new URL(url).pathname
+    if (route === '/health') return new Response()
+    if (route === jobsPath) {
+      for await (const _ of opts.body) { /* drain the uploaded audio */ }
+      return snapshot('completed')
+    }
+    if (route === downloadPath) {
+      events.push('download')
+      return new Response(mp3)
+    }
+    assert.equal(route, `/v1/voice/sing/play/${remoteId}`)
+    assert.equal(opts.method, 'POST')
+    events.push('playback')
+    return Response.json({ status: 'queued' })
+  })
+  await f.request({ play_on_pc: true })
+  await f.observed.promise
+  assert.deepEqual(events, ['download', 'playback'])
+  assert.equal(f.files.length, 1)
 })
 
 test('PC 连通探测 3 秒超时后直接降级，本地失败时不投递', { timeout: 6500 }, async t => {

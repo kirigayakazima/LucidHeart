@@ -205,7 +205,7 @@ class VoiceCompute:
                 profile_file, output = work / 'profile.json', work / 'output.wav'
                 profile_file.write_text(json.dumps(profile), encoding='utf8')
                 cmd = [str(python), str(worker), '--profile', str(profile_file),
-                       '--output', str(output), '--seed', '42']
+                       '--output', str(output), '--seed', '42', '--pc-stitch']
                 if text is not None:
                     cmd.extend(['--text', text])
                 else:
@@ -217,7 +217,9 @@ class VoiceCompute:
                 worker_env = dict(os.environ)
                 torch_lib = r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib'
                 worker_env['PATH'] = torch_lib + os.pathsep + worker_env.get('PATH', '')
-                worker_env['PYTHONPATH'] = r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages;D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages'
+                worker_env['PYTHONPATH'] = os.pathsep.join((str(Path(__file__).resolve().parents[2]),
+                    r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages',
+                    r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages'))
                 process = await asyncio.create_subprocess_exec(*cmd,
                     env=worker_env,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)

@@ -4,7 +4,7 @@
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak } from './runner.js'
 import { getOptionalService, getVoiceServices } from './services.js'
-import { findSong, PcSongCancelled, renderSong } from './sing.js'
+import { findSong, PcSongCancelled, queuePcSong, renderSong } from './sing.js'
 import fs from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -299,7 +299,7 @@ export function apply(ctx, config = {}) {
     defineTool({
       name: 'rvc_sing',
       output: defaultOutput,
-      description: '用户自然点歌（例如“唱一首樱花草吧”）时调用一次，直接传 song_title。只使用已有本地原曲。工具会自动在当前 QQ 会话确认、在后台制作并发送完整成曲，无需重复确认或等待结果。',
+      description: '用户点歌时调用一次并传 song_title。工具会自动在当前 QQ 会话确认、后台制作并发送成曲。用户明确要求电脑外放时传 play_on_pc。',
       parameters: {
         song_title: {
           type: 'string',
@@ -317,6 +317,7 @@ export function apply(ctx, config = {}) {
           type: 'number',
           description: '音高调整（0 为元气少女，-4 为沉稳日常，严禁传 -2；默认为 0）',
         },
+        play_on_pc: { type: 'boolean', description: '用户明确要求在 PC 桌宠扬声器播放时开启' },
       },
       execute: losslessJson(async function execute(args, exec) {
         const signal = AbortSignal.any([lifetime.signal, ...(exec?.signal ? [exec.signal] : [])])
@@ -332,7 +333,8 @@ export function apply(ctx, config = {}) {
 
         const target = config.autoSendQq === false ? undefined : mediaSender?.resolveTargetForSession?.(exec?.agent?.id)
         const qqSender = target && getOptionalService(ctx, 'qqbotSender')
-        const key = JSON.stringify([exec?.agent?.id, source.file, pitch])
+        const playOnPc = args.play_on_pc === true
+        const key = JSON.stringify([exec?.agent?.id, source.file, pitch, playOnPc])
         if (songs.has(key)) return songs.get(key)
         let gate
         try {
@@ -353,6 +355,22 @@ export function apply(ctx, config = {}) {
         const result = { ok: true, status: 'dispatched', task_name: taskName || 'song', job_id: jobId,
           input_audio: source.file, expected_output: output, artifactId: songArtifacts.id(output), qq_auto_delivery: Boolean(target),
           notice: target ? '工具负责发送进度和成曲，无需再次确认。' : '成曲会保存到 expected_output。' }
+        const ledger = getOptionalService(ctx, 'companion')?.tasks
+        if (ledger && exec?.agent) {
+          try {
+            const scope = exec.agent.session?.id ?? exec.agent.session?.header?.id ?? exec.agent.id
+            result.task_id = ledger.create('singing', 'rvc:' + jobId, scope, { title: title || path.parse(source.file).name }).id
+          } catch (error) { console.warn('[@dsh/rvc] 任务账本登记失败:', error.message) }
+        }
+        function track(status, progress, detail) {
+          if (!result.task_id) return
+          if (progress !== undefined) {
+            if (!Number.isInteger(progress) || progress < lastProgress || progress > 100) return
+          }
+          try { lastProgress = ledger.update(result.task_id, status, progress, detail).progress }
+          catch (error) { console.warn('[@dsh/rvc] 任务账本更新失败:', error.message) }
+        }
+        let lastProgress = 0
         songs.set(key, result)
 
         async function say(message) {
@@ -366,15 +384,31 @@ export function apply(ctx, config = {}) {
 
         async function finish() {
           signal.throwIfAborted()
+          track('processing', 0, { result: { phase: 'queued' } })
+          job.onStatus = (stage, snapshot) => {
+            job.pcReported = true
+            const phase = { queued: 0, demucs: 25, rvc_convert: 60, mastering: 90 }[stage]
+            if (phase === undefined) return
+            track('processing', snapshot.progress ?? phase, { result: { phase: stage, queue_position: snapshot.queuePosition ?? null,
+              eta_seconds: snapshot.etaSeconds ?? null, eta_stage: snapshot.etaStage ?? null,
+              slice_progress: snapshot.sliceProgress ?? null } })
+          }
           let progress = say('小满收到啦，这就去后台翻曲谱~')
           job.onStage = stage => {
+            const details = { separation: ['demucs', 25], rvc: ['rvc_convert', 60], mixing: ['mastering', 90] }[stage]
+            if (details && !job.pcReported) track('processing', details[1], { result: { phase: details[0] } })
             progress = progress.then(() => say(songStageMessage[stage]))
           }
           let rendered
           try {
-            rendered = await renderSong(job, () => progress.then(() => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。')))
+            rendered = await renderSong(job, error => {
+              track('processing', undefined, { result: { phase: 'local_fallback', fallback_reason: error.message } })
+              return progress.then(() => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。'))
+            })
+            track('processing', 100, { result: { phase: 'ready_local', output_path: output } })
             await progress
           } catch (error) {
+            track('failed', undefined, { error: signal.aborted || error instanceof PcSongCancelled ? 'cancelled' : String(error.message).slice(0, 450) })
             if (signal.aborted || error instanceof PcSongCancelled) return
             await progress
             if (!signal.aborted) {
@@ -384,27 +418,43 @@ export function apply(ctx, config = {}) {
             return
           }
           signal.throwIfAborted()
+          if (playOnPc) {
+            try {
+              if (!rendered.remoteJobId) throw new Error('PC artifact unavailable')
+              await queuePcSong(rendered.remoteJobId, signal)
+            } catch (error) {
+              console.warn('[@dsh/rvc] PC 成曲排播失败:', error.message)
+              await say('电脑没排上这首歌，成曲已保留。')
+            }
+          }
+          signal.throwIfAborted()
           if (target) {
+            track('processing', 100, { result: { phase: 'delivering_qq', output_path: output } })
             try {
               const audio = { localPath: output }
               const fileName = `${(title || path.parse(source.file).name).replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80)}.mp3`
               const sent = mediaSender.sendFile ? await mediaSender.sendFile(target, audio, { fileName })
                 : await mediaSender.sendVoice(target, audio)
               assertQqDelivery(sent)
+              track('completed', 100, { result: { output_path: output } })
+              track('delivered')
             } catch (error) {
+              track('failed', undefined, { error: String(error.message).slice(0, 450) })
               console.warn(`[@dsh/rvc] 成曲 ${jobId} QQ 投递失败:`, error.message)
               await say('歌已经唱完啦，可是 QQ 没能把音频送出去。')
             }
-          }
+          } else track('completed', 100, { result: { output_path: output } })
           if (signal.aborted) return
           const mode = rendered.mode === 'phone_onnx_fallback' ? 'phone_local' : rendered.mode
+          const execution = rendered.remoteJobId ? { mode: rendered.mode, provider: rendered.provider } : rendered
           await heart?.observe?.({ type: 'audio', source: 'rvc', confidence: 1,
             evidence: { audioPath: output, pitch, mode, artifactId: result.artifactId,
-              profileId: rendered.profileId, execution: rendered }, summary: '通过 RVC 合成歌曲',
+              profileId: rendered.profileId, execution }, summary: '通过 RVC 合成歌曲',
             timestamp: new Date().toISOString() })
         }
 
         void finish().catch(error => {
+          track('failed', undefined, { error: signal.aborted ? 'cancelled' : String(error.message).slice(0, 450) })
           if (!signal.aborted) console.warn('[@dsh/rvc] 唱歌任务收尾告警:', error.message)
         }).finally(() => {
           songs.delete(key)

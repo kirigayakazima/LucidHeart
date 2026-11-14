@@ -104,7 +104,7 @@ function remoteId(snapshot) {
   return snapshot?.jobId ?? snapshot?.job_id
 }
 
-async function pollPcJob({ signal, onStage, gatewayUrl, output }, submitted) {
+async function pollPcJob({ signal, onStage, onStatus, gatewayUrl, output }, submitted) {
   const id = remoteId(submitted)
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw new Error('Invalid PC singing job ID')
   const url = `${gatewayUrl}/v1/voice/sing/jobs/${id}`
@@ -146,12 +146,13 @@ async function pollPcJob({ signal, onStage, gatewayUrl, output }, submitted) {
           throw new Error('Invalid PC singing result')
         }
         await downloadSong({ output, signal, gatewayUrl }, id)
-        return { provider: result?.executionProvider ?? null }
+        return { provider: result?.executionProvider ?? null, remoteJobId: id }
       }
       const stage = snapshot.stage ?? state
       if (!stageAliases.has(stage) && stage !== 'queued' && state !== 'running') {
         throw new Error('Invalid PC singing stage')
       }
+      onStatus?.(stage, snapshot)
       onStage(stage)
       await wait(pollInterval, undefined, { signal: polling })
       const response = await requireResponse(await fetch(url, {
@@ -209,7 +210,14 @@ async function runLegacyPcSong({ source, jobId, pitch, output, signal, onStage, 
     upload.destroy()
   }
   await downloadSong({ output, signal, gatewayUrl }, jobId)
-  return { provider: result.executionProvider ?? null }
+  return { provider: result.executionProvider ?? null, remoteJobId: jobId }
+}
+
+export async function queuePcSong(remoteJobId, signal) {
+  const response = await requireResponse(await fetch(`${gateway}/v1/voice/sing/play/${remoteJobId}`, {
+    method: 'POST', headers: auth, redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(connectTimeout)]),
+  }))
+  await response.body?.cancel()
 }
 
 async function downloadSong({ output, signal, gatewayUrl }, remoteJobId) {
@@ -238,7 +246,7 @@ async function downloadSong({ output, signal, gatewayUrl }, remoteJobId) {
   }
 }
 
-export async function runPcSong({ source, jobId, pitch, output, signal, onStage, gatewayUrl = gateway }) {
+export async function runPcSong({ source, jobId, pitch, output, signal, onStage, onStatus, gatewayUrl = gateway }) {
   if (source.size > maxBytes) throw new Error('Song exceeds PC upload limit')
   signal.throwIfAborted()
   // Check the tunnel before opening a potentially long-running audio upload.
@@ -247,7 +255,7 @@ export async function runPcSong({ source, jobId, pitch, output, signal, onStage,
   })
   await health.body?.cancel()
   let lastStage = -1
-  const job = { source, jobId, pitch, output, signal, gatewayUrl, onStage(stage) {
+  const job = { source, jobId, pitch, output, signal, gatewayUrl, onStatus, onStage(stage) {
     const canonical = stageAliases.get(stage)
     const rank = stages.indexOf(canonical)
     if (signal.aborted || rank <= lastStage) return
@@ -290,15 +298,15 @@ export async function renderSong(job, onFallback) {
   let complete = false
   try {
     try {
-      const { provider } = await runPcSong(job)
+      const { provider, remoteJobId } = await runPcSong(job)
       job.signal.throwIfAborted()
       complete = true
-      return { mode: 'pc_gpu_pipeline', provider }
+      return { mode: 'pc_gpu_pipeline', provider, remoteJobId }
     } catch (error) {
       job.signal.throwIfAborted()
       if (error instanceof PcSongCancelled) throw error
       console.warn('[@dsh/rvc] PC 唱歌分流失败:', error.message)
-      await onFallback()
+      await onFallback(error)
       await runLocalSong(job)
       job.signal.throwIfAborted()
       complete = true

@@ -13,8 +13,13 @@ import { readTrigger, writeTrigger } from '../../heart/lib/trigger.js'
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'fullawake-adapter-test-'))
 
-function startMockGateway(watch = null) {
+function startMockGateway(watch = null, moods = []) {
   const server = http.createServer((req, res) => {
+    if (req.method === 'POST' && req.url.startsWith('/v1/pet/mood?')) {
+      moods.push(new URL(req.url, 'http://127.0.0.1').searchParams.get('mood'))
+      res.writeHead(204).end()
+      return
+    }
     if (watch && req.method === 'POST' && req.url === '/v1/watch/reaction') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -284,6 +289,26 @@ test('FullAwake Adapter: 3. 与 Heart Protocol v1 联动（在线与离线观察
   }
 })
 
+test('FullAwake reports the initial and changed Heart mood to the desktop', async t => {
+  const moods = []
+  const gateway = await startMockGateway(null, moods)
+  t.after(() => gateway.close())
+  const host = new MockCordisHost()
+  const ctx = host.createContext('dsh-fullawake')
+  t.after(() => ctx.dispose())
+  host.services.set('heart', { getSnapshot: () => ({ mood: { state: 'calm' } }) })
+  let stateChanged
+  ctx.on = (event, handler) => {
+    assert.equal(event, 'heart/state-changed')
+    stateChanged = handler
+  }
+  apply(ctx, { gatewayUrl: gateway.url })
+  await host.services.get('pcBridge').checkNow()
+  stateChanged({ prev: { mood: { state: 'calm' } }, current: { mood: { state: 'tired' } } })
+  for (let retries = 0; moods.length < 2 && retries < 100; retries++) await sleep(10)
+  assert.deepEqual(moods, ['calm', 'tired'])
+})
+
 test('FullAwake Adapter: 4. PC 离线时安全降级与断网恢复', async () => {
   const host = new MockCordisHost()
   const ctx = host.createContext('dsh-fullawake')
@@ -314,7 +339,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 首次装载
   const ctx1 = host.createContext('dsh-fullawake')
   apply(ctx1, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 8)
+  assert.equal(host.tools.size, 10)
 
   // 卸载
   ctx1.dispose()
@@ -324,7 +349,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 重新装载
   const ctx2 = host.createContext('dsh-fullawake')
   apply(ctx2, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 8)
+  assert.equal(host.tools.size, 10)
 
   ctx2.dispose()
   assert.equal(host.tools.size, 0)

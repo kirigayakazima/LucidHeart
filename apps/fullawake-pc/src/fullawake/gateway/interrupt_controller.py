@@ -137,7 +137,10 @@ class InterruptController:
         peer.speaking = True
         lease = peer.lease
         if not lease:
+            self.watch.interrupt_media()
             return
+        if self.watch.bridge_output is None:
+            self.watch.interrupt_media()
         if lease.receipt and lease.receipt.done() and lease.receipt.result() in ('played', 'text_delivered'):
             self._settle(peer, lease, self._outcome(lease))
             return

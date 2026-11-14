@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 import logging
 import os
+import re
 from pathlib import Path
 import signal
 import sys
@@ -45,6 +46,8 @@ class SingJob:
     cancel_requested: bool = False
     result: dict | None = None
     error: str | None = None
+    slice_progress: dict | None = None
+    eta_seconds: int | None = None
 
     def snapshot(self):
         result = {"jobId": self.job_id, "status": self.state, "stage": self.state,
@@ -53,6 +56,11 @@ class SingJob:
             result["result"] = self.result
         if self.error is not None:
             result["error"] = self.error
+        if self.slice_progress is not None and self.state == 'rvc_convert':
+            result["sliceProgress"] = self.slice_progress
+            if self.eta_seconds is not None:
+                result['etaSeconds'] = self.eta_seconds
+                result['etaStage'] = self.state
         return result
 
 
@@ -92,10 +100,14 @@ class SingJobQueue:
         self._jobs[job.job_id] = job
         self._pending.append((job, audio, audio_format, pitch))
         self._dispatch()
-        return job.snapshot()
+        return self.get(job.job_id)
 
     def get(self, job_id):
-        return self._jobs[job_id].snapshot()
+        result = self._jobs[job_id].snapshot()
+        if result['status'] == 'queued':
+            result['queuePosition'] = next((position for position, (job, *_) in enumerate(self._pending, 1)
+                                            if job.job_id == job_id), 0)
+        return result
 
     def _dispatch(self):
         if self._active is not None or not self._pending or not self._accepting:
@@ -106,9 +118,24 @@ class SingJobQueue:
         task.add_done_callback(self._release_active)
 
     async def _run(self, job, audio, audio_format, pitch):
-        def progress(stage):
+        clock = asyncio.get_running_loop().time
+        first_slice = None
+
+        def progress(stage, slices=None):
+            nonlocal first_slice
             job.state = STAGES[stage]
-            job.progress = PROGRESS[job.state]
+            job.slice_progress = slices
+            job.progress = PROGRESS[job.state] + (int(29 * slices['current'] / slices['total']) if slices else 0)
+            if not slices or job.state != 'rvc_convert':
+                first_slice = job.eta_seconds = None
+                return
+            current, total = slices['current'], slices['total']
+            if first_slice is None or first_slice[1] != total:
+                first_slice = (current, total, clock())
+                job.eta_seconds = None
+            elif current > first_slice[0]:
+                elapsed_per_slice = (clock() - first_slice[2]) / (current - first_slice[0])
+                job.eta_seconds = round(elapsed_per_slice * (total - current))
 
         try:
             job.result = await self._render(job.job_id, audio, audio_format, pitch, progress=progress)
@@ -330,10 +357,14 @@ class ResidentSingProvider:
             await self._stop_worker()
             raise
 
-    async def _receive(self):
+    async def _receive(self, progress=None):
         while line := await self.worker.process.stdout.readline():
             if line.startswith(PROTOCOL):
                 message = json.loads(line[len(PROTOCOL):])
+                if "sliceProgress" in message:
+                    if progress:
+                        progress(message["sliceProgress"])
+                    continue
                 if message.get("executionProvider") == CUDA:
                     return
                 raise ValueError(message.get("error", "VOICE_RVC_CUDA_UNAVAILABLE"))
@@ -344,13 +375,13 @@ class ResidentSingProvider:
             await asyncio.shield(self._warmup)
         await self._ensure_worker()
 
-    async def convert(self, vocals, output, work, pitch):
+    async def convert(self, vocals, output, work, pitch, *, progress=None):
         await self.prepare()
         try:
             payload = json.dumps([str(vocals), str(output), str(work), pitch]).encode()
             self.worker.process.stdin.write(payload + b"\n")
             await self.worker.process.stdin.drain()
-            await asyncio.wait_for(self._receive(), STAGE_TIMEOUT)
+            await asyncio.wait_for(self._receive(progress), STAGE_TIMEOUT)
         except asyncio.CancelledError:
             await self._stop_worker()
             self.start()
@@ -401,13 +432,19 @@ def _serve_worker(vendor, models_dir):
         reply(executionProvider=CUDA)
 
         index = Path(models_dir) / "voice.mobile.index"
+        def report_progress(_percent, message):
+            match = re.search(r'chunk (\d+)/(\d+)', message, re.IGNORECASE)
+            if match:
+                current, total = map(int, match.groups())
+                reply(sliceProgress={"current": current, "total": total})
+
         for line in sys.stdin.buffer:
             vocals, output, work, pitch = json.loads(line)
             try:
                 result = rvc.convert_audio(
                     vocals, models_dir, output, work_dir=work, pitch_change=pitch,
                     index_path=str(index) if index.is_file() else "", index_ratio=0.3,
-                    sessions=sessions,
+                    sessions=sessions, progress_callback=report_progress,
                 )
                 reply(executionProvider=result["executionProvider"])
             except Exception:

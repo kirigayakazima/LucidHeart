@@ -84,7 +84,8 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
     index_path = str(profile_path.parent / "voice.mobile.index")
 
     if resident is not None:
-        provider = await resident.convert(vocals_wav, voc_new_wav, root / ".rvc_work", pitch)
+        provider = await resident.convert(vocals_wav, voc_new_wav, root / ".rvc_work", pitch,
+                                          progress=(lambda slices: progress("rvc", slices)) if progress else None)
     else:
         cmd_rvc = [
             str(python), "-u", str(rvc_script),
