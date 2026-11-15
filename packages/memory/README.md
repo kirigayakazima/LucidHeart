@@ -18,7 +18,7 @@ Core 提供 remember/recall/inspect/correct/revoke/reindex/close。recall 默认
 
 会话骨架按 FTS 相关度选取最多三条完整事实，用包括包装在内的 200 UTF-8 字节作为 Token 保守上限。`retrievalPolicy` 默认 `fts`。选用 `shadow` 时，异步用相关度、时效、重要性、保留级别和 `mood:<state>` 标签重排同范围的 FTS 候选，将条目 ID、分项分数、耗时及 Jaccard@3 写入 `shadow-retrieval.jsonl`。在线倒数排名以 FTS 首位为参照，使用 `fts_top1_proxy` 标记。离线可将两组排序和标注的相关条目 ID 传给 `benchmarkRetrieval`，汇总 MRR@3。两种模式返回同一份基线结果和提示词。dataDir 仍是单写者使用的唯一选定权威。
 
-[下一版设计](../../../../docs/roadmap/NEXT-VERSION-DESIGN.md)记录来源、提交可靠性、纠错与旁路比较的整体范围。当前本地验收覆盖来源契约、宿主取证和旧条目回放。
+当前已全面实装真实来源跟踪、原子提交可靠性（commit supersede）、自然纠错与 M7-05 影子重排对照，详见工作区 [STATUS](../../../../docs/STATUS.md)。当前本地验收覆盖来源契约、宿主取证和旧条目回放。
 
 运行本地回归：`node --test test/*.test.js`，使用支持node:sqlite/FTS5的Node（手机已确认Node24）。新增工具必须通过实际SDK参数/返回schema验证，不能仅直接调用execute。
 
