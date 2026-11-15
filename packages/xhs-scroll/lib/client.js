@@ -5,14 +5,30 @@ const pageLimit = 3 * 1024 * 1024
 const imageLimit = 12 * 1024 * 1024
 const unavailable = '小红书网页登录态已过期或触发风控，满宝先根据分享卡片读了前段~ 可以去电脑端刷新一下 cookie 噢'
 
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+}
+
 function cookieHeader(raw) {
-  if (typeof raw !== 'string' || raw.length > 8192 || /[\r\n]/.test(raw)) return ''
+  if (typeof raw !== 'string' || raw.length > 8192) return ''
+  const cleaned = raw.replace(/[\r\n]+/g, '; ')
   const selected = new Map()
-  for (const field of raw.split(';')) {
-    const match = /^(web_session|a1)=([\x21-\x7e]+)$/.exec(field.trim())
-    if (match) selected.set(match[1], match[2])
+  for (const field of cleaned.split(';')) {
+    const trimmed = field.trim()
+    if (!trimmed) continue
+    const match = /^([a-zA-Z0-9_-]+)=([\x21-\x7e]*)$/.exec(trimmed)
+    if (match) {
+      const key = match[1]
+      const val = match[2]
+      if (['web_session', 'a1', 'webId', 'gid', 'xsecappid'].includes(key)) {
+        selected.set(key, val)
+      }
+    }
   }
-  return selected.size === 2 ? [...selected].map(([key, value]) => `${key}=${value}`).join('; ') : ''
+  if (!selected.has('web_session')) return ''
+  return [...selected].map(([key, value]) => `${key}=${value}`).join('; ')
 }
 
 async function readBounded(response, limit) {
@@ -50,7 +66,7 @@ export function createXhsClient({ fetcher = fetch, cookie, expiresAt, timeoutMs 
   const expiry = Number.isSafeInteger(expiresAt) && expiresAt > 0 ? expiresAt : 0
   const usable = () => credentials && (!expiry || expiry > now())
   const timed = signal => AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
-  const request = async (url, signal, headers = {}) => fetcher(url, { redirect: 'manual', signal, headers })
+  const request = async (url, signal, headers = {}) => fetcher(url, { redirect: 'manual', signal, headers: { ...BROWSER_HEADERS, ...headers } })
   const failure = signal => signal?.throwIfAborted()
 
   return {
