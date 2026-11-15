@@ -47,7 +47,8 @@ export function extractInitialState(html) {
       if (char === '"') literal = true
       else if (char === '{') depth++
       else if (char === '}' && --depth === 0) {
-        try { return JSON.parse(parts.join('') + html.slice(last, i + 1)) } catch { break }
+        const full = (parts.join('') + html.slice(last, i + 1)).replace(/new\s+(?:Map|Set)\(\[[^\]]*\]\)/g, '{}')
+        try { return JSON.parse(full) } catch { break }
       } else if (char === 'u' && html.startsWith('undefined', i) && /[\s:[,]/.test(html[i - 1]) &&
                  /[\s,\]}]/.test(html[i + 9] ?? '')) {
         parts.push(html.slice(last, i), 'null')

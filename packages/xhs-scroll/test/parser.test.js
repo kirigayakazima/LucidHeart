@@ -19,6 +19,8 @@ test('reads requested note text, tags, interactions and ranked image URLs', () =
 test('normalizes bare undefined without changing quoted values', () => {
   assert.deepEqual(extractInitialState('<script>window.__INITIAL_STATE__={"a":undefined,"x":[undefined,"undefined"]}</script>'),
     { a: null, x: [null, 'undefined'] })
+  assert.deepEqual(extractInitialState('<script>window.__INITIAL_STATE__={"map":new Map([]),"nested":{"store":new Map([])}}</script>'),
+    { map: {}, nested: { store: {} } })
 })
 
 test('refuses executable assignments and empty note maps', () => {
