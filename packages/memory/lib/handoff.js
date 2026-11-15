@@ -2,14 +2,31 @@
  * @dsh/memory - Session Continuity Handoff Manager (极简跨会话接力器)
  *
  * 核心机制:
- * 1. 极简刷盘 (turn/end): 对话每轮结束将最后一句对话原子写入 last_handoff.json (<300 字节，<1ms)
- * 2. 首轮注入 (Turn 1 Injected User Context): 新会话第 1 轮前置注入 [交接线索: 上次聊到...]
- * 3. 保护缓存 (KV-Cache Friendly): System Prompt 100% 保持静态，不改变 16.5K 工具前缀
- * 4. 零开销 (Zero-LLM Overhead): 纯粹结构化提取，0 次模型调用，0 毫秒感知延迟
+ * 1. 极简刷盘 (turn/end): 对话每轮结束将最后一句对话原子写入 last_handoff.json (<1KB，分通道隔离)
+ * 2. 身份隔离 (Channel & Scope Isolation): 私聊 (direct) 与群聊 (group) 强隔离，群聊绝对不注入私聊隐私
+ * 3. 首轮注入 (Turn 1 Injected User Context): 新会话第 1 轮前置注入 [交接线索: 上次聊到...]
+ * 4. 保护缓存 (KV-Cache Friendly): System Prompt 100% 保持静态，不改变 16.5K 工具前缀
+ * 5. 零开销 (Zero-LLM Overhead): 纯粹结构化提取，0 次模型调用，0 毫秒感知延迟
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+
+/**
+ * 计算会话交接的唯一分区 Key
+ * @param {Object} params
+ * @param {string} [params.channel] 'direct' | 'group'
+ * @param {string} [params.targetId] 群号或对方 ID
+ * @param {string} [params.speaker] 发言者 ID
+ * @returns {string}
+ */
+export function resolveHandoffKey({ channel = 'direct', targetId = null, speaker = null } = {}) {
+  const ch = ['direct', 'group'].includes(channel) ? channel : 'direct';
+  if (ch === 'group') {
+    return targetId ? `group:${targetId}` : 'group:default';
+  }
+  return speaker ? `direct:${speaker}` : 'direct:default';
+}
 
 /**
  * 格式化相对时间描述（如：昨晚 23:30、今天 08:15、11月14日）
@@ -60,11 +77,15 @@ export function formatRelativeTime(date, now = new Date()) {
 }
 
 /**
- * 从数据目录读取最新的 last_handoff.json
+ * 从数据目录读取指定通道与身份的 last_handoff.json
  * @param {string} dataDir 
+ * @param {Object} [criteria] 过滤条件
+ * @param {string} [criteria.channel] 'direct' | 'group'
+ * @param {string} [criteria.targetId] 群号或频道 ID
+ * @param {string} [criteria.speaker] 发言者
  * @returns {Object|null}
  */
-export function loadLastHandoff(dataDir) {
+export function loadLastHandoff(dataDir, criteria = {}) {
   if (!dataDir) return null;
   const filePath = path.join(dataDir, 'last_handoff.json');
   try {
@@ -72,14 +93,53 @@ export function loadLastHandoff(dataDir) {
     const content = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(content);
     if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+
+    const channel = criteria.channel || 'direct';
+    const targetId = criteria.targetId || null;
+    const speaker = criteria.speaker || null;
+
+    if (parsed.scopes && typeof parsed.scopes === 'object') {
+      if (channel === 'group') {
+        if (targetId && parsed.scopes[`group:${targetId}`]) {
+          return parsed.scopes[`group:${targetId}`];
+        }
+        if (parsed.scopes['group:default']) {
+          return parsed.scopes['group:default'];
+        }
+        return null;
+      }
+
+      // direct 通道
+      if (speaker && parsed.scopes[`direct:${speaker}`]) {
+        return parsed.scopes[`direct:${speaker}`];
+      }
+      if (parsed.scopes['direct:default']) {
+        return parsed.scopes['direct:default'];
+      }
+      const directKeys = Object.keys(parsed.scopes).filter(k => k.startsWith('direct:'));
+      if (directKeys.length === 1) {
+        return parsed.scopes[directKeys[0]];
+      }
+      return null;
+    }
+
+    // 兼容旧版扁平结构
+    if (parsed.lastExchange) {
+      if (channel === 'direct') {
+        return { channel: 'direct', ...parsed };
+      }
+      // 安全熔断：绝不把未分区的私聊交接送进群聊
+      return null;
+    }
+
+    return null;
   } catch {
     return null;
   }
 }
 
 /**
- * 原子化写入 last_handoff.json (<300 字节，耗时 <1ms)
+ * 分区原子化写入 last_handoff.json (<1KB，分通道隔离，耗时 <1ms)
  * @param {string} dataDir 
  * @param {Object} handoffData 
  */
@@ -88,14 +148,44 @@ export function saveLastHandoff(dataDir, handoffData) {
   const filePath = path.join(dataDir, 'last_handoff.json');
   const tmpPath = path.join(dataDir, `last_handoff.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`);
   try {
-    const payload = JSON.stringify({
+    let store = { version: 'handoff-v2', scopes: {} };
+    if (fs.existsSync(filePath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (existing?.scopes && typeof existing.scopes === 'object') {
+          store = existing;
+        } else if (existing?.lastExchange) {
+          store.scopes['direct:default'] = {
+            channel: 'direct',
+            sessionId: existing.sessionId || '',
+            updatedAt: existing.updatedAt || new Date().toISOString(),
+            lastExchange: existing.lastExchange,
+          };
+        }
+      } catch {}
+    }
+
+    const channel = ['direct', 'group'].includes(handoffData.channel) ? handoffData.channel : 'direct';
+    const key = resolveHandoffKey({
+      channel,
+      targetId: handoffData.targetId,
+      speaker: handoffData.speaker,
+    });
+
+    store.scopes[key] = {
       sessionId: handoffData.sessionId || '',
+      channel,
+      speaker: handoffData.speaker || null,
+      targetId: handoffData.targetId || null,
+      scope: handoffData.scope || null,
       updatedAt: handoffData.updatedAt || new Date().toISOString(),
       lastExchange: {
         user: (handoffData.lastExchange?.user || '').trim().slice(0, 300),
         assistant: (handoffData.lastExchange?.assistant || '').trim().slice(0, 500),
       },
-    }, null, 2);
+    };
+
+    const payload = JSON.stringify(store, null, 2);
     fs.writeFileSync(tmpPath, payload, 'utf8');
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
@@ -104,17 +194,23 @@ export function saveLastHandoff(dataDir, handoffData) {
 }
 
 /**
- * 拼装极简交接线索（控制在 60~80 tokens 内）
+ * 拼装极简交接线索（控制在 60~80 tokens 内，严格执行通道隔离）
  * @param {Object} params
  * @param {Object} [params.lastHandoff]
  * @param {Object} [params.commitment]
+ * @param {string} [params.channel] 'direct' | 'group'
  * @param {Date} [params.now]
  * @returns {string}
  */
-export function buildHandoffClue({ lastHandoff, commitment, now = new Date() }) {
+export function buildHandoffClue({ lastHandoff, commitment, channel = 'direct', now = new Date() }) {
   const parts = [];
 
   if (lastHandoff?.lastExchange) {
+    // 频道边界安全校验：若 handoff 标有 channel 且与当前通道不一致，严禁注入对话
+    if (lastHandoff.channel && lastHandoff.channel !== channel) {
+      return '';
+    }
+
     const { user, assistant } = lastHandoff.lastExchange;
     const lastDate = lastHandoff.updatedAt ? new Date(lastHandoff.updatedAt) : null;
     const timeDesc = formatRelativeTime(lastDate, now);
@@ -137,9 +233,12 @@ export function buildHandoffClue({ lastHandoff, commitment, now = new Date() }) 
   }
 
   if (commitment && commitment.title) {
-    const cleanTitle = commitment.title.replace(/[\r\n]+/g, ' ').trim().slice(0, 40);
-    const target = commitment.targetTime || '近期';
-    parts.push(`待履约约定: 「${cleanTitle}」(${target})`);
+    // 严格通道隔离：承诺条目的 channel 必须与当前通道匹配，群聊严禁泄露私聊约定
+    if (!commitment.channel || commitment.channel === channel) {
+      const cleanTitle = commitment.title.replace(/[\r\n]+/g, ' ').trim().slice(0, 40);
+      const target = commitment.targetTime || '近期';
+      parts.push(`待履约约定: 「${cleanTitle}」(${target})`);
+    }
   }
 
   if (parts.length === 0) return '';
@@ -165,10 +264,13 @@ export function extractTextFromMessage(message) {
 }
 
 /**
- * 判断当前轮次是否满足首轮交接注入条件
+ * 判断当前轮次是否满足首轮交接注入条件（严格校验通道与身份边界）
  * @param {Object} params
  * @param {Object} params.lastHandoff
  * @param {string} params.currentSessionId
+ * @param {string} [params.channel] 'direct' | 'group'
+ * @param {string} [params.targetId] 群号或频道 ID
+ * @param {string} [params.speaker] 发言者 ID
  * @param {Array} [params.messages]
  * @param {Set} [params.injectedSessions]
  * @param {Date} [params.now]
@@ -177,13 +279,36 @@ export function extractTextFromMessage(message) {
 export function shouldInjectHandoff({
   lastHandoff,
   currentSessionId,
+  channel = 'direct',
+  targetId = null,
+  speaker = null,
   messages,
   injectedSessions,
   now = new Date(),
 }) {
-  if (!lastHandoff && !currentSessionId) return false;
+  if (!lastHandoff || !currentSessionId) return false;
   if (injectedSessions && currentSessionId && injectedSessions.has(currentSessionId)) {
     return false; // 本会话已注入过，绝不重复注入
+  }
+
+  // 1. 严格频道隔离：当前是群聊，绝对不允许读取私聊；当前是私聊，绝对不允许读取群聊
+  const handoffChannel = lastHandoff.channel || 'direct';
+  if (handoffChannel !== channel) {
+    return false;
+  }
+
+  // 2. 群聊安全边界：若为群聊，必须匹配同一群组 targetId
+  if (channel === 'group') {
+    if (targetId && lastHandoff.targetId && targetId !== lastHandoff.targetId) {
+      return false;
+    }
+  }
+
+  // 3. 私聊边界：若有不同 speaker 标识且不一致，严禁跨人注入
+  if (channel === 'direct') {
+    if (speaker && lastHandoff.speaker && speaker !== lastHandoff.speaker) {
+      return false;
+    }
   }
 
   // 首轮判定：历史消息为空或只有系统/初始消息
@@ -191,10 +316,10 @@ export function shouldInjectHandoff({
   if (!isFirstTurn) return false;
 
   // 会话切换判定：会话 ID 变更，或距离上次对话超过 1 小时
-  if (lastHandoff?.sessionId && currentSessionId && lastHandoff.sessionId !== currentSessionId) {
+  if (lastHandoff.sessionId && currentSessionId && lastHandoff.sessionId !== currentSessionId) {
     return true;
   }
-  if (lastHandoff?.updatedAt) {
+  if (lastHandoff.updatedAt) {
     const lastDate = new Date(lastHandoff.updatedAt);
     if (!isNaN(lastDate.getTime())) {
       const elapsedMs = now.getTime() - lastDate.getTime();

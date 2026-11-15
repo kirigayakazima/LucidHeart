@@ -4,12 +4,13 @@
 
 import { MemoryService } from './service.js';
 import { buildIntakeMetadata, readConversationInput, registerIntake } from './intake.js';
-import { isInjectedMessage, resolveHostContext } from './host-context.js';
+import { isInjectedMessage, readQqUtterance, resolveHostContext } from './host-context.js';
 import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
 import { getZonedParts } from './store.js';
 import { registerProjects } from './projects.js';
 import { findContradictions } from './contradictions.js';
 import {
+  resolveHandoffKey,
   loadLastHandoff,
   saveLastHandoff,
   buildHandoffClue,
@@ -26,6 +27,7 @@ export {
   CommitmentLedger,
   findContradictions,
   resolveHostContext,
+  resolveHandoffKey,
   loadLastHandoff,
   saveLastHandoff,
   buildHandoffClue,
@@ -86,15 +88,28 @@ export function apply(ctx, config = {}) {
   ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
     const sessionId = agent?.session?.id || agent?.session?.header?.id || agent?.id;
     if (message.source?.kind === 'user') {
-      // 检查跨会话接力器（Turn 1 Injected User Context）
-      const lastHandoff = loadLastHandoff(dataDir);
+      const qqUtterance = readQqUtterance(message);
+      const channel = qqUtterance?.channel || message.source?.qq?.channel || message.source?.channel || 'direct';
+      const speaker = qqUtterance?.speaker || message.source?.qq?.speaker || null;
+      const targetId = message.source?.qq?.targetId || message.source?.qq?.groupId || message.source?.qq?.peerId || null;
+
+      // 检查跨会话接力器（按通道与会话身份严格隔离）
+      const lastHandoff = loadLastHandoff(dataDir, { channel, targetId, speaker });
       const messages = typeof agent?.session?.deriveMessages === 'function'
         ? agent.session.deriveMessages()
         : agent?.session?.messages;
 
-      if (shouldInjectHandoff({ lastHandoff, currentSessionId: sessionId, messages, injectedSessions })) {
-        const commitment = memory.commitments.getActiveCommitmentCare();
-        const clue = buildHandoffClue({ lastHandoff, commitment });
+      if (shouldInjectHandoff({
+        lastHandoff,
+        currentSessionId: sessionId,
+        channel,
+        targetId,
+        speaker,
+        messages,
+        injectedSessions,
+      })) {
+        const commitment = memory.commitments.getActiveCommitmentCare(new Date(), 'Asia/Shanghai', channel);
+        const clue = buildHandoffClue({ lastHandoff, commitment, channel });
         if (clue) {
           injectHandoffToMessage(message, clue);
           if (sessionId) injectedSessions.add(sessionId);
@@ -122,6 +137,9 @@ export function apply(ctx, config = {}) {
         sessionId: session?.id || session?.header?.id,
         userText: '',
         assistantText: '',
+        channel: 'direct',
+        speaker: null,
+        targetId: null,
       });
     }
 
@@ -136,8 +154,12 @@ export function apply(ctx, config = {}) {
 
       const td = activeTurnData.get(session);
       if (td) {
+        const qqUtterance = readQqUtterance(event.data);
         const userUtterance = readConversationInput(event.data, { includeRoutine: true });
-        td.userText = userUtterance?.text || extractTextFromMessage(event.data);
+        td.userText = userUtterance?.text || qqUtterance?.text || extractTextFromMessage(event.data);
+        td.channel = qqUtterance?.channel || event.data?.source?.qq?.channel || event.data?.source?.channel || 'direct';
+        td.speaker = qqUtterance?.speaker || event.data?.source?.qq?.speaker || null;
+        td.targetId = event.data?.source?.qq?.targetId || event.data?.source?.qq?.groupId || event.data?.source?.qq?.peerId || null;
         td.time = event.time || Date.now();
       }
     } else if (event.type === 'user/message' && !isInjectedMessage(event.data)) {
@@ -159,6 +181,9 @@ export function apply(ctx, config = {}) {
       if (td && (td.userText || td.assistantText)) {
         saveLastHandoff(dataDir, {
           sessionId: td.sessionId,
+          channel: td.channel || 'direct',
+          speaker: td.speaker || null,
+          targetId: td.targetId || null,
           updatedAt: new Date(td.time || Date.now()).toISOString(),
           lastExchange: {
             user: td.userText || '',

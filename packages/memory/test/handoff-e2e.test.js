@@ -108,3 +108,107 @@ test('端到端会话接力器 (Turn 1 Session Handoff E2E 验证)', async (t) =
   assert.equal(msg3.content[0].text, '刚刚吃了');
   assert.equal(msg3.source.qq.start, 0);
 });
+
+test('端到端私聊与群聊强隔离 (Private vs Group Channel Air-Gap E2E)', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-airgap-'));
+  const listeners = new Map();
+  const disposers = [];
+  const tools = new Map();
+  let memoryService;
+
+  apply({
+    tools: { register: (tool) => { tools.set(tool.name, tool); } },
+    systemPrompt: { section: () => {} },
+    on: (event, handler) => listeners.set(event, handler),
+    effect: (fn) => disposers.push(fn()),
+    provide: (_name, service) => { memoryService = service; },
+  }, { dataDir, scope: 'xiaoman_private' });
+
+  t.after(() => {
+    for (const dispose of disposers.reverse()) dispose?.();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const emit = (agent, event) => listeners.get('session/event')(agent.session, event);
+  const claim = (agent, message) => listeners.get('agent/inbox/claimed')({ agent, message });
+
+  // 1. 私聊 Session: 用户在私聊中提及高度私密内容
+  const directSession1 = { id: 'session-direct-secret', messages: [] };
+  const directAgent1 = { id: 'agent-direct', session: directSession1 };
+
+  const directMsg1 = {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: '小满，我今天去看了心理医生，这件事别告诉别人' }],
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 26 } },
+  };
+  claim(directAgent1, directMsg1);
+  emit(directAgent1, { type: 'turn/start' });
+  emit(directAgent1, { type: 'user/message', data: directMsg1, time: Date.parse('2026-11-15T22:00:00+08:00') });
+  emit(directAgent1, {
+    type: 'assistant/message',
+    data: { role: 'assistant', content: [{ type: 'text', text: '放心吧，这是我们之间的小秘密，抱抱你。' }] },
+  });
+  emit(directAgent1, { type: 'turn/end' });
+
+  // 2. 群聊 Session: 随后在公共群聊中发起全新的群会话
+  const groupSession1 = { id: 'session-group-public', messages: [] };
+  const groupAgent1 = { id: 'agent-group', session: groupSession1 };
+
+  const groupMsg1 = {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: '小满在吗' }],
+    source: {
+      kind: 'user',
+      qq: {
+        channel: 'group',
+        groupId: 'public-group-100',
+        speaker: 'other_member',
+        start: 0,
+        length: 4,
+      },
+    },
+  };
+
+  // 群聊第一轮消息 claim
+  claim(groupAgent1, groupMsg1);
+
+  // 核心安全红线断言：群聊消息体中绝不可出现任何私聊交接线索或心理医生字样！
+  assert.doesNotMatch(groupMsg1.content[0].text, /心理医生/, '安全红线：群聊绝对严禁泄露私聊交接内容');
+  assert.doesNotMatch(groupMsg1.content[0].text, /小秘密/, '安全红线：群聊绝对严禁泄露私聊助手回复');
+  assert.doesNotMatch(groupMsg1.content[0].text, /\[交接线索:/, '群聊未产生本群记录前绝不注入线索');
+  assert.equal(groupMsg1.content[0].text, '小满在吗');
+  assert.equal(groupMsg1.source.qq.start, 0);
+
+  // 群聊进行一轮正常交流并结束
+  emit(groupAgent1, { type: 'turn/start' });
+  emit(groupAgent1, { type: 'user/message', data: groupMsg1, time: Date.parse('2026-11-15T22:30:00+08:00') });
+  emit(groupAgent1, {
+    type: 'assistant/message',
+    data: { role: 'assistant', content: [{ type: 'text', text: '在的在的！大家晚上好呀！' }] },
+  });
+  emit(groupAgent1, { type: 'turn/end' });
+
+  // 3. 次日私聊开启新会话 Session 2
+  const directSession2 = { id: 'session-direct-nextday', messages: [] };
+  const directAgent2 = { id: 'agent-direct-2', session: directSession2 };
+
+  const directMsg2 = {
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text: '早安' }],
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 2 } },
+  };
+
+  claim(directAgent2, directMsg2);
+
+  // 验证私聊精准承接前一天私聊内容，而绝不会串入群聊的“大家晚上好”
+  assert.match(directMsg2.content[0].text, /\[交接线索:/);
+  assert.match(directMsg2.content[0].text, /心理医生/);
+  assert.doesNotMatch(directMsg2.content[0].text, /大家晚上好/, '私聊绝不串入群聊交接');
+  assert.equal(
+    directMsg2.content[0].text.slice(directMsg2.source.qq.start, directMsg2.source.qq.start + directMsg2.source.qq.length),
+    '早安'
+  );
+});

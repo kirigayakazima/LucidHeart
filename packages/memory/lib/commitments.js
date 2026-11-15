@@ -103,15 +103,16 @@ export class CommitmentLedger {
   }
 
   /** Prefer the nearest upcoming deadline in 24h, then the nearest overdue one. */
-  getActiveCommitmentCare(now = new Date(), timeZone = 'Asia/Shanghai') {
+  getActiveCommitmentCare(now = new Date(), timeZone = 'Asia/Shanghai', channel = null) {
     this.ensureCurrent();
-    const at = now.getTime();
+    const at = now instanceof Date ? now.getTime() : typeof now === 'number' ? now : Date.now();
     let next;
     let overdue;
     let earliest = Infinity;
     let latestPast = -Infinity;
     for (const entry of this.entries.values()) {
       if (!['pending', 'expired'].includes(entry.status)) continue;
+      if (channel && entry.channel && entry.channel !== channel) continue;
       const due = deadline(entry.targetTime, timeZone);
       if (due >= at && due <= at + day && due < earliest) {
         earliest = due;
