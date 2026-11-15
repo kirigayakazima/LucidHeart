@@ -29,7 +29,6 @@
   },
   "files": [
     "lib",
-    "patches",
     "cordis.patch.yml",
     "README.md"
   ],
