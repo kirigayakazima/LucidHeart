@@ -79,6 +79,8 @@ importers:
 
   packages/voice-duplex: {}
 
+  packages/xhs-scroll: {}
+
 packages:
 
   '@deepseek-ai/cordis@4.0.5':

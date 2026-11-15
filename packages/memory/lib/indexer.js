@@ -10,25 +10,10 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { tokenizeForFTS, buildFtsQuery, buildProjectionQuery } from './tokenizer.js';
+import { compareRankings, rankShadow } from './retrieval_bench.js';
 
 const SHADOW_POOL = 24;
 const MAX_SHADOW_JOBS = 8;
-const DAY_MS = 86_400_000;
-const unit = (value, fallback) => Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
-
-function rankShadow(rows, at) {
-  const strongest = Math.max(0, ...rows.map(row => -row.rank));
-  return rows.map((row, index) => {
-    const entry = JSON.parse(row.raw_json);
-    const relevance = strongest > 0 ? unit(-row.rank / strongest, 0) : 0;
-    const importance = unit(entry.salience?.importance ?? entry.importance, 0.5);
-    const ageDays = (at - Date.parse(entry.updatedAt ?? entry.createdAt)) / DAY_MS;
-    const recency = Number.isFinite(ageDays) ? 1 / (1 + Math.max(0, ageDays) / 30) : 0;
-    const retention = entry.retentionClass === 'pinned' ? 1 : entry.retentionClass === 'stable' ? 0.5 : 0;
-    const score = 0.75 * relevance + 0.15 * importance + 0.07 * recency + 0.03 * retention;
-    return { id: entry.id, index, score, relevance, importance, recency, retention };
-  }).sort((a, b) => b.score - a.score || a.index - b.index);
-}
 
 export class MemoryIndexer {
   #ready = true;
@@ -172,7 +157,7 @@ export class MemoryIndexer {
    * @param {boolean} [options.exactScope=false]
    * @returns {Array<any>}
    */
-  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false, shadow = true } = {}) {
+  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false, shadow = true, mood } = {}) {
     this.#assertReady();
     const ftsQuery = projection ? buildProjectionQuery(query) : buildFtsQuery(query);
     if (!ftsQuery) return [];
@@ -214,12 +199,12 @@ export class MemoryIndexer {
       return [];
     }
     if (shadow && this.retrievalPolicy === 'shadow' && entries.length && this.onShadowEvaluation) {
-      try { this.#scheduleShadow(sql, params, entries.slice(0, SHADOW_POOL).map(({ id }) => id), projection); } catch {}
+      try { this.#scheduleShadow(sql, params, entries.slice(0, SHADOW_POOL).map(({ id }) => id), projection, mood); } catch {}
     }
     return entries;
   }
 
-  #scheduleShadow(sql, params, baselineIds, projection) {
+  #scheduleShadow(sql, params, baselineIds, projection, mood) {
     if (this.#shadowJobs.size >= MAX_SHADOW_JOBS) return;
     const generation = this.#generation;
     const job = setImmediate(() => {
@@ -229,11 +214,14 @@ export class MemoryIndexer {
         const start = performance.now();
         const at = Date.now();
         const rows = this.db.prepare(sql).all(...params.slice(0, -1), SHADOW_POOL);
-        const ranked = rankShadow(rows, at);
+        let moodState;
+        try { moodState = typeof mood === 'function' ? mood() : mood; } catch {}
+        const ranked = rankShadow(rows, at, moodState);
         const shadowIds = ranked.filter(row => row.relevance >= 0.6).slice(0, baselineIds.length).map(({ id }) => id);
         const logged = this.onShadowEvaluation({
-          at: new Date(at).toISOString(), policyVersion: 'shadow-v1', surface: projection ? 'conversation' : 'recall',
+          at: new Date(at).toISOString(), policyVersion: 'shadow-v2', surface: projection ? 'conversation' : 'recall',
           baselineIds, shadowIds, scores: ranked.map(({ index, ...score }) => score),
+          ...compareRankings(baselineIds, shadowIds),
           elapsedMs: performance.now() - start,
         });
         void Promise.resolve(logged).catch(() => {});

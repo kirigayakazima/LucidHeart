@@ -16,7 +16,7 @@ Core 提供 remember/recall/inspect/correct/revoke/reindex/close。recall 默认
 
 `correct` 的证据字段取自模型提交的事实陈述。纠错与自动覆盖使用单条 `supersede` Mutation，`replaces`、新条目和校验摘要一起追加，文件刷盘后才更新投影。新版 reader 兼容旧的双行和单行覆盖。坏行、截断或校验失败会关闭读取与写入，等待完整回放。原始 journal 保留作审计；FTS 和 Markdown 仍为派生数据。若刷盘已成功但投影更新失败，错误带 `durable: true` 和 `projection: 'degraded'`，重放可恢复已提交的纠错。
 
-会话骨架按 FTS 相关度选取最多三条完整事实，用包括包装在内的 200 UTF-8 字节作为 Token 保守上限。`retrievalPolicy` 默认 `fts`。选用 `shadow` 时，异步对同范围的 FTS 候选重排，将条目 ID、分项分数及耗时写入 `shadow-retrieval.jsonl`。两种模式返回同一份基线结果和提示词。dataDir 仍是单写者使用的唯一选定权威。
+会话骨架按 FTS 相关度选取最多三条完整事实，用包括包装在内的 200 UTF-8 字节作为 Token 保守上限。`retrievalPolicy` 默认 `fts`。选用 `shadow` 时，异步用相关度、时效、重要性、保留级别和 `mood:<state>` 标签重排同范围的 FTS 候选，将条目 ID、分项分数、耗时及 Jaccard@3 写入 `shadow-retrieval.jsonl`。在线倒数排名以 FTS 首位为参照，使用 `fts_top1_proxy` 标记。离线可将两组排序和标注的相关条目 ID 传给 `benchmarkRetrieval`，汇总 MRR@3。两种模式返回同一份基线结果和提示词。dataDir 仍是单写者使用的唯一选定权威。
 
 [下一版设计](../../../../docs/roadmap/NEXT-VERSION-DESIGN.md)记录来源、提交可靠性、纠错与旁路比较的整体范围。当前本地验收覆盖来源契约、宿主取证和旧条目回放。
 

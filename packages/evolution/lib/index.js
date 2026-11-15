@@ -7,6 +7,7 @@ import { privacyBridge, privacySchema, surfaceContext } from './surface/privacy_
 import { resonanceCallback, resonanceSchema } from './resonance/callback.js'
 import { benchmarkSchema, modelEvaluator } from './benchmark/model_evaluator.js'
 import { loadScenarios } from './benchmark/replay_runner.js'
+import { skillSandbox, skillSchema } from './skill_sandbox.js'
 
 export const name = 'dsh-evolution'
 export const inject = ['tools', 'webServer']
@@ -27,7 +28,8 @@ export function createEvolution({ dataDir = defaultRoot, role = 'xiaoman', now =
     const surface = privacyBridge(growthDb, now, footprint.get)
     const resonance = resonanceCallback(growthDb, now, footprint.candidates)
     const models = modelEvaluator(open('benchmark', benchmarkSchema), now)
-    return { sister, footprint, surface, resonance, models, close }
+    const skills = skillSandbox(open('skills', skillSchema), now)
+    return { sister, footprint, surface, resonance, models, skills, close }
   } catch (error) {
     close()
     throw error
@@ -112,6 +114,36 @@ export function apply(ctx, config = {}) {
   }
 
   const owner = { owner: true }
+  const skillId = { skill_id: string }
+  const skillRevision = { ...skillId, revision: integer }
+  tool('skill_propose', '登记隔离试用的表达或展示流程。步骤仅作文本展示。',
+    { ...skillId, definition: record }, ['skill_id', 'definition'],
+    args => suite.skills.propose(args.skill_id, args.definition), owner)
+  tool('skill_evaluate', '对指定候选版本运行完整离线回放。', skillRevision, ['skill_id', 'revision'],
+    (args, _surface, exec) => suite.skills.evaluate(args.skill_id, args.revision, exec?.signal), owner)
+  tool('skill_commit', '用户在本人私聊明确确认后启用已通过回放的指定版本。', skillRevision, ['skill_id', 'revision'],
+    (args, surface) => {
+      check(surface.utterance === `确认启用技能 ${args.skill_id} 第 ${args.revision} 版`, '需要本人明确确认技能及版本')
+      return suite.skills.commit(args.skill_id, args.revision)
+    }, owner)
+  tool('skill_revert', '用户在本人私聊明确要求时回退候选或当前指定版本。', skillRevision, ['skill_id'],
+    (args, surface) => {
+      const version = args.revision === undefined ? '' : ` 第 ${args.revision} 版`
+      check(surface.utterance === `回退技能 ${args.skill_id}${version}`, '需要本人明确要求回退技能')
+      return suite.skills.revert(args.skill_id, args.revision)
+    }, owner)
+  for (const [name, description, trial] of [
+    ['skill_preview', '试用指定候选技能。只返回预览文本，不运行步骤。', true],
+    ['skill_use', '当用户发出技能触发语时，展示已启用技能的文本。', false],
+  ]) {
+    tool(name, description, skillId, ['skill_id'], async (args, surface, exec) => {
+      await gate(name, exec)
+      const version = trial ? suite.skills.trial(args.skill_id) : suite.skills.active(args.skill_id)
+      check(version && version.definition.trigger === surface.utterance, '当前消息与技能触发语不匹配')
+      return suite.skills.preview(args.skill_id, { prompt: surface.utterance, surface: surface.channel,
+        userRequested: true, allowed: true }, { trial })
+    }, owner)
+  }
   tool('sister_send', '在本人私聊中，经用户明确确认后发送姐妹协作包',
     { type: string, summary: string, payload: record, urgency: string }, ['type', 'summary'], async (args, surface, exec) => {
       check(typeof args.summary === 'string' && surface.utterance === '发给姐妹：' + args.summary, '需要用户明确确认协作摘要')

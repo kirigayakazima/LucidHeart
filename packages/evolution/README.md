@@ -22,3 +22,9 @@ Suite 0.7.0 的独立 Cordis 插件。小满默认用 `/root/.dsh/evolution/`，
 回放 fixture 包括可执行宿主场景和带固定参考输出的模型场景。实际模型对比导入同一批 `adapter: "model"` 场景样本。每个模型提供 `name`、`samples` 与可选的 `pricePerMillion: { prompt, completion }`（人民币）。样本使用 `{ scenarioId, output: { text, toolCalls }, ttftMs, totalMs, promptTokens, completionTokens }`。未提供价格时成本留空。
 
 运行 `pnpm --filter dsh-evolution test` 执行单元与回放测试。
+
+## 技能沙箱
+
+`skill_propose` 登记候选版本。`skill_preview` 仅在已配置的本人私聊、触发语匹配且 Heart 放行时展示回复与步骤。步骤以文本保存。`skill_evaluate` 使用 40 个离线场景，包含 8 个带固定参考输出的人设与安全断言，以及 32 个系统场景的技能隔离检查。
+
+回放全通过后，用户可在本人私聊发送 `确认启用技能 <ID> 第 <版本> 版`，再由 `skill_commit` 切换启用版本。`skill_use` 读取已启用版本。发送 `回退技能 <ID>` 可由 `skill_revert` 撤销待试版本或将当前版本切回上一版，也可指定 `第 <版本> 版`。版本历史和切换指针保存在独立的 `skills.sqlite`。

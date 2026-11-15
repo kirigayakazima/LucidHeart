@@ -259,7 +259,8 @@ export function apply(ctx, config = {}) {
         const turn = currentTurn.get(context?.agent?.session);
         const label = scope === 'axing_private' ? '阿醒的回忆' : '小满的回忆';
         const active = turn && !context.signal?.aborted;
-        const projection = active && turn.query ? memory.project(turn.query, { scope, label }) : '';
+        const projection = active && turn.query ? memory.project(turn.query, { scope, label,
+          mood: () => ctx.get?.('heart')?.getSnapshot?.()?.mood?.state }) : '';
         let reminder = '';
         if (active && turn.origin === 'user_request') {
           const heart = ctx.get?.('heart');

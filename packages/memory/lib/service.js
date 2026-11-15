@@ -211,9 +211,9 @@ export class MemoryService {
     };
   }
 
-  project(query, { scope = 'all', label } = {}) {
+  project(query, { scope = 'all', label, mood } = {}) {
     this.ensureProjections();
-    return projectConversation(this.indexer, query, { scope, label });
+    return projectConversation(this.indexer, query, { scope, label, mood });
   }
 
   /**

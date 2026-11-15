@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-xhs-scroll
+      name: '@dsh/xhs-scroll'

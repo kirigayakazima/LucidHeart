@@ -20,6 +20,9 @@
     "./indexer": {
       "default": "./lib/indexer.js"
     },
+    "./retrieval-bench": {
+      "default": "./lib/retrieval_bench.js"
+    },
     "./tokenizer": {
       "default": "./lib/tokenizer.js"
     },
