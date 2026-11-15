@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { contactGrid, GRID_TOKENS } from './contact_grid.js'
 import { createXhsClient } from './client.js'
 import { noteUrl } from './parser.js'
@@ -44,8 +45,22 @@ function sharedByUser(url, exec) {
   }) ?? false
 }
 
-export function apply(ctx, _config = {}, { client, engine } = {}) {
-  const xhs = client ?? createXhsClient({ cookie: process.env.DSH_XHS_COOKIE, expiresAt: Number(process.env.DSH_XHS_COOKIE_EXPIRES_AT) })
+function resolveCookie(config = {}) {
+  if (config.cookie && typeof config.cookie === 'string') return config.cookie
+  if (process.env.DSH_XHS_COOKIE) return process.env.DSH_XHS_COOKIE
+  const filePath = config.cookieFile || process.env.DSH_XHS_COOKIE_FILE || '/root/.dsh/xhs/cookie.txt'
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, 'utf8').trim()
+    }
+  } catch {}
+  return undefined
+}
+
+export function apply(ctx, config = {}, { client, engine } = {}) {
+  const cookie = resolveCookie(config)
+  const expiresAt = Number(config.expiresAt ?? process.env.DSH_XHS_COOKIE_EXPIRES_AT) || 0
+  const xhs = client ?? createXhsClient({ cookie, expiresAt })
   const disposers = []
   function tool({ properties, required = [], ...spec }) {
     disposers.push(ctx.tools.register({ output, ...spec,
