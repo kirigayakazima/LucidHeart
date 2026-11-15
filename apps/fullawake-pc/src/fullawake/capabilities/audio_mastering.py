@@ -29,6 +29,7 @@ METER_JSON = re.compile(r'\{\s*"input_i".*?\}', re.DOTALL)
 class MasteringLevels:
     integrated_lufs: float | None
     true_peak_dbtp: float | None
+    loudness_range_lu: float | None = None
 
 
 def _ffmpeg(executable, *args, meter=False):
@@ -55,7 +56,8 @@ def _measure(executable, path):
     loudness, peak = (float(values[key]) for key in ("input_i", "input_tp"))
     if any(not math.isfinite(value) and value != -math.inf for value in (loudness, peak)):
         raise ValueError("Invalid EBU R128 measurements")
-    return MasteringLevels(None if loudness == -math.inf else loudness, None if peak == -math.inf else peak)
+    return MasteringLevels(None if loudness == -math.inf else loudness, None if peak == -math.inf else peak,
+                           float(values['input_lra']) if loudness != -math.inf else None)
 
 
 def _lookahead_soft_clipper(ceiling_dbtp):
@@ -73,21 +75,24 @@ def _lookahead_soft_clipper(ceiling_dbtp):
             f"aeval='{channel(0)}|{channel(1)}':c=stereo,aresample={MP3_RATE}")
 
 
-def _render(executable, source, mp3, gain_db, ceiling_dbtp, wav):
-    filters = f"[0:a]volume={gain_db:.6f}dB:precision=double,{_lookahead_soft_clipper(ceiling_dbtp)}"
+def _render(executable, source, mp3, gain_db, ceiling_dbtp, wav, *, limiter, bitrate, stereo_wav):
+    filters = f"[0:a]volume={gain_db:.6f}dB:precision=double,{limiter(ceiling_dbtp)}"
     if wav is None:
         filters += "[mp3]"
+    elif stereo_wav:
+        filters += ",asplit[mp3][wav]"
     else:
         filters += (f",asplit[mp3][voice];[voice]pan=mono|c0=0.5*c0+0.5*c1,"
                     f"aresample={VOICE_RATE}[wav]")
     args = ["-i", source, "-filter_complex", filters, "-map", "[mp3]", "-c:a", "libmp3lame",
-            "-b:a", "192k", "-id3v2_version", "3", mp3]
+            "-b:a", bitrate, "-id3v2_version", "3", mp3]
     if wav is not None:
         args += ["-map", "[wav]", "-c:a", "pcm_s16le", wav]
     _ffmpeg(executable, *args)
 
 
-def master_audio(vocal_path, inst_path, output_mp3_path, vocal_gain=1.0, inst_gain=1.0, *, output_wav_path=None):
+def master_audio(vocal_path, inst_path, output_mp3_path, vocal_gain=1.0, inst_gain=1.0, *, output_wav_path=None,
+                 limiter=_lookahead_soft_clipper, bitrate='192k', stereo_wav=False, max_lra=None):
     """Mix local stems and publish a verified MP3, optionally with a 24 kHz PCM sidecar.
 
     The absolute R128 gate leaves silence and sub-gate input at their original
@@ -120,12 +125,19 @@ def master_audio(vocal_path, inst_path, output_mp3_path, vocal_gain=1.0, inst_ga
                 "-map", "[mix]", "-c:a", "pcm_f32le", "-rf64", "auto", mix)
         source = _measure(executable, mix)
         normalize = source.integrated_lufs is not None
+        if normalize and max_lra is not None and source.loudness_range_lu > max_lra:
+            compressed = scratch / 'compressed.wav'
+            _ffmpeg(executable, '-i', mix, '-af', f'loudnorm=I={TARGET_LUFS}:LRA={max_lra - 1}:TP=-2:linear=false',
+                    '-ar', MP3_RATE, '-c:a', 'pcm_f32le', '-rf64', 'auto', compressed)
+            mix = compressed
+            source = _measure(executable, mix)
         gain_db = TARGET_LUFS - source.integrated_lufs if normalize else 0.0
         # A lossy encoder can create peaks beyond its PCM input. Leave headroom,
         # then meter the decoded deliverable and re-render if necessary.
         ceiling_dbtp = TRUE_PEAK_CEILING - 0.4
         for _ in range(8):
-            _render(executable, mix, mp3, gain_db, ceiling_dbtp, wav)
+            _render(executable, mix, mp3, gain_db, ceiling_dbtp, wav,
+                    limiter=limiter, bitrate=bitrate, stereo_wav=stereo_wav)
             levels = _measure(executable, mp3)
             peak = levels.true_peak_dbtp if levels.true_peak_dbtp is not None else -math.inf
             peak_ok = peak <= PUBLISH_TRUE_PEAK
@@ -133,6 +145,8 @@ def master_audio(vocal_path, inst_path, output_mp3_path, vocal_gain=1.0, inst_ga
                 raise ValueError("Mastered audio fell below the EBU R128 gate")
             correction = TARGET_LUFS - levels.integrated_lufs if normalize else 0.0
             if peak_ok and abs(correction) <= PUBLISH_LOUDNESS_TOLERANCE:
+                if normalize and max_lra is not None and levels.loudness_range_lu > max_lra:
+                    raise ValueError('Could not meet song loudness range target')
                 if wav is not None:
                     wav_peak = _measure(executable, wav).true_peak_dbtp
                     if wav_peak is not None and wav_peak > PUBLISH_TRUE_PEAK:

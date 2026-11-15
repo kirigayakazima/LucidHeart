@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Callable
 
 
@@ -34,6 +35,12 @@ class LeaseArbiter:
         self.active = None
         if self.pending:
             self.acquire(self.pending.popleft())
+        return True
+
+    def transfer(self, token, next_token):
+        if self.active is None or self.active.token != token:
+            return False
+        self.active = replace(self.active, token=next_token)
         return True
 
     def revoke(self, *, clear_queue=True):

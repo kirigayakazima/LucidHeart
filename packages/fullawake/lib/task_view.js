@@ -17,6 +17,7 @@ export function taskView(task) {
     eta_stage: !terminal && Number.isFinite(detail?.eta_seconds) ? detail?.eta_stage ?? null : null,
     output_path: ['READY_LOCAL', 'DELIVERING_QQ', 'COMPLETED', 'FAILED'].includes(state) ? detail?.output_path ?? null : null,
     reason: task.error_message ?? null,
+    degraded_reason: detail?.degraded_reason ?? null,
   }
 }
 

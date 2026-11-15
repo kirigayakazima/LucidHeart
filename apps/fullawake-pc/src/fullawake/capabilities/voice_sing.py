@@ -8,10 +8,11 @@ import time
 
 from fullawake.core.config import config
 from fullawake.capabilities.voice_sing_provider import run_sing_stage, run_song_mastering
+from fullawake.capabilities.resident_cuda import CUDA
 
 
 async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_format, pitch, root, destination, logger,
-                      *, progress=None, resident=None):
+                      *, progress=None, resident=None, admission=None):
     python = Path(config.voice_python or sys.executable)
     vendor = Path(__file__).resolve().parents[5] / 'packages' / 'rvc' / 'vendor' / 'phone'
     rvc_script = vendor / 'rvc_onnx.py'
@@ -33,7 +34,7 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
     worker_env = dict(os.environ)
 
     async def run(command):
-        if resident is not None:
+        if admission is not None or resident is not None:
             return await run_sing_stage(command, worker_env)
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=worker_env,
@@ -42,20 +43,23 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
         return process.returncode, stdout, stderr
 
     started = time.monotonic()
+    requested_provider = admission.provider if admission else config.voice_provider or CUDA
     vocals_wav = root / "vocals.wav"
     bgm_wav = root / "no_vocals.wav"
     if progress:
         progress("separation")
 
-    # Stage 1: Demucs Separation on GPU
-    if not vocals_wav.is_file() or not bgm_wav.is_file():
-        logger.info("[Singing] Stage 1: Running Demucs GPU separation for %s...", clean_task)
+    # Stage 1: Demucs separation.
+    if resident is not None:
+        await resident.separate(in_file, vocals_wav, bgm_wav)
+    elif not vocals_wav.is_file() or not bgm_wav.is_file():
+        logger.info("[Singing] Stage 1: Running Demucs %s separation for %s...", requested_provider, clean_task)
         out_demucs_dir = root / "demucs_out"
         out_demucs_dir.mkdir(parents=True, exist_ok=True)
         cmd_sep = [
             str(python), "-m", "demucs.separate",
             "-n", "htdemucs",
-            "--device", "cuda",
+            "--device", "cuda" if requested_provider == CUDA else "cpu",
             "--two-stems", "vocals",
             "-o", str(out_demucs_dir),
             str(in_file),
@@ -74,10 +78,10 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
     t_sep = time.monotonic() - started
     logger.info("[Singing] Stage 1 completed in %.2fs", t_sep)
 
-    # Stage 2: RVC Full-Song GPU Conversion
+    # Stage 2: full-song RVC conversion.
     if progress:
         progress("rvc")
-    logger.info("[Singing] Stage 2: Running RVC GPU conversion for %s (pitch=%d)...", clean_task, pitch)
+    logger.info("[Singing] Stage 2: Running RVC %s conversion for %s (pitch=%d)...", requested_provider, clean_task, pitch)
     t_rvc_start = time.monotonic()
     voc_new_wav = root / "voc_new.wav"
     models_dir = str(profile_path.parent)
@@ -96,7 +100,7 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
             "--pitch", str(pitch),
             "--segment_seconds", "15",
             "--threads", "4",
-            "--provider", "CUDAExecutionProvider",
+            "--provider", requested_provider,
             "--json",
         ]
         if Path(index_path).is_file():
@@ -111,7 +115,7 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
             raise ValueError('VOICE_RVC_PROVIDER_UNKNOWN') from error
     if not voc_new_wav.is_file():
         raise ValueError('VOICE_RVC_CONVERSION_FAILED')
-    if provider != "CUDAExecutionProvider":
+    if provider != requested_provider:
         raise ValueError('VOICE_RVC_CUDA_UNAVAILABLE')
 
     t_rvc = time.monotonic() - t_rvc_start
@@ -144,6 +148,7 @@ async def render_song(artifacts, communicate, clean_task, audio_bytes, audio_for
         "wavDownloadUrl": f"/v1/voice/sing/download/{clean_task}?format=wav",
         "mastering": levels,
         "artifactId": artifacts.artifact_id(published),
-        "mode": "pc_gpu_pipeline",
+        "mode": "pc_gpu_pipeline" if provider == CUDA else "pc_cpu_pipeline",
         "executionProvider": provider,
+        **({'degradedReason': admission.reason} if admission and admission.reason else {}),
     }

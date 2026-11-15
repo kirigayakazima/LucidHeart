@@ -24,9 +24,10 @@ def frame(kind, seq, payload, connection='test-connection'):
             'sessionId': 'test-session', 'connectionId': connection, 'payload': payload}
 
 
-def handshake(phone, connection='test-connection', *, vad_supported=False, lifecycle=False):
+def handshake(phone, connection='test-connection', *, vad_supported=False, lifecycle=False, capture=False):
     phone.send_json(frame('session.handshake', 1, {
         'clientVersion': '0.2.6' if lifecycle else '0.2.5', 'heartVersion': '0.21.3', 'device': 'redmi-note12turbo',
+        **({'capture': True} if capture else {}),
     }, connection))
     reply = phone.receive_json()
     assert reply['type'] == 'session.handshake_ack'
@@ -73,6 +74,61 @@ def test_bridge_denies_unauthenticated_and_browser_clients(bridge, headers):
     with pytest.raises(WebSocketDisconnect) as error, client.websocket_connect('/ws/bridge', headers=headers):
         pytest.fail('Unauthorized voice bridge accepted')
     assert error.value.code == 1008
+
+
+def test_authenticated_capture_relays_draft_and_final_once(bridge, monkeypatch):
+    client, gateway = bridge
+    monkeypatch.setattr(config, 'voice_clients', ['127.0.0.1'])
+    monkeypatch.setattr(gateway.voice, 'transcribe', lambda _: {'ok': True, 'text': '听到了'})
+    capture = 'b7b4d15c-2f40-405c-b47f-eb88a269c335'
+    turn = 'dee387cc-a201-4113-8e0f-aaa4095ad7a1'
+    route = '/v1/voice/capture'
+    params = {'capture': capture, 'audio_epoch': 5, 'turn_id': turn}
+    asr = '/v1/voice/asr'
+    headers = {**AUTH, 'X-FullAwake-Capture': capture, 'X-FullAwake-Capture-Epoch': '5'}
+    assert client.post(route, params=params).status_code == 403
+    with client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True)
+        assert client.post(route, params=params, headers=AUTH).status_code == 204
+        assert phone.receive_json()['payload'] == {'turnId': turn, 'audio_epoch': 5}
+        assert client.post(asr, content=b'draft', headers=headers).is_success
+        draft = phone.receive_json()
+        assert draft['type'] == 'audio.transcript' and not draft['payload']['is_final']
+        final = {**headers, 'X-FullAwake-ASR-Final': '1'}
+        assert client.post(asr, content=b'final', headers=final).is_success
+        assert phone.receive_json()['payload'] == {'turnId': turn, 'audio_epoch': 5, 'text': '听到了', 'is_final': True}
+        assert client.post(asr, content=b'duplicate', headers=final).status_code == 409
+        assert client.post(route, params=params, headers=AUTH).status_code == 409
+
+
+def test_duplex_stream_correlates_each_sentence_and_retains_media_lease(bridge, monkeypatch):
+    client, gateway = bridge
+    rendered = []
+
+    async def synthesize(request, disconnected):
+        rendered.append(request['text'])
+        return {'audioBase64': long_audio()}
+
+    monkeypatch.setattr(gateway.voice, 'synthesize', synthesize)
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, capture=True, lifecycle=True)
+        speak(phone, 2, INITIAL_EPOCH, '一，二。')
+        first = pet.receive_json()
+        assert first['text'] == '一，' and pet.receive_json()['event'] == 'playback_audio'
+
+        def receipt(utterance):
+            pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': utterance})
+
+        receipt(first['utteranceId'])
+        second = pet.receive_json()
+        assert second['text'] == '二。' and pet.receive_json()['event'] == 'playback_audio'
+        assert first['utteranceId'] != second['utteranceId']
+        receipt(first['utteranceId'])
+        assert gateway.watch.audio_leases.active.token == second['utteranceId']
+        receipt(second['utteranceId'])
+        assert phone.receive_json()['payload']['status'] == 'played'
+        assert gateway.watch.audio_leases.active is None
+        assert rendered == ['一，', '二。']
 
 
 def test_epoch_switch_disables_route_without_touching_legacy_pet(bridge, monkeypatch):

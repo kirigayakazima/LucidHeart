@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { DuplexSession, FRAME_BYTES, asWav } from '../lib/session.js';
 import { Silero } from '../lib/silero.js';
-import { matchesPlayback } from '../web/echo.js';
+import { matchesPlayback } from '../lib/aec_guard.js';
 
 test('an echo preserves playback, speech cuts the epoch, and late frames cannot finish a turn', () => {
   const duplex = new DuplexSession();
@@ -19,8 +19,8 @@ test('an echo preserves playback, speech cuts the epoch, and late frames cannot 
   assert.equal(cut.interrupt.utteranceId, 'song');
   assert.equal(cut.epoch, epoch + 1);
   assert.equal(send(2, .99).status, 'stale');
-  for (let seq = 2; seq < 9; seq++) assert.equal(send(seq, 0, { epoch: cut.epoch }).complete, null);
-  const final = send(9, 0, { epoch: cut.epoch });
+  for (let seq = 2; seq < 8; seq++) assert.equal(send(seq, 0, { epoch: cut.epoch }).complete, null);
+  const final = send(8, 0, { epoch: cut.epoch });
   assert.equal(final.complete.turnId, cut.turnId);
   const wav = asWav(final.complete.pcm);
   assert.equal(wav.toString('ascii', 0, 4), 'RIFF');

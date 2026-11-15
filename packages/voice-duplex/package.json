@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "./lib/index.js",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node lib/server.js",

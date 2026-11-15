@@ -162,3 +162,18 @@ def test_audio_base64_payload(voice_setup):
         prepare_profile({**audio_req, 'audioBase64': 'bad base64!!!'})
     with pytest.raises(ValueError, match='VOICE_AUDIO_INVALID'):
         prepare_profile({**audio_req, 'audioBase64': base64.b64encode(b'NOT_A_WAV_HEADER').decode('ascii')})
+
+
+def test_rvc_stream_yields_sequenced_sentence_audio(voice_setup, monkeypatch):
+    monkeypatch.setattr(config, 'auth_token', 'fixture')
+    monkeypatch.setattr(config, 'voice_clients', ['127.0.0.1'])
+
+    async def render(payload):
+        return {'audioBase64': payload['text']}
+
+    monkeypatch.setattr(gateway.voice, 'synthesize', render)
+    client = TestClient(gateway.app, client=('127.0.0.1', 49152))
+    response = client.post('/v1/voice/rvc/stream', json={**voice_setup, 'text': '一，二。', 'audio_epoch': 6})
+    assert response.is_success
+    frames = list(map(json.loads, response.text.splitlines()))
+    assert [(frame['audioBase64'], frame['sequence'], frame['audio_epoch']) for frame in frames] == [('一，', 0, 6), ('二。', 1, 6)]

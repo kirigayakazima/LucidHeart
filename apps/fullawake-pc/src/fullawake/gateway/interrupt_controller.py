@@ -1,6 +1,7 @@
 """The PC side of lucid.voice/1. All lease state lives on the gateway event loop."""
 
 import asyncio
+from contextlib import aclosing
 from dataclasses import dataclass, field
 import hmac
 import inspect
@@ -22,6 +23,7 @@ from fullawake.capabilities.voice import ASSETS, DEFAULTS
 from fullawake.capabilities.voice_vad import VoiceVadListener
 from fullawake.core.config import config
 from fullawake.core.session import is_desktop_locked
+from fullawake.pipeline.stream_worker import stream_sentences
 
 log = logging.getLogger(__name__)
 PROTOCOL = 'lucid.voice/1'
@@ -48,6 +50,7 @@ class Handshake(StrictFrame):
     clientVersion: str = Field(min_length=1, max_length=40)
     heartVersion: str = Field(min_length=1, max_length=40)
     device: str = Field(min_length=1, max_length=80)
+    capture: bool = False
 
 
 class Utterance(StrictFrame):
@@ -93,6 +96,7 @@ class Lease:
     timeline: str | None = None
     receipt: asyncio.Future | None = None
     worker: asyncio.Task | None = None
+    streaming: bool = False
 
 
 @dataclass(eq=False)
@@ -100,6 +104,7 @@ class Peer:
     session: str
     connection: str
     turn_lifecycle: bool = False
+    capture_enabled: bool = False
     received_seq: int = 1
     sent_seq: int = 0
     highest_epoch: int = INITIAL_EPOCH - 1
@@ -141,7 +146,7 @@ class InterruptController:
             return
         if self.watch.bridge_output is None:
             self.watch.interrupt_media()
-        if lease.receipt and lease.receipt.done() and lease.receipt.result() in ('played', 'text_delivered'):
+        if not lease.streaming and lease.receipt and lease.receipt.done() and lease.receipt.result() in ('played', 'text_delivered'):
             self._settle(peer, lease, self._outcome(lease))
             return
         # Revoke before posting to either socket. A completion running on this
@@ -227,6 +232,36 @@ class InterruptController:
                 return
             await asyncio.sleep(0.1)
 
+    async def _stream_to_renderer(self, peer, lease, request, cancelled):
+        async def fragments():
+            yield request['text']
+
+        async def render(sentence):
+            result = await self.voice.synthesize({**request, 'text': sentence}, disconnected=cancelled)
+            return sentence, result['audioBase64']
+
+        lease.streaming = True
+        previous = None
+        async with aclosing(stream_sentences(fragments(), render)) as stream:
+            async for sentence, audio in stream:
+                if await cancelled():
+                    return 'discarded'
+                renderer_id = uuid4().hex
+                duration = wav_duration(audio)
+                receipt = self.watch.play_bridge(renderer_id, sentence, audio, duration, retain=True, previous=previous)
+                if receipt is None:
+                    return 'discarded'
+                if previous is None:
+                    lease.deadline = time.monotonic() + 30
+                previous = lease.renderer_id = renderer_id
+                lease.receipt = receipt
+                end = time.monotonic() + duration / 1000 + 2
+                while not receipt.done() and not await cancelled() and time.monotonic() < end:
+                    await asyncio.wait({receipt}, timeout=.1)
+                if not receipt.done() or receipt.result() != 'played':
+                    return 'discarded'
+        return 'played' if previous else 'discarded'
+
     async def _play(self, peer, lease):
         command = lease.command
         outcome = 'discarded'
@@ -245,6 +280,9 @@ class InterruptController:
                     'settings': {**DEFAULTS, **{key: profile[key] for key in DEFAULTS if key in profile},
                                  'pitch': command.pitchShift},
                 }}
+                if peer.capture_enabled:
+                    outcome = await self._stream_to_renderer(peer, lease, request, cancelled)
+                    return
                 result = await self.voice.synthesize(request, disconnected=cancelled)
                 if not self._can_render(peer, lease):
                     return
@@ -358,9 +396,10 @@ class InterruptController:
                 version = handshake.clientVersion.split('.')
                 lifecycle = len(version) == 3 and all(part.isascii() and part.isdecimal() for part in version)
                 lifecycle = lifecycle and tuple(map(int, version)) >= (0, 2, 6)
-                peer = self.peer = Peer(first.sessionId, first.connectionId, turn_lifecycle=lifecycle)
+                peer = self.peer = Peer(first.sessionId, first.connectionId, turn_lifecycle=lifecycle,
+                                        capture_enabled=handshake.capture)
                 supported = False
-                if config.voice_vad_enabled:
+                if config.voice_vad_enabled and not handshake.capture:
                     loop = asyncio.get_running_loop()
                     mode = getattr(config, 'vad_device_mode', 'headphone')
                     vad_kwargs = {'device': config.voice_vad_device}
@@ -373,6 +412,8 @@ class InterruptController:
                     vad = VoiceVadListener(lambda: loop.call_soon_threadsafe(self.on_speech_start, peer),
                                            lambda: loop.call_soon_threadsafe(self.on_speech_end, peer),
                                            **vad_kwargs)
+                    if hasattr(vad, 'reference_provider'):
+                        vad.reference_provider = self.watch.microphone_reference
                     supported = await asyncio.to_thread(vad.start)
                     self.vad = vad
                 peer.send('session.handshake_ack', status='ready', gatewayVersion=__version__,

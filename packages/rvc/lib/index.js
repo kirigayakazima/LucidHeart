@@ -10,6 +10,7 @@ import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { setTimeout as wait } from 'node:timers/promises'
 import { Artifacts } from './artifacts.js'
 
 const pluginVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
@@ -59,6 +60,27 @@ const defaultOutput = {
 function assertQqDelivery(result) {
   if (result === false || result?.ok === false || result?.success === false) {
     throw new Error(result?.error || 'QQ sender reported delivery failure')
+  }
+}
+
+async function deliverSong(send, signal) {
+  for (let attempt = 0; ; attempt++) {
+    signal.throwIfAborted()
+    let rejected
+    try {
+      const result = await send()
+      if (result?.status === 429 && result?.ok === false) rejected = result
+      else {
+        assertQqDelivery(result)
+        return
+      }
+    } catch (error) {
+      if ((error?.status ?? error?.statusCode) !== 429 || attempt >= 2) throw error
+      rejected = error
+    }
+    if (attempt >= 2) assertQqDelivery(rejected)
+    const delay = Math.max(250, Math.min(5000, Number(rejected.retryAfterMs) || 1000))
+    await wait(delay, undefined, { signal })
   }
 }
 
@@ -400,12 +422,14 @@ export function apply(ctx, config = {}) {
             progress = progress.then(() => say(songStageMessage[stage]))
           }
           let rendered
+          let artifact
           try {
             rendered = await renderSong(job, error => {
               track('processing', undefined, { result: { phase: 'local_fallback', fallback_reason: error.message } })
               return progress.then(() => say('姐姐的电脑这次没能接上唱歌管线，满宝试试用手机自己的声音唱，会慢一些哦。'))
             })
-            track('processing', 100, { result: { phase: 'ready_local', output_path: output } })
+            artifact = { output_path: output, degraded_reason: rendered.degradedReason ?? null }
+            track('processing', 100, { result: { ...artifact, phase: 'ready_local' } })
             await progress
           } catch (error) {
             track('failed', undefined, { error: signal.aborted || error instanceof PcSongCancelled ? 'cancelled' : String(error.message).slice(0, 450) })
@@ -429,24 +453,24 @@ export function apply(ctx, config = {}) {
           }
           signal.throwIfAborted()
           if (target) {
-            track('processing', 100, { result: { phase: 'delivering_qq', output_path: output } })
+            track('processing', 100, { result: { ...artifact, phase: 'delivering_qq' } })
             try {
               const audio = { localPath: output }
               const fileName = `${(title || path.parse(source.file).name).replace(/[\\/:*?"<>|\r\n]/g, '_').slice(0, 80)}.mp3`
-              const sent = mediaSender.sendFile ? await mediaSender.sendFile(target, audio, { fileName })
-                : await mediaSender.sendVoice(target, audio)
-              assertQqDelivery(sent)
-              track('completed', 100, { result: { output_path: output } })
+              await deliverSong(() => mediaSender.sendFile ? mediaSender.sendFile(target, audio, { fileName })
+                : mediaSender.sendVoice(target, audio), signal)
+              track('completed', 100, { result: artifact })
               track('delivered')
             } catch (error) {
               track('failed', undefined, { error: String(error.message).slice(0, 450) })
               console.warn(`[@dsh/rvc] 成曲 ${jobId} QQ 投递失败:`, error.message)
               await say('歌已经唱完啦，可是 QQ 没能把音频送出去。')
             }
-          } else track('completed', 100, { result: { output_path: output } })
+          } else track('completed', 100, { result: artifact })
           if (signal.aborted) return
           const mode = rendered.mode === 'phone_onnx_fallback' ? 'phone_local' : rendered.mode
-          const execution = rendered.remoteJobId ? { mode: rendered.mode, provider: rendered.provider } : rendered
+          const execution = rendered.remoteJobId ? { mode: rendered.mode, provider: rendered.provider,
+            degradedReason: rendered.degradedReason } : rendered
           await heart?.observe?.({ type: 'audio', source: 'rvc', confidence: 1,
             evidence: { audioPath: output, pitch, mode, artifactId: result.artifactId,
               profileId: rendered.profileId, execution }, summary: '通过 RVC 合成歌曲',

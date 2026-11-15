@@ -16,6 +16,7 @@ import wave
 from fullawake.core.config import config
 from fullawake.capabilities.voice_artifacts import VoiceArtifacts
 from fullawake.capabilities.voice_sing import render_song
+from fullawake.capabilities.resident_cuda import CPU, CUDA, ComputeAdmission
 
 ASSETS = ('model.onnx', 'hubert.onnx', 'rmvpe.onnx', 'voice.mobile.index')
 DEFAULTS = {'pitch': 0, 'brightness': 0, 'indexMethod': 'cosine1', 'indexRatio': .3,
@@ -135,6 +136,7 @@ class VoiceCompute:
         self.text_worker_active = False
         self._artifacts = None
         self.sing_provider = None
+        self.cuda = None
         self._sing_lock = asyncio.Lock()
 
     @property
@@ -174,13 +176,20 @@ class VoiceCompute:
         return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),
                 'language': info.language}
 
-    async def synthesize(self, request, disconnected=None):
+    async def synthesize(self, request, disconnected=None, *, admission=None):
         if not config.voice_enabled:
             raise ValueError('VOICE_DISABLED')
+        if self.cuda is not None and admission is None:
+            async with self.cuda.acquire() as slot:
+                slot = await self._ensure_resident(slot) if 'text' in request else slot
+                if slot.provider == CUDA:
+                    return await self.synthesize(request, disconnected, admission=slot)
+            return await self.synthesize(request, disconnected, admission=slot)
+        provider = admission.provider if admission else config.voice_provider
         is_text = 'text' in request
         # Keep full-text and CPU inference exclusive. Allow two short CUDA dry
         # conversions without permitting an unbounded queue of model workers.
-        parallel_dry = not is_text and not self.text_worker_active and config.voice_provider == 'CUDAExecutionProvider'
+        parallel_dry = not is_text and not self.text_worker_active and provider == CUDA and self.cuda is None
         if self.active_voice_workers >= (2 if parallel_dry else 1):
             raise ValueError('VOICE_BUSY')
         profile, text, audio_bytes = prepare_profile(request)
@@ -212,54 +221,69 @@ class VoiceCompute:
                     input_dry = work / 'input_dry.wav'
                     input_dry.write_bytes(audio_bytes)
                     cmd.extend(['--input', str(input_dry)])
-                if getattr(config, 'voice_provider', None):
-                    cmd.extend(['--provider', config.voice_provider])
+                if provider:
+                    cmd.extend(['--provider', provider])
                 worker_env = dict(os.environ)
                 torch_lib = r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages\torch\lib'
                 worker_env['PATH'] = torch_lib + os.pathsep + worker_env.get('PATH', '')
                 worker_env['PYTHONPATH'] = os.pathsep.join((str(Path(__file__).resolve().parents[2]),
                     r'D:\CodePackage\DSHA\projects\rvc\.venv-gpu\Lib\site-packages',
                     r'D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages'))
-                process = await asyncio.create_subprocess_exec(*cmd,
-                    env=worker_env,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                task = asyncio.create_task(process.communicate())
-                try:
-                    while not task.done():
-                        await asyncio.wait({task}, timeout=.25)
-                        if time.monotonic() - started > 30 or (disconnected and await disconnected()):
-                            raise TimeoutError('VOICE_TIMEOUT_OR_DISCONNECTED')
-                    stdout, stderr = await task
-                    if process.returncode:
-                        import logging
-                        logging.getLogger('fullawake.gateway').error(
-                            "Worker failed with returncode %d.\nSTDOUT:\n%s\nSTDERR:\n%s",
-                            process.returncode,
-                            stdout.decode('utf8', 'replace'),
-                            stderr.decode('utf8', 'replace')
-                        )
-                        raise ValueError('VOICE_SYNTHESIS_FAILED')
-                finally:
-                    if process.returncode is None:
-                        try:
-                            process.kill()
-                        except ProcessLookupError:
-                            pass
-                        await process.wait()
-                    if not task.done():
-                        await task
+                if self.sing_provider is not None and provider == CUDA and is_text:
+                    render = asyncio.create_task(self.sing_provider.speak(profile_file, text, output))
+                    try:
+                        while not render.done():
+                            await asyncio.wait({render}, timeout=.1)
+                            if disconnected and await disconnected():
+                                raise TimeoutError('VOICE_TIMEOUT_OR_DISCONNECTED')
+                        await render
+                    finally:
+                        if not render.done():
+                            render.cancel()
+                            await asyncio.gather(render, return_exceptions=True)
+                else:
+                    await self._run_voice_process(cmd, worker_env, started, disconnected)
                 result = json.loads(output.with_suffix('.result.json').read_text(encoding='utf8'))
                 audio = read_voice_audio(output)
-                return {'ok': True, 'voiceId': profile['id'], 'assets': request['voice']['assets'],
+                response = {'ok': True, 'voiceId': profile['id'], 'assets': request['voice']['assets'],
                         'settings': request['voice']['settings'], 'audioBase64': base64.b64encode(audio).decode('ascii'),
                         'sha256': hashlib.sha256(audio).hexdigest(), 'sampleRate': result['sampleRate'],
                         'durationMs': round((time.monotonic() - started) * 1000),
                         'provider': result['executionProvider'], 'mode': 'pc_onnx_offload',
                         'acoustic': {'pitch': result['pitch'], 'brightness': result['brightness'], 'rate': result['ttsRate']}}
+                if admission and admission.reason:
+                    response['degradedReason'] = admission.reason
+                return response
         finally:
             self.active_voice_workers -= 1
             if is_text:
                 self.text_worker_active = False
+
+    @staticmethod
+    async def _run_voice_process(cmd, worker_env, started, disconnected):
+        process = await asyncio.create_subprocess_exec(*cmd, env=worker_env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        task = asyncio.create_task(process.communicate())
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=.25)
+                if time.monotonic() - started > 30 or (disconnected and await disconnected()):
+                    raise TimeoutError('VOICE_TIMEOUT_OR_DISCONNECTED')
+            stdout, stderr = await task
+            if process.returncode:
+                import logging
+                logging.getLogger('fullawake.gateway').error("Voice worker failed (%d): %s\n%s",
+                    process.returncode, stdout.decode('utf8', 'replace'), stderr.decode('utf8', 'replace'))
+                raise ValueError('VOICE_SYNTHESIS_FAILED')
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
+            if not task.done():
+                await task
 
     def get_separated_file(self, task: str, stem: str):
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
@@ -295,7 +319,27 @@ class VoiceCompute:
         clean_fmt = audio_format.lower() if audio_format.lower() in ('m4a', 'mp3', 'wav', 'flac') else 'm4a'
         in_file = task_dir / f"input.{clean_fmt}"
         in_file.write_bytes(audio_bytes)
+        started = time.monotonic()
+        vocals, accompaniment = task_dir / 'vocals.wav', task_dir / 'no_vocals.wav'
+        admission = ComputeAdmission(config.voice_provider or CPU)
+        if self.cuda is not None:
+            async with self.cuda.acquire() as slot:
+                admission = await self._ensure_resident(slot)
+                if admission.provider == CUDA:
+                    await self.sing_provider.separate(in_file, vocals, accompaniment)
+        if not vocals.is_file() or not accompaniment.is_file():
+            vocals, accompaniment = await self._separate_process(task_dir, in_file, admission.provider)
+        vocals.replace(destination / 'vocals.wav')
+        accompaniment.replace(destination / 'no_vocals.wav')
+        return {
+            'ok': True, 'task': clean_task, 'elapsedSeconds': round(time.monotonic() - started, 2),
+            'vocalsUrl': f'/v1/voice/download/{clean_task}/vocals',
+            'accompanimentUrl': f'/v1/voice/download/{clean_task}/accompaniment',
+            **({'degradedReason': admission.reason} if admission.reason else {}),
+        }
 
+    @staticmethod
+    async def _separate_process(task_dir, in_file, provider):
         python = Path(r"C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe")
         if not python.is_file():
             python = Path(config.voice_python)
@@ -306,6 +350,7 @@ class VoiceCompute:
         cmd = [
             str(python), "-m", "demucs.separate",
             "-n", "htdemucs",
+            '--device', 'cuda' if provider == CUDA else 'cpu',
             "--two-stems", "vocals",
             "-o", str(out_demucs_dir),
             str(in_file),
@@ -313,7 +358,6 @@ class VoiceCompute:
         env = dict(os.environ)
         env["PYTHONPATH"] = r"D:\CodePackage\DSHA\projects\rvc\.venv310\Lib\site-packages"
 
-        started = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -321,7 +365,6 @@ class VoiceCompute:
             env=env,
         )
         stdout, stderr = await communicate(process, timeout=300)
-        elapsed = time.monotonic() - started
 
         if process.returncode != 0:
             import logging
@@ -338,16 +381,7 @@ class VoiceCompute:
         if not found_voc or not found_bgm:
             raise ValueError('VOICE_SEPARATION_OUTPUT_MISSING')
 
-        found_voc[0].replace(destination / 'vocals.wav')
-        found_bgm[0].replace(destination / 'no_vocals.wav')
-
-        return {
-            "ok": True,
-            "task": clean_task,
-            "elapsedSeconds": round(elapsed, 2),
-            "vocalsUrl": f"/v1/voice/download/{clean_task}/vocals",
-            "accompanimentUrl": f"/v1/voice/download/{clean_task}/accompaniment",
-        }
+        return found_voc[0], found_bgm[0]
 
     def get_singing_song_file(self, task: str, audio_format: str | None = None):
         clean_task = re.sub(r'[^a-zA-Z0-9_-]', '_', task)[:60]
@@ -389,8 +423,6 @@ class VoiceCompute:
         if not queued and self._sing_lock.locked():
             raise ValueError('VOICE_BUSY')
         async with self._sing_lock:
-            if self.sing_provider is not None:
-                await self.sing_provider.prepare()
             cache = self.artifacts
             with cache.job(cache.task_dir('singing', clean_task)) as destination:
                 work = Path(tempfile.mkdtemp(prefix='work-', dir=destination))
@@ -398,7 +430,24 @@ class VoiceCompute:
                 return await self._sing(clean_task, audio_bytes, audio_format, pitch, work, destination, logger, **callbacks)
 
     async def _sing(self, clean_task, audio_bytes, audio_format, pitch, root, destination, logger, *, progress=None):
+        if self.cuda is not None:
+            async with self.cuda.acquire() as slot:
+                slot = await self._ensure_resident(slot)
+                if slot.provider == CUDA:
+                    return await render_song(self.artifacts, communicate, clean_task, audio_bytes, audio_format, pitch,
+                        root, destination, logger, progress=progress, resident=self.sing_provider, admission=slot)
+        else:
+            slot = ComputeAdmission(config.voice_provider or CUDA)
         return await render_song(
             self.artifacts, communicate, clean_task, audio_bytes, audio_format, pitch,
-            root, destination, logger, progress=progress, resident=self.sing_provider,
+            root, destination, logger, progress=progress, admission=slot,
         )
+
+    async def _ensure_resident(self, slot):
+        if slot.provider != CUDA or self.sing_provider is None or self.sing_provider.ready:
+            return slot
+        try:
+            await asyncio.wait_for(self.sing_provider.prepare(), 15)
+        except (TimeoutError, OSError, ValueError):
+            return ComputeAdmission(CPU, 'cuda_warmup_failed')
+        return slot

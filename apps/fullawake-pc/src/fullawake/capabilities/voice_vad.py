@@ -2,10 +2,57 @@
 
 import logging
 import math
+from io import BytesIO
+import time
+import wave
 from threading import Event, Thread
 
 log = logging.getLogger(__name__)
 FRAME_MS = 20
+
+
+def playback_reference(wav_data):
+    with wave.open(BytesIO(wav_data), 'rb') as source:
+        return _mono_samples(source, source.getnframes())
+
+
+def _mono_samples(source, frames):
+    rate, channels = source.getframerate(), source.getnchannels()
+    pcm = memoryview(source.readframes(frames)).cast('h')
+    total = len(pcm) // channels
+    return tuple(sum(pcm[start:start + channels]) / channels for start in
+                 (index * rate // 16000 * channels for index in range(total * 16000 // rate)))
+
+
+def song_reference_window(path, cursor):
+    with wave.open(str(path), 'rb') as source:
+        if source.getsampwidth() != 2:
+            return (), 0
+        rate = source.getframerate()
+        start = max(0, cursor - 5000)
+        frame = start * rate // 16000
+        if frame >= source.getnframes():
+            return (), 0
+        source.setpos(frame)
+        return _mono_samples(source, 9000 * rate // 16000), cursor - start
+
+
+def correlated_echo(samples, reference, offset):
+    mic = samples[::4]
+    mic_power = sum(value * value for value in mic)
+    if mic_power == 0:
+        return False
+    for lag in range(0, 4001, 8):
+        start = offset - lag
+        if start < 0 or start + len(samples) > len(reference):
+            continue
+        window = reference[start:start + len(samples):4]
+        power = sum(value * value for value in window)
+        if power and mic_power < 4 * power:
+            cross = sum(left * right for left, right in zip(mic, window))
+            if abs(cross) > .65 * math.sqrt(mic_power * power):
+                return True
+    return False
 
 
 class SpeechGate:
@@ -21,6 +68,7 @@ class SpeechGate:
         self.noise = 40.0
         self.voiced = self.quiet = 0
         self.speaking = False
+        self.reference = None
 
     def set_playback_active(self, active: bool):
         self.playback_active = bool(active)
@@ -28,9 +76,14 @@ class SpeechGate:
     def feed(self, pcm):
         samples = memoryview(pcm).cast('h')
         rms = math.sqrt(sum(value * value for value in samples) / len(samples))
-        voiced = self.detector.is_speech(pcm, self.sample_rate)
-
         is_ducked = self.playback_active and self.device_mode == "speaker"
+        reference = self.reference if is_ducked else None
+        echo = False
+        if reference is not None and self.sample_rate == 16000:
+            waveform, at, position = reference
+            offset = position * 16 + round((time.monotonic() - at) * 16000) - len(samples)
+            echo = correlated_echo(samples, waveform, offset)
+        voiced = not echo and self.detector.is_speech(pcm, self.sample_rate)
         if is_ducked:
             min_rms = max(220.0, self.noise * 4.5)
             required_voiced = 4
@@ -64,6 +117,7 @@ class VoiceVadListener:
         self.device_mode = device_mode
         self._gate = None
         self._playback_active = False
+        self.reference_provider = None
         self._stop = Event()
         self._ready = Event()
         self._available = False
@@ -109,6 +163,9 @@ class VoiceVadListener:
                 while not self._stop.is_set():
                     pcm, overflowed = stream.read(frames)
                     if not overflowed and not self._stop.is_set():
+                        if self.reference_provider:
+                            active, gate.reference = self.reference_provider()
+                            gate.set_playback_active(active)
                         gate.feed(bytes(pcm))
         except Exception as error:
             log.warning('Microphone VAD unavailable (%s)', type(error).__name__)

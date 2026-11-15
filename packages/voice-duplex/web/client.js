@@ -1,4 +1,4 @@
-import { matchesPlayback } from './echo.js';
+import { guardEcho } from './echo.js';
 
 const element = id => document.getElementById(id);
 const token = location.hash.slice(1);
@@ -22,6 +22,7 @@ async function post(route, params = {}, body) {
   const reply = await fetch(url, {
     method: 'POST', headers: { Authorization: `Bearer ${token}` }, body, signal: AbortSignal.timeout(1200),
   });
+  if (route === '/frame' && reply.status === 409) return reply.json();
   if (!reply.ok) throw new Error((await reply.json()).status);
   return reply.json();
 }
@@ -43,16 +44,21 @@ function clearPlayback() {
   return current;
 }
 
-function stop() {
+let stopRequest;
+function stop(ended = false) {
   const current = clearPlayback();
   const active = session;
-  if (current && active) void post('/stop', { ...active, utterance: current.id }).catch(error => {
-    if (session === active) disconnect(error);
-  });
+  if (current && active) {
+    stopRequest = post('/stop', { ...active, utterance: current.id, ended: ended ? 1 : 0 }).then(result => {
+      if (session === active) session.epoch = Math.max(session.epoch, result.epoch);
+    }).catch(error => { if (session === active) disconnect(error); });
+  }
 }
 
 function disconnect(error) {
+  const active = session;
   session = null;
+  if (active) void post('/disconnect', active).catch(() => {});
   clearPlayback();
   pending.length = 0;
   mic?.getTracks().forEach(track => track.stop());
@@ -70,15 +76,22 @@ async function drain() {
   draining = true;
   try {
     while (session === active && pending.length) {
+      await stopRequest;
+      if (session !== active) return;
       const { samples, atFrame, sequence } = pending.shift();
       const current = playback;
-      const echo = current && matchesPlayback(samples, current.reference, atFrame - current.startFrame);
+      const guarded = guardEcho(samples, current?.reference, atFrame - (current?.startFrame ?? 0), { active: !!current });
+      const { echo } = guarded;
       if (echo) echoFrames++;
-      const result = await post('/frame', { ...active, seq: sequence, echo: echo ? 1 : 0 }, samples);
+      const pcm = new DataView(new ArrayBuffer(1024));
+      guarded.samples.forEach((value, i) => pcm.setInt16(i * 2, Math.round(value < 0 ? value * 32768 : value * 32767), true));
+      const sentEpoch = active.epoch;
+      const result = await post('/frame', { ...active, seq: sequence, echo: echo ? 1 : 0, format: 's16le' }, pcm);
       if (session !== active) return;
+      if (result.status === 'stale' && result.epoch > sentEpoch && stopRequest) continue;
       if (result.status !== 'ok') throw new Error(result.status);
       lastAck = performance.now();
-      session.epoch = result.epoch;
+      session.epoch = Math.max(session.epoch, result.epoch);
       if (result.interrupt) {
         const stopped = playback?.id === result.interrupt.utteranceId ? clearPlayback() : null;
         dropped += pending.length;
@@ -86,7 +99,8 @@ async function drain() {
         if (stopped) stopped.metric.interruptMs = Math.round((context.currentTime - atFrame / 16_000) * 1000);
       }
       if (result.completed) finalTurn = result.turnId;
-      if (result.transcription?.turnId === finalTurn && result.transcription.epoch === session.epoch) {
+      if (result.transcription?.epoch === session.epoch &&
+          result.transcription.turnId === (result.transcription.is_final ? finalTurn : result.turnId ?? finalTurn)) {
         element('transcript').textContent = result.transcription.text || `ASR ${result.transcription.status}`;
       }
       element('status').textContent = result.listening ? `检测到讲话 · Epoch ${session.epoch}` : `正在监听 · Epoch ${session.epoch}`;
@@ -134,7 +148,7 @@ element('connect').onclick = async () => {
   }
 };
 element('disconnect').onclick = () => disconnect();
-element('stop').onclick = stop;
+element('stop').onclick = () => stop();
 element('play').onclick = async () => {
   const file = element('file').files[0];
   if (!file || !session || playback) return;
@@ -167,7 +181,7 @@ element('play').onclick = async () => {
     if (measurements.length === 200) measurements.shift();
     measurements.push(metric);
     playback = { node, id, reference, startFrame: Math.round(start * 16_000), metric };
-    node.onended = () => { if (playback?.id === id) stop(); };
+    node.onended = () => { if (playback?.id === id) stop(true); };
     node.start(start);
     element('stop').disabled = false;
   } catch (error) {

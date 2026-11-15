@@ -6,12 +6,17 @@ and Streamable HTTP JSON-RPC for phone DSH MCP client.
 
 from __future__ import annotations
 
+from array import array
 import asyncio
+import base64
+import hmac
 import json
 import logging
 import re
+import time
 import uuid
-from contextlib import asynccontextmanager
+import wave
+from contextlib import aclosing, asynccontextmanager
 from typing import Any, Dict, List, Literal, Optional
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query, status
 from starlette.responses import FileResponse, StreamingResponse
@@ -26,12 +31,15 @@ from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
 from fullawake.core.config import config
 from fullawake.core.session import get_session_status
-from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, MAX_SONG_BYTES, VoiceCompute
+from fullawake.capabilities.voice import AUDIO_UNCLEAR, MAX_AUDIO_BYTES, MAX_SONG_BYTES, VoiceCompute, prepare_profile
 from fullawake.capabilities.voice_artifacts import DAY
+from fullawake.capabilities.voice_vad import song_reference_window
 from fullawake.capabilities.voice_sing_provider import (
     CUDA, ResidentSingProvider, SingJobQueue, SingQueueFull, SingQueueUnavailable,
 )
 from fullawake.gateway.interrupt_controller import InterruptController
+from fullawake.capabilities.resident_cuda import ResidentCuda
+from fullawake.pipeline.stream_worker import stream_sentences
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -57,19 +65,34 @@ class FullAwakeMCPGateway:
         self.sing_jobs = SingJobQueue(self._render_sing_job)
         self.watch = WatchCapability()
         self.interrupts = InterruptController(self.watch, self.voice)
+        self.capture_turn = None
 
         @asynccontextmanager
         async def lifespan(_app):
+            background = []
             if config.voice_enabled:
                 self.voice.artifacts.sweep()
                 if config.voice_provider == CUDA and config.voice_profile:
                     self.voice.sing_provider = ResidentSingProvider(config.voice_python, config.voice_profile)
-                    self.voice.sing_provider.start()
+                    self.voice.cuda = ResidentCuda(self.voice.sing_provider.close)
+
+                    async def warm():
+                        async with self.voice.cuda.acquire() as slot:
+                            if slot.provider == CUDA:
+                                try:
+                                    await self.voice.sing_provider.prepare()
+                                except (TimeoutError, OSError, ValueError) as error:
+                                    logger.warning('CUDA warm-up unavailable: %s', error)
+
+                    background += [asyncio.create_task(warm()), asyncio.create_task(self.voice.cuda.watch_idle())]
                 self.sing_jobs.start()
             expiry = asyncio.create_task(self.watch.expire_clocks()) if self.watch.enabled else None
             try:
                 yield
             finally:
+                for task in background:
+                    task.cancel()
+                await asyncio.gather(*background, return_exceptions=True)
                 if expiry:
                     expiry.cancel()
                     await asyncio.gather(expiry, return_exceptions=True)
@@ -79,6 +102,7 @@ class FullAwakeMCPGateway:
                     if self.voice.sing_provider is not None:
                         await self.voice.sing_provider.close()
                         self.voice.sing_provider = None
+                        self.voice.cuda = None
 
         self.app = FastAPI(
             title="FullAwake Gateway",
@@ -103,8 +127,6 @@ class FullAwakeMCPGateway:
         self._setup_routes()
 
     async def _render_sing_job(self, job_id, audio, audio_format, pitch, *, progress):
-        if self.voice.sing_provider is None:
-            raise ValueError('VOICE_RVC_CUDA_UNAVAILABLE')
         return await self.voice.process_singing_pipeline(job_id, audio, audio_format, pitch,
                                                          progress=progress, queued=True)
 
@@ -121,8 +143,13 @@ class FullAwakeMCPGateway:
         self.register_capability(self.watch)
         self.register_capability(SafeFSCapability())
 
-    def _interrupt_desktop_playback(self):
+    def _interrupt_desktop_playback(self, *, revoke_capture=True):
         peer = self.interrupts.peer
+        turn = self.capture_turn
+        if revoke_capture and turn and turn[2] and turn[1] is peer:
+            self.capture_turn = (turn[0], peer, None, turn[3])
+            if not peer.outbound.full():
+                peer.send('audio.capture', turnId=None, audio_epoch=turn[3])
         if peer:
             self.interrupts.on_speech_start(peer)
             self.interrupts.on_speech_end(peer)
@@ -156,10 +183,75 @@ class FullAwakeMCPGateway:
             if not body:
                 return AUDIO_UNCLEAR
             try:
-                return await asyncio.to_thread(self.voice.transcribe, bytes(body))
+                turn = self.capture_turn
+                capture = request.headers.get('x-fullawake-capture')
+                if capture and (not trusted_capture(request) or not turn or turn[0] != capture or not turn[2] or
+                                request.headers.get('x-fullawake-capture-epoch') != str(turn[3])):
+                    raise HTTPException(409, 'CAPTURE_STALE')
+                result = await asyncio.to_thread(self.voice.transcribe, bytes(body))
+                if capture and self.capture_turn is turn and self.interrupts.peer is turn[1] and turn[2] is not None:
+                    is_final = request.headers.get('x-fullawake-asr-final') == '1'
+                    if is_final:
+                        self.capture_turn = (capture, turn[1], None, turn[3])
+                    if result.get('ok'):
+                        if turn[1].outbound.full():
+                            raise HTTPException(503, 'CAPTURE_HOST_BUSY')
+                        turn[1].send('audio.transcript', turnId=turn[2], audio_epoch=turn[3],
+                                     text=result['text'][:1500], is_final=is_final)
+                return result
             except (ImportError, OSError, RuntimeError) as error:
                 logger.warning('ASR runtime unavailable: %s', error)
                 raise HTTPException(status_code=503, detail='ASR_UNAVAILABLE') from error
+
+        def trusted_capture(request):
+            token = config.auth_token.strip()
+            return bool(token and native_loopback(request) and hmac.compare_digest(
+                request.headers.get('authorization', '').encode(), f'Bearer {token}'.encode()))
+
+        @app.post('/v1/voice/capture', status_code=204)
+        async def capture_state(request: Request, capture: str, audio_epoch: int, turn_id: str = ''):
+            if not trusted_capture(request):
+                raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
+            if (not re.fullmatch(r'[a-f0-9-]{36}', capture) or not 0 < audio_epoch < 2**53 or
+                    (turn_id and not re.fullmatch(r'[a-f0-9-]{36}', turn_id))):
+                raise HTTPException(422, 'CAPTURE_INVALID')
+            peer = self.interrupts.peer
+            if not peer or not peer.capture_enabled or peer.outbound.full():
+                raise HTTPException(503, 'CAPTURE_HOST_UNAVAILABLE')
+            previous = self.capture_turn
+            if previous and previous[0] == capture and previous[1] is peer and previous[3] >= audio_epoch:
+                raise HTTPException(409, 'CAPTURE_STALE')
+            self.capture_turn = (capture, peer, turn_id or None, audio_epoch)
+            if turn_id:
+                self._interrupt_desktop_playback(revoke_capture=False)
+            peer.send('audio.capture', turnId=turn_id or None, audio_epoch=audio_epoch)
+
+        @app.get('/v1/voice/capture/reference')
+        async def capture_reference(request: Request):
+            if not trusted_capture(request):
+                raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
+            active, reference = self.watch.microphone_reference()
+            if reference:
+                waveform, at, position = reference
+                cursor = min(len(waveform), max(0, position * 16 + round((time.monotonic() - at) * 16000)))
+                start = max(0, cursor - 5000)
+                samples, offset = waveform[start:cursor + 4000], cursor - start
+            elif active and self.watch.song_reference and self.watch._echo_clock:
+                token, path = self.watch.song_reference
+                current, at, position = self.watch._echo_clock
+                if token != current:
+                    return {'active': True}
+                cursor = position * 16 + round((time.monotonic() - at) * 16000)
+                try:
+                    samples, offset = await asyncio.to_thread(song_reference_window, path, cursor)
+                except (OSError, EOFError, ValueError, wave.Error):
+                    return {'active': True}
+                if self.watch.song_output != token:
+                    return {'active': self.watch.audio_leases.active is not None}
+            else:
+                return {'active': active}
+            data = array('h', map(round, samples)).tobytes()
+            return {'active': True, 'pcm': base64.b64encode(data).decode('ascii'), 'offset': offset}
 
         @app.post('/v1/voice/rvc', dependencies=[Depends(verify_token)])
         async def voice_endpoint(request: Request):
@@ -183,6 +275,47 @@ class FullAwakeMCPGateway:
                 if not code.startswith('VOICE_'):
                     code = 'VOICE_RUNTIME_UNAVAILABLE'
                 raise HTTPException(status_code=409 if code == 'VOICE_BUSY' else 422, detail=code)
+
+        @app.post('/v1/voice/rvc/stream', dependencies=[Depends(verify_token)])
+        async def stream_voice(request: Request):
+            if not config.voice_enabled:
+                raise HTTPException(503, 'VOICE_DISABLED')
+            if not config.auth_token.strip() or not request.client or request.client.host not in config.voice_clients:
+                raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > 8192:
+                    raise HTTPException(413, 'VOICE_REQUEST_TOO_LARGE')
+            try:
+                payload = json.loads(body)
+                epoch = payload.pop('audio_epoch')
+                if type(epoch) is not int or not 0 <= epoch < 2**53 or 'text' not in payload:
+                    raise ValueError('VOICE_REQUEST_INVALID')
+                _, words, _ = prepare_profile(payload)
+            except (AttributeError, KeyError, ValueError, OSError) as error:
+                raise HTTPException(422, 'VOICE_REQUEST_INVALID') from error
+
+            async def fragments():
+                yield words
+
+            async def render(sentence):
+                result = await self.voice.synthesize({**payload, 'text': sentence})
+                return {**result, 'audio_epoch': epoch}
+
+            async def events():
+                sequence = 0
+                try:
+                    async with aclosing(stream_sentences(fragments(), render)) as audio:
+                        async for frame in audio:
+                            yield json.dumps({**frame, 'sequence': sequence, 'type': 'audio'}) + '\n'
+                            sequence += 1
+                except (ValueError, OSError, TimeoutError) as error:
+                    code = str(error)
+                    yield json.dumps({'type': 'error', 'audio_epoch': epoch,
+                                      'error': code if code.startswith('VOICE_') else 'VOICE_RUNTIME_UNAVAILABLE'}) + '\n'
+
+            return StreamingResponse(events(), media_type='application/x-ndjson')
 
         @app.post('/v1/voice/separate', dependencies=[Depends(verify_token)])
         async def voice_separate_endpoint(request: Request, task: str = Query('song'), format: str = Query('m4a')):
@@ -290,7 +423,7 @@ class FullAwakeMCPGateway:
                 raise HTTPException(403, 'VOICE_CLIENT_NOT_ALLOWED')
             if not re.fullmatch(r'[a-zA-Z0-9_-]{1,60}', task) or not self.voice.get_singing_song_file(task, 'mp3'):
                 raise HTTPException(404, 'FILE_NOT_FOUND')
-            playback = self.watch.queue_song(task)
+            playback = self.watch.queue_song(task, self.voice.get_singing_song_file(task, 'wav'))
             if playback is None:
                 raise HTTPException(503, 'RENDERER_DISCONNECTED')
             if playback == 'busy':

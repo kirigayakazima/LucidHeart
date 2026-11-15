@@ -75,7 +75,7 @@ def synthesize_dry(profile, text, rate, dry, track_punctuation):
     return Path(proc.stdout.strip().splitlines()[-1]), []
 
 
-def main():
+def main(argv=None, *, runtime_module=None, sessions=None, verified_profile=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--profile', required=True, type=Path)
     parser.add_argument('--input', type=Path, help='Existing dry voice: no TTS/network required')
@@ -90,7 +90,7 @@ def main():
     parser.add_argument('--seed', type=int, help='Seed latent and ORT noise for controlled auditions')
     parser.add_argument('--provider', choices=['CPUExecutionProvider', 'CUDAExecutionProvider'], help='Execution provider')
     parser.add_argument('--pc-stitch', action='store_true', help='Use the FullAwake PC speech stitcher')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     started = time.perf_counter()
     profile_path = args.profile.resolve()
     profile = json.loads(profile_path.read_text(encoding='utf-8-sig'))
@@ -103,7 +103,11 @@ def main():
     brightness = args.brightness if args.brightness is not None else profile.get('brightness', 0)
     if not 0 <= brightness <= 3.5:
         raise ValueError('Brightness must be within 0..3.5dB')
-    if not args.dry_only:
+    if verified_profile is not None:
+        model_path, assets = verified_profile
+        if models != model_path or profile['assets'] != assets:
+            raise ValueError('Voice profile changed since worker warmup')
+    elif not args.dry_only:
         verify_assets(profile, models)
     rate = args.rate if args.rate is not None else profile.get('ttsRate', '+0%')
     if not isinstance(rate, str) or not re.fullmatch(r'[+-]\d+%', rate) or not -20 <= int(rate[:-1]) <= 20:
@@ -134,9 +138,11 @@ def main():
         print(json.dumps(dict(ok=True, profileId=profile['id'], punctuationSeconds=punctuation)), flush=True)
         return
     runtime = Path(__file__).resolve().parents[1] / 'vendor' / 'phone' / 'rvc_onnx.py'
-    spec = importlib.util.spec_from_file_location('lucidheart_phone_rvc', runtime)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = runtime_module
+    if module is None:
+        spec = importlib.util.spec_from_file_location('lucidheart_phone_rvc', runtime)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
     if args.pc_stitch:
         from fullawake.acoustic_stitcher import join_speech_segments
         from functools import partial
@@ -161,7 +167,7 @@ def main():
                                   brightness=brightness, num_threads=4,
                                   synthesis_mode=profile.get('synthesisMode', 'chunked'),
                                   noise_scale=profile.get('noiseScale', 1.0), intonation_scale=intonation_scale,
-                                  execution_providers=providers)
+                                  execution_providers=providers, sessions=sessions)
     import numpy as np
     import soundfile as sf
     audio, sr = sf.read(output)

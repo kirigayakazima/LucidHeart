@@ -146,31 +146,52 @@ class WatchCapability(BaseCapability):
         self.player = None
         self.bridge_output = None
         self.bridge_receipt = None
+        self.bridge_retained = False
         self.interrupt_receipt = None
         self.audio_leases = LeaseArbiter()
         self.song_output = None
         self.song_capable = False
         self.song_deadline = 0
+        self.song_reference = None
         self.heart_mood = 'calm'
+        self._echo_waveform = None
+        self._echo_clock = None
+
+    def microphone_reference(self):
+        active = self.audio_leases.active
+        wave = self._echo_waveform
+        clock = self._echo_clock
+        if not active or not wave or active.token != wave[0] or not clock or clock[0] != active.token:
+            return active is not None, None
+        return True, (wave[1], clock[1], clock[2])
 
     def update_heart_mood(self, mood):
         if mood != self.heart_mood:
             self.heart_mood = mood
             self.publish({'event': 'heart_mood', 'mood': mood}, player_only=True)
 
-    @staticmethod
-    def _audio_event(utterance, audio, text, **metadata):
+    def _audio_event(self, utterance, audio, text, **metadata):
         sync = utterance_sync(base64.b64decode(audio, validate=True), text)
         return {'event': 'playback_audio', 'audioBase64': audio,
                 'utteranceId': utterance, **sync, **metadata}
 
-    def queue_song(self, task):
+    def _publish_audio(self, event):
+        from fullawake.capabilities.voice_vad import playback_reference
+
+        token = event['utteranceId']
+        self._echo_waveform = (token, playback_reference(base64.b64decode(event['audioBase64'])))
+        self._echo_clock = (token, time.monotonic(), 0)
+        self.publish(event, player_only=True)
+
+    def queue_song(self, task, wav_path=None):
         if not self.player or not self.song_capable or is_desktop_locked():
             return None
         token = uuid.uuid4().hex
 
         def start():
             self.song_output = token
+            self.song_reference = (token, wav_path) if wav_path else None
+            self._echo_clock = (token, time.monotonic(), 0)
             self.song_deadline = time.monotonic() + 12
             self.publish({'event': 'action', 'utteranceId': token, 'hasAudio': True,
                           'intent': 'talk', 'song': True}, player_only=True)
@@ -179,6 +200,7 @@ class WatchCapability(BaseCapability):
         def stop():
             if self.song_output == token:
                 self.song_output = None
+                self.song_reference = None
                 self.publish({'event': 'playback_clock', 'mode': 'idle', 'utteranceId': token}, player_only=True)
 
         return self.audio_leases.acquire(PlaybackLease(token, 'song', start, stop))
@@ -246,15 +268,20 @@ class WatchCapability(BaseCapability):
             if release:
                 self.audio_leases.finish(token)
 
-    def play_bridge(self, utterance, text, audio, duration_ms, intent='talk'):
-        if not self.player or self.pending or self.bridge_output or self.audio_leases.active or is_desktop_locked():
+    def play_bridge(self, utterance, text, audio, duration_ms, intent='talk', *, retain=False, previous=None):
+        active = self.audio_leases.active
+        resumed = retain and active is not None and active.token == previous
+        if not self.player or self.pending or self.bridge_output or (active and not resumed) or is_desktop_locked():
             return None
         if self.active:
             if time.monotonic() < self.active[1]:
                 return None
             self.cancel_output()
         playback = self._audio_event(utterance, audio, text, voiceBridge=True) if audio is not None else None
+        if resumed:
+            self.audio_leases.transfer(previous, utterance)
         self.bridge_output = utterance
+        self.bridge_retained = retain
         self.bridge_receipt = asyncio.get_running_loop().create_future()
         metadata = {'utteranceId': utterance, 'voiceBridge': True}
 
@@ -262,9 +289,9 @@ class WatchCapability(BaseCapability):
             self.publish({'event': 'action', 'intent': intent, 'text': text, 'hasAudio': audio is not None,
                           'durationMs': duration_ms, 'bridgeText': audio is None, **metadata}, player_only=True)
             if playback is not None:
-                self.publish(playback, player_only=True)
+                self._publish_audio(playback)
 
-        if audio is None:
+        if audio is None or resumed:
             start()
         else:
             self.audio_leases.acquire(PlaybackLease(utterance, 'speech', start, lambda: None))
@@ -275,11 +302,18 @@ class WatchCapability(BaseCapability):
         receipt, self.bridge_receipt = self.bridge_receipt, None
         if receipt and not receipt.done():
             receipt.set_result(outcome)
-        if release:
+        retained, self.bridge_retained = self.bridge_retained, False
+        if release and not retained:
             self.audio_leases.finish(token)
 
     def _stop_bridge(self, utterance, interrupt_id):
         if self.bridge_output != utterance:
+            active = self.audio_leases.active
+            if active and active.token == utterance:
+                if interrupt_id:
+                    self.audio_leases.revoke()
+                else:
+                    self.audio_leases.finish(utterance)
             return None
         self._complete_bridge('discarded', release=False)
         if interrupt_id is not None:
@@ -374,7 +408,7 @@ class WatchCapability(BaseCapability):
             if playback is not None:
                 token = event['utteranceId']
                 self.audio_leases.acquire(PlaybackLease(token, 'speech',
-                    lambda: self.publish(playback, player_only=True), lambda: None))
+                    lambda: self._publish_audio(playback), lambda: None))
         waiter.set_result(allowed)
 
     async def summary(self, args):
@@ -565,6 +599,12 @@ class WatchCapability(BaseCapability):
                             last_pong = time.monotonic()
                         continue
                     utterance = value.get('utteranceId')
+                    lease = self.audio_leases.active
+                    position = value.get('positionMs')
+                    if (lease and utterance == lease.token and value.get('event') == 'playback_clock' and
+                            value.get('mode') == 'speaking' and type(position) is int and
+                            0 <= position <= (3_600_000 if lease.kind == 'song' else 10_000)):
+                        self._echo_clock = (utterance, time.monotonic(), position)
                     if value.get('event') == 'interrupt_ack':
                         elapsed = value.get('elapsedAudioMs')
                         if self.interrupt_receipt and type(elapsed) is int and 0 <= elapsed <= 10_000:
@@ -576,6 +616,7 @@ class WatchCapability(BaseCapability):
                     if self.song_output and utterance == self.song_output:
                         if value.get('event') == 'playback_clock' and value.get('mode') == 'idle':
                             self.song_output = None
+                            self.song_reference = None
                             self.audio_leases.finish(utterance)
                         elif value.get('event') == 'playback_clock' and value.get('mode') == 'speaking':
                             self.song_deadline = time.monotonic() + 5

@@ -146,7 +146,7 @@ async function pollPcJob({ signal, onStage, onStatus, gatewayUrl, output }, subm
           throw new Error('Invalid PC singing result')
         }
         await downloadSong({ output, signal, gatewayUrl }, id)
-        return { provider: result?.executionProvider ?? null, remoteJobId: id }
+        return { provider: result?.executionProvider ?? null, remoteJobId: id, degradedReason: result?.degradedReason }
       }
       const stage = snapshot.stage ?? state
       if (!stageAliases.has(stage) && stage !== 'queued' && state !== 'running') {
@@ -210,7 +210,7 @@ async function runLegacyPcSong({ source, jobId, pitch, output, signal, onStage, 
     upload.destroy()
   }
   await downloadSong({ output, signal, gatewayUrl }, jobId)
-  return { provider: result.executionProvider ?? null, remoteJobId: jobId }
+  return { provider: result.executionProvider ?? null, remoteJobId: jobId, degradedReason: result.degradedReason }
 }
 
 export async function queuePcSong(remoteJobId, signal) {
@@ -298,10 +298,10 @@ export async function renderSong(job, onFallback) {
   let complete = false
   try {
     try {
-      const { provider, remoteJobId } = await runPcSong(job)
+      const { provider, remoteJobId, degradedReason } = await runPcSong(job)
       job.signal.throwIfAborted()
       complete = true
-      return { mode: 'pc_gpu_pipeline', provider, remoteJobId }
+      return { mode: provider === 'CPUExecutionProvider' ? 'pc_cpu_pipeline' : 'pc_gpu_pipeline', provider, remoteJobId, degradedReason }
     } catch (error) {
       job.signal.throwIfAborted()
       if (error instanceof PcSongCancelled) throw error

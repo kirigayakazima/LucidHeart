@@ -18,7 +18,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
   #backoff = 1000
   #task = null
 
-  constructor(gatewayUrl, authToken, { heartVersion = () => '0.21.3', retryMs = 1000 } = {}) {
+  constructor(gatewayUrl, authToken, { heartVersion = () => '0.21.3', retryMs = 1000, capture = false } = {}) {
     super()
     const url = new URL(gatewayUrl)
     if (url.protocol !== 'ws:' || url.hostname !== '127.0.0.1' || url.pathname !== '/ws/bridge' ||
@@ -27,6 +27,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
     this.authToken = authToken
     this.heartVersion = heartVersion
     this.retryMs = retryMs
+    this.capture = capture
     this.#backoff = retryMs
     this.sessionId = `watch-session-${Date.now()}-${randomUUID()}`
   }
@@ -52,6 +53,8 @@ export class FullAwakeBridgeClient extends EventEmitter {
     this.#backoff = this.retryMs
   }
 
+  cancelCurrent() { this.#task?.controller.abort('conversation_cancelled') }
+
   #open() {
     let socket
     try {
@@ -71,6 +74,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
       this.#send(connection, 'session.handshake', {
         clientVersion: pkg.version, heartVersion: text(heartVersion, 40) ? heartVersion : '0.21.3',
         device: 'redmi-note12turbo',
+        ...(this.capture ? { capture: true } : {}),
       })
     })
     socket.addEventListener('message', event => this.#receive(connection, event.data))
@@ -88,6 +92,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
   #drop(connection) {
     if (connection !== this.#connection) return
     this.#connection = null
+    this.emit('disconnected')
     clearTimeout(connection.timer)
     if (this.#task) this.#finish(this.#task, 'cancelled', 'bridge_disconnected')
     connection.socket.close()
@@ -139,6 +144,16 @@ export class FullAwakeBridgeClient extends EventEmitter {
     }
     connection.received = frame.commandSeq
     const task = this.#task
+    if (this.capture && frame.type === 'audio.capture' && shape(payload, ['turnId', 'audio_epoch']) &&
+        integer(payload.audio_epoch, 1) && (payload.turnId === null || text(payload.turnId, 80))) {
+      this.emit('capture', payload)
+      return
+    }
+    if (this.capture && frame.type === 'audio.transcript' && shape(payload, ['turnId', 'audio_epoch', 'text', 'is_final']) &&
+        integer(payload.audio_epoch, 1) && text(payload.turnId, 80) && text(payload.text, 1500) && typeof payload.is_final === 'boolean') {
+      this.emit('transcript', payload)
+      return
+    }
     if (frame.type === 'audio.interrupt' &&
         shape(payload, ['abortedEpoch', 'utteranceId', 'reason', 'localAudioStopped', 'elapsedAudioMs']) &&
         integer(payload.abortedEpoch, 1, MAX_EPOCH) && text(payload.utteranceId, 80) &&

@@ -372,6 +372,22 @@ test('QQ 明确拒收附件时告知用户，成曲仍可从本地取得', { tim
   assert.deepEqual(await readFile(job.expected_output), mp3)
 })
 
+test('QQ 明确限频时重试，成功后只记录一次实际交付', { timeout: 3000 }, async t => {
+  const f = await fixture(t)
+  mockCompletedJob(t, () => new Response(mp3))
+  const sender = f.ctx.qqbotMediaSender
+  const send = sender.sendFile.bind(sender)
+  let attempts = 0
+  sender.sendFile = (...args) => {
+    if (++attempts === 1) return { status: 429, ok: false, retryAfterMs: 250 }
+    return send(...args)
+  }
+  await f.request({})
+  await f.observed.promise
+  assert.equal(attempts, 2)
+  assert.equal(f.files.length, 1)
+})
+
 test('未知会话只保存成曲，QQ 服务存在时也不猜投递目标', { timeout: 3000 }, async t => {
   const f = await fixture(t)
   f.ctx.qqbotMediaSender.resolveTargetForSession = () => undefined

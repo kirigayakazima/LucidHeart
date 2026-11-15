@@ -7,6 +7,7 @@ from collections import deque
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass
 import json
+import importlib.util
 import logging
 import os
 import re
@@ -307,8 +308,10 @@ async def run_sing_stage(command, env):
 async def run_song_mastering(python, vocals, accompaniment, mp3, wav, env):
     # Keep FFmpeg in the managed job tree so cancelling the mastering stage
     # terminates both the Python worker and its encoder.
-    script = Path(__file__).with_name("audio_mastering.py")
-    code, stdout, stderr = await run_sing_stage([python, script, vocals, accompaniment, mp3, "--wav", wav], env)
+    env = dict(env)
+    env['PYTHONPATH'] = os.pathsep.join(filter(None, (str(Path(__file__).resolve().parents[2]), env.get('PYTHONPATH'))))
+    command = [python, '-m', 'fullawake.capabilities.sing_mastering', vocals, accompaniment, mp3, '--wav', wav]
+    code, stdout, stderr = await run_sing_stage(command, env)
     if code != 0 or not mp3.is_file() or not wav.is_file():
         LOG.error("Song mastering failed: %s", stderr.decode("utf-8", "replace")[-1200:])
         raise ValueError("VOICE_MASTERING_FAILED")
@@ -316,28 +319,18 @@ async def run_song_mastering(python, vocals, accompaniment, mp3, wav, env):
 
 
 class ResidentSingProvider:
-    """Keep three CUDA sessions alive in a single dedicated worker process."""
+    """Keep RVC sessions and the song separator in a killable process."""
 
     def __init__(self, python, profile):
         self.python = Path(python or sys.executable)
         self.profile = Path(profile)
         self.worker = None
-        self._warmup = None
 
     @property
     def ready(self):
         return self.worker is not None and self.worker.process.returncode is None
 
-    def start(self):
-        self._warmup = asyncio.create_task(self._prewarm())
-
-    async def _prewarm(self):
-        try:
-            await self._ensure_worker()
-        except Exception:
-            LOG.exception("Song CUDA warm-up failed")
-
-    async def _ensure_worker(self):
+    async def prepare(self):
         if self.ready:
             return
         await self._stop_worker()
@@ -345,8 +338,10 @@ class ResidentSingProvider:
             raise ValueError("VOICE_PROFILE_UNAVAILABLE")
         vendor = Path(__file__).resolve().parents[5] / "packages/rvc/vendor/phone"
         try:
+            env = dict(os.environ)
+            env['PYTHONPATH'] = os.pathsep.join(filter(None, (str(Path(__file__).resolve().parents[2]), env.get('PYTHONPATH'))))
             self.worker = await SingProcess.start(
-                [self.python, "-u", __file__, vendor, self.profile.resolve().parent],
+                [self.python, "-u", __file__, vendor, self.profile.resolve()], env=env,
                 stderr=None,
             )
             await asyncio.wait_for(self._receive(), STAGE_TIMEOUT)
@@ -370,21 +365,25 @@ class ResidentSingProvider:
                 raise ValueError(message.get("error", "VOICE_RVC_CUDA_UNAVAILABLE"))
         raise ValueError("VOICE_RVC_WORKER_EXITED")
 
-    async def prepare(self):
-        if self._warmup is not None:
-            await asyncio.shield(self._warmup)
-        await self._ensure_worker()
-
     async def convert(self, vocals, output, work, pitch, *, progress=None):
+        await self.request('convert', str(vocals), str(output), str(work), pitch, progress=progress)
+        return CUDA
+
+    async def separate(self, source, vocals, accompaniment):
+        await self.request('separate', str(source), str(vocals), str(accompaniment))
+
+    async def speak(self, profile, text, output):
+        await self.request('speak', str(profile), text, str(output), timeout=30)
+
+    async def request(self, operation, *args, progress=None, timeout=STAGE_TIMEOUT):
         await self.prepare()
         try:
-            payload = json.dumps([str(vocals), str(output), str(work), pitch]).encode()
+            payload = json.dumps([operation, *args]).encode()
             self.worker.process.stdin.write(payload + b"\n")
             await self.worker.process.stdin.drain()
-            await asyncio.wait_for(self._receive(progress), STAGE_TIMEOUT)
+            await asyncio.wait_for(self._receive(progress), timeout)
         except asyncio.CancelledError:
             await self._stop_worker()
-            self.start()
             raise
         except TimeoutError as error:
             await self._stop_worker()
@@ -392,7 +391,6 @@ class ResidentSingProvider:
         except BaseException:
             await self._stop_worker()
             raise
-        return CUDA
 
     async def _stop_worker(self):
         worker, self.worker = self.worker, None
@@ -400,14 +398,10 @@ class ResidentSingProvider:
             await worker.close()
 
     async def close(self):
-        if self._warmup is not None:
-            self._warmup.cancel()
-            await asyncio.gather(self._warmup, return_exceptions=True)
-            self._warmup = None
         await self._stop_worker()
 
 
-def _serve_worker(vendor, models_dir):
+def _serve_worker(vendor, profile_path):
     protocol = sys.stdout.buffer
 
     def reply(**message):
@@ -418,6 +412,17 @@ def _serve_worker(vendor, models_dir):
     with redirect_stdout(sys.stderr):
         import numpy as np
         import rvc_onnx as rvc
+
+        profile_path = Path(profile_path)
+        profile = json.loads(profile_path.read_text(encoding='utf-8-sig'))
+        models_dir = (profile_path.parent / profile['modelsDir']).resolve()
+        speech_path = Path(vendor).parents[1] / 'scripts/voice_profile_speak.py'
+        spec = importlib.util.spec_from_file_location('fullawake_speech', speech_path)
+        speech = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(speech)
+        speech.verify_assets(profile, models_dir)
+        verified_profile = (models_dir, profile['assets'])
+        models_dir = str(models_dir)
 
         sessions = rvc.create_sessions(models_dir, [CUDA, "CPUExecutionProvider"])
         if any(session.get_providers()[0] != CUDA for session in sessions):
@@ -432,6 +437,8 @@ def _serve_worker(vendor, models_dir):
         reply(executionProvider=CUDA)
 
         index = Path(models_dir) / "voice.mobile.index"
+        separator = None
+        original_join = rvc.join_speech_segments
         def report_progress(_percent, message):
             match = re.search(r'chunk (\d+)/(\d+)', message, re.IGNORECASE)
             if match:
@@ -439,17 +446,44 @@ def _serve_worker(vendor, models_dir):
                 reply(sliceProgress={"current": current, "total": total})
 
         for line in sys.stdin.buffer:
-            vocals, output, work, pitch = json.loads(line)
+            operation, *args = json.loads(line)
             try:
-                result = rvc.convert_audio(
-                    vocals, models_dir, output, work_dir=work, pitch_change=pitch,
-                    index_path=str(index) if index.is_file() else "", index_ratio=0.3,
-                    sessions=sessions, progress_callback=report_progress,
-                )
-                reply(executionProvider=result["executionProvider"])
+                if operation == 'speak':
+                    request_profile, text, output = args
+                    speech.main(['--profile', request_profile, '--text', text, '--output', output,
+                                 '--seed', '42', '--pc-stitch', '--provider', CUDA], runtime_module=rvc,
+                                sessions=sessions, verified_profile=verified_profile)
+                elif operation == 'separate':
+                    import torch
+                    from demucs.api import Separator
+                    from demucs.audio import save_audio
+
+                    source, vocals, accompaniment = args
+                    if separator is None:
+                        separator = Separator(model='htdemucs', device='cuda')
+                        separator.model.to('cuda')
+                    try:
+                        _, stems = separator.separate_audio_file(Path(source))
+                        save_audio(stems.pop('vocals'), vocals, samplerate=separator.samplerate)
+                        save_audio(sum(stems.values()), accompaniment, samplerate=separator.samplerate)
+                    finally:
+                        # Keep live model weights; return unused PyTorch arena blocks to the driver.
+                        torch.cuda.empty_cache()
+                elif operation == 'convert':
+                    vocals, output, work, pitch = args
+                    result = rvc.convert_audio(vocals, models_dir, output, work_dir=work, pitch_change=pitch,
+                        index_path=str(index) if index.is_file() else '', index_ratio=.3, sessions=sessions,
+                        progress_callback=report_progress)
+                    if result['executionProvider'] != CUDA:
+                        raise ValueError('Unexpected RVC provider')
+                else:
+                    raise ValueError('Unknown worker operation')
+                reply(executionProvider=CUDA)
             except Exception:
                 LOG.exception("Resident CUDA conversion failed")
                 reply(error="VOICE_RVC_CONVERSION_FAILED")
+            finally:
+                rvc.join_speech_segments = original_join
 
 
 if __name__ == "__main__":

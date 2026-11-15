@@ -38,6 +38,7 @@ export const Config = z
       watchDecisionMode: z.union(['legacy', 'shadow', 'heart']).default('legacy').description('陪看决策模式'),
       voiceEpochProtocol: z.boolean().default(false).description('启用桌宠语音租约与本地打断'),
       bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
+      duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
     })
   : undefined
 
@@ -176,6 +177,7 @@ export function apply(ctx, config = {}) {
   if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
       heartVersion: () => getHeart()?.version,
+      capture: Boolean(config.duplexTarget),
     })
     ctx.effect(() => {
       const observeInterrupt = ({ elapsedAudioMs }) => {
@@ -185,12 +187,55 @@ export function apply(ctx, config = {}) {
         })).catch(() => {})
       }
       bridge.on('interrupt', observeInterrupt)
+      let capture
+      const closeCapture = () => { capture?.close(); capture = undefined }
+      function openCapture(event) {
+        if (!capture && config.duplexTarget) {
+          const agent = (ctx.get?.('agents') ?? ctx.agents)?.get?.(config.duplexTarget)
+          const duplex = ctx.get?.('voiceDuplex') ?? ctx.voiceDuplex
+          if (agent && duplex) capture = duplex.remote(agent)
+        }
+        capture?.open(event)
+      }
+      const receiveTranscript = event => {
+        void Promise.resolve().then(() => capture?.receive(event)).catch(error => ctx.logger?.warn?.(error.message))
+      }
+      bridge.on('capture', openCapture)
+      bridge.on('transcript', receiveTranscript)
+      bridge.on('disconnected', closeCapture)
+      const offCancel = config.duplexTarget && ctx.on?.('conversation/cancel', event => {
+        if ((event?.agent?.id ?? event?.agentId ?? event?.id) === config.duplexTarget) bridge.cancelCurrent()
+      })
       bridge.connect()
       return () => {
         bridge.off('interrupt', observeInterrupt)
+        bridge.off('capture', openCapture)
+        bridge.off('transcript', receiveTranscript)
+        bridge.off('disconnected', closeCapture)
+        if (typeof offCancel === 'function') offCancel()
+        closeCapture()
         bridge.stop()
       }
     })
+    if (config.duplexTarget) ctx.effect(() => ctx.tools.register(defineTool({
+      name: 'pc_duplex_speak',
+      description: '在当前已配置的 PC 双工语音会话中，用桌宠扬声器回答用户。',
+      parameters: { text: { type: 'string', required: true } },
+      output: textOutput,
+      async execute({ text }, exec) {
+        if (exec?.agent?.id !== config.duplexTarget || typeof text !== 'string' || !text.trim() || [...text].length > 200) {
+          return { message: '当前会话或文本无法用于电脑双工发声。' }
+        }
+        const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
+        if (!gate?.suitable) return { message: 'Heart 当前未允许发声。' }
+        const turn = bridge.begin({ signal: exec.signal })
+        if (!turn || !(await turn.prepared) || !bridge.speak({ text, deadlineMs: 15_000 }, turn)) {
+          return { message: '桌宠语音桥当前不可用。' }
+        }
+        const result = await turn.done
+        return { message: result.status === 'played' ? '桌宠已播完。' : `桌宠语音结束（${result.status}）。` }
+      },
+    })))
   }
   registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge })
   ctx.effect(() => registerTaskView(ctx, defineTool))

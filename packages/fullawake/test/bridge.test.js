@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
+import { on, once } from 'node:events'
 import { test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { FullAwakeBridgeClient } from '../lib/bridge-client.js'
@@ -7,10 +7,10 @@ import { FullAwakeBridgeClient } from '../lib/bridge-client.js'
 const TOKEN = 'bridge-test-only'
 const waitEvent = (emitter, name) => once(emitter, name, { signal: AbortSignal.timeout(3000) })
 
-async function fixture(t, initialEpoch = 100) {
+async function fixture(t, initialEpoch = 100, capture = false) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0, path: '/ws/bridge' })
   await waitEvent(server, 'listening')
-  const client = new FullAwakeBridgeClient(`ws://127.0.0.1:${server.address().port}/ws/bridge`, TOKEN, { retryMs: 20 })
+  const client = new FullAwakeBridgeClient(`ws://127.0.0.1:${server.address().port}/ws/bridge`, TOKEN, { retryMs: 20, capture })
   t.after(async () => {
     client.stop()
     for (const socket of server.clients) socket.terminate()
@@ -18,12 +18,19 @@ async function fixture(t, initialEpoch = 100) {
   })
 
   async function session(open = () => {}) {
+    let inbox
+    server.once('connection', socket => {
+      inbox = on(socket, 'message', { close: ['close'] })
+    })
     const connected = waitEvent(server, 'connection')
     open()
     const [socket, request] = await connected
     assert.equal(request.headers.authorization, `Bearer ${TOKEN}`)
     assert.equal(request.headers.origin, undefined)
-    const next = async () => JSON.parse((await waitEvent(socket, 'message'))[0])
+    const next = async () => {
+      const { value } = await inbox.next()
+      return JSON.parse(value[0])
+    }
     const hello = await next()
     assert.deepEqual(Object.keys(hello).sort(), ['commandSeq', 'connectionId', 'payload', 'protocol', 'sessionId', 'type'])
     assert.equal(hello.type, 'session.handshake')
@@ -31,7 +38,8 @@ async function fixture(t, initialEpoch = 100) {
     assert.equal(hello.commandSeq, 1)
     assert.match(hello.sessionId, /^watch-session-/)
     assert.match(hello.connectionId, /^conn-[0-9a-f-]{36}$/)
-    assert.deepEqual(hello.payload, { clientVersion: '0.2.7', heartVersion: '0.21.3', device: 'redmi-note12turbo' })
+    assert.deepEqual(hello.payload, { clientVersion: '0.2.7', heartVersion: '0.21.3', device: 'redmi-note12turbo',
+      ...(capture ? { capture: true } : {}) })
     let seq = 0
     const send = (type, payload, overrides) => socket.send(JSON.stringify({ protocol: hello.protocol, type,
       sessionId: hello.sessionId, connectionId: hello.connectionId, commandSeq: ++seq, payload, ...overrides }))
@@ -42,6 +50,21 @@ async function fixture(t, initialEpoch = 100) {
   }
   return { client, session }
 }
+
+test('opt-in capture distinguishes drafts and finals without mutating playback epochs', { timeout: 5000 }, async t => {
+  const { client, session } = await fixture(t, 100, true)
+  const { send, next } = await session(() => client.connect())
+  const captured = waitEvent(client, 'capture')
+  send('audio.capture', { turnId: 'mic-turn', audio_epoch: 7 })
+  assert.deepEqual(await captured, [{ turnId: 'mic-turn', audio_epoch: 7 }])
+  for (const is_final of [false, true]) {
+    const transcript = waitEvent(client, 'transcript')
+    send('audio.transcript', { turnId: 'mic-turn', audio_epoch: 7, text: '你好', is_final })
+    assert.equal((await transcript)[0].is_final, is_final)
+  }
+  client.speak({ text: '你好' })
+  assert.equal((await next()).payload.epoch, 101)
+})
 
 test('native WebSocket sends bearer and monotonic speak, interrupt and ACK frames', { timeout: 5000 }, async t => {
   const { client, session } = await fixture(t)
