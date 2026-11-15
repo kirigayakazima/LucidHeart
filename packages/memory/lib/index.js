@@ -9,11 +9,33 @@ import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
 import { getZonedParts } from './store.js';
 import { registerProjects } from './projects.js';
 import { findContradictions } from './contradictions.js';
+import {
+  loadLastHandoff,
+  saveLastHandoff,
+  buildHandoffClue,
+  extractTextFromMessage,
+  shouldInjectHandoff,
+  injectHandoffToMessage,
+} from './handoff.js';
 import * as types from './types.js';
 import * as budget from './budget.js';
 import * as tokenizer from './tokenizer.js';
 
-export { MemoryService, CommitmentLedger, findContradictions, resolveHostContext, types, budget, tokenizer };
+export {
+  MemoryService,
+  CommitmentLedger,
+  findContradictions,
+  resolveHostContext,
+  loadLastHandoff,
+  saveLastHandoff,
+  buildHandoffClue,
+  extractTextFromMessage,
+  shouldInjectHandoff,
+  injectHandoffToMessage,
+  types,
+  budget,
+  tokenizer,
+};
 
 export const name = '@dsh/memory';
 export const inject = ['tools', 'systemPrompt'];
@@ -57,10 +79,31 @@ export function apply(ctx, config = {}) {
 
   const currentTurn = new WeakMap();
   const acceptedInput = new WeakMap();
+  const injectedSessions = new Set();
+  const activeTurnData = new WeakMap();
+
   // Prompt assembly runs after inbox claim, before user/message enters the session.
   ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
-    if (message.source?.kind === 'user' && readConversationInput(message, { includeRoutine: true })) {
-      currentTurn.set(agent.session, { message, origin: 'user_request', query: readConversationInput(message)?.text });
+    const sessionId = agent?.session?.id || agent?.session?.header?.id || agent?.id;
+    if (message.source?.kind === 'user') {
+      // 检查跨会话接力器（Turn 1 Injected User Context）
+      const lastHandoff = loadLastHandoff(dataDir);
+      const messages = typeof agent?.session?.deriveMessages === 'function'
+        ? agent.session.deriveMessages()
+        : agent?.session?.messages;
+
+      if (shouldInjectHandoff({ lastHandoff, currentSessionId: sessionId, messages, injectedSessions })) {
+        const commitment = memory.commitments.getActiveCommitmentCare();
+        const clue = buildHandoffClue({ lastHandoff, commitment });
+        if (clue) {
+          injectHandoffToMessage(message, clue);
+          if (sessionId) injectedSessions.add(sessionId);
+        }
+      }
+
+      if (readConversationInput(message, { includeRoutine: true })) {
+        currentTurn.set(agent.session, { message, origin: 'user_request', query: readConversationInput(message)?.text });
+      }
     } else {
       currentTurn.delete(agent.session);
       if (message.source?.kind === 'schedule') {
@@ -72,10 +115,16 @@ export function apply(ctx, config = {}) {
   }, { global: true });
 
   ctx.on?.('session/event', (session, event) => {
-    if (event.type === 'turn/start' || event.type === 'turn/end') {
+    if (event.type === 'turn/start') {
       currentTurn.delete(session);
       acceptedInput.delete(session);
+      activeTurnData.set(session, {
+        sessionId: session?.id || session?.header?.id,
+        userText: '',
+        assistantText: '',
+      });
     }
+
     if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
       const projected = currentTurn.get(session);
       if (projected?.projectId && projected.message.id === event.data.id) {
@@ -84,8 +133,40 @@ export function apply(ctx, config = {}) {
       const input = readConversationInput(event.data);
       if (input) acceptedInput.set(session, { ...input, event });
       else acceptedInput.delete(session);
+
+      const td = activeTurnData.get(session);
+      if (td) {
+        const userUtterance = readConversationInput(event.data, { includeRoutine: true });
+        td.userText = userUtterance?.text || extractTextFromMessage(event.data);
+        td.time = event.time || Date.now();
+      }
     } else if (event.type === 'user/message' && !isInjectedMessage(event.data)) {
       acceptedInput.delete(session);
+    }
+
+    if (event.type === 'assistant/message') {
+      const td = activeTurnData.get(session);
+      if (td) {
+        const text = extractTextFromMessage(event.data);
+        if (text) td.assistantText = (td.assistantText ? td.assistantText + '\n' : '') + text;
+      }
+    }
+
+    if (event.type === 'turn/end') {
+      currentTurn.delete(session);
+      acceptedInput.delete(session);
+      const td = activeTurnData.get(session);
+      if (td && (td.userText || td.assistantText)) {
+        saveLastHandoff(dataDir, {
+          sessionId: td.sessionId,
+          updatedAt: new Date(td.time || Date.now()).toISOString(),
+          lastExchange: {
+            user: td.userText || '',
+            assistant: td.assistantText || '',
+          },
+        });
+      }
+      activeTurnData.delete(session);
     }
   }, { global: true });
 

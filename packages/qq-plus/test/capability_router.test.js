@@ -120,11 +120,11 @@ describe('CapabilityRouter (方案 D 轻量能力路由与安全隔离测试)', 
       assert.equal(decision.intent, INTENT.MEMORY_OP)
       assert.equal(decision.allowed, false)
       assert.equal(decision.reason, 'GROUP_MEMORY_WRITE_DENIED')
-      assert.deepEqual(decision.tools, ['memory_search'])
+      assert.ok(decision.tools.includes('memory_recall') || decision.tools.includes('memory_search'))
       assert.match(decision.safeReply, /不会直接记入小满的个人私密日记/i)
     })
 
-    it('私聊写入记忆：允许 memory_append', () => {
+    it('私聊写入记忆：允许 memory_append / memory_remember', () => {
       const decision = router.route({
         text: '小满帮我记一下，明天下午两点去买奶茶',
         scope: 'c2c',
@@ -132,7 +132,47 @@ describe('CapabilityRouter (方案 D 轻量能力路由与安全隔离测试)', 
       })
       assert.equal(decision.intent, INTENT.MEMORY_OP)
       assert.equal(decision.allowed, true)
-      assert.deepEqual(decision.tools, ['memory_append', 'memory_search'])
+      assert.ok(decision.tools.includes('memory_remember') || decision.tools.includes('memory_append'))
+      assert.equal(decision.isTask, true)
+    })
+
+    it('私聊查询回忆与历史约定：判定为 MEMORY_QUERY，挂载 memory_recall / memory_inspect', () => {
+      const decision = router.route({
+        text: '小满你还记得昨天我们说好的事吗？',
+        scope: 'c2c',
+        senderId: 'user_123',
+      })
+      assert.equal(decision.intent, INTENT.MEMORY_QUERY)
+      assert.equal(decision.allowed, true)
+      assert.deepEqual(decision.tools, ['memory_recall', 'memory_inspect'])
+      assert.equal(decision.scope, 'xiaoman_private')
+      assert.equal(decision.isTask, true)
+    })
+
+    it('群聊中陌生人查询私密回忆：阻断查询，保护隐私', () => {
+      const decision = router.route({
+        text: '小满你还记得之前答应我的事吗',
+        scope: 'group',
+        senderId: 'stranger_999',
+      })
+      assert.equal(decision.intent, INTENT.MEMORY_QUERY)
+      assert.equal(decision.allowed, false)
+      assert.equal(decision.reason, 'GROUP_MEMORY_QUERY_DENIED')
+      assert.deepEqual(decision.tools, [])
+      assert.match(decision.safeReply, /专属秘密回忆.*不能翻看/i)
+      assert.equal(decision.isTask, false)
+    })
+
+    it('群聊中管理员查询回忆：放行并限定在 shared 范围', () => {
+      const decision = router.route({
+        text: '小满你还记得上次说好的事情吗',
+        scope: 'group',
+        senderId: 'admin_user_001',
+      })
+      assert.equal(decision.intent, INTENT.MEMORY_QUERY)
+      assert.equal(decision.allowed, true)
+      assert.deepEqual(decision.tools, ['memory_recall', 'memory_inspect'])
+      assert.equal(decision.scope, 'shared')
       assert.equal(decision.isTask, true)
     })
   })

@@ -20,6 +20,7 @@ export const INTENT = Object.freeze({
   VOICE_SING: 'VOICE_SING',       // 拟人发声与点歌
   PC_QUERY: 'PC_QUERY',           // PC 状态感知
   MEMORY_OP: 'MEMORY_OP',         // 显式记忆记录
+  MEMORY_QUERY: 'MEMORY_QUERY',   // 显式回忆与历史约定查询 (只读工具)
   GAME_ACTIVITY: 'GAME_ACTIVITY', // 游戏互动 (成语/猜谜)
   UNKNOWN: 'UNKNOWN',
 })
@@ -30,6 +31,7 @@ const RE_BILI_LINK = /https?:\/\/(?:www\.)?(?:bilibili\.com\/video\/|b23\.tv\/)[
 const RE_SING = /(?:点歌|唱首歌|唱首|哼一段|想听你唱|放首歌)/i
 const RE_PC = /(?:查电脑|电脑开着吗|pc状态|姐姐在电脑上吗|电脑端|看下电脑)/i
 const RE_MEMORY_APPEND = /(?:帮我记|记一下|记住这个|记下来|记录下来)/i
+const RE_MEMORY_QUERY = /(?:还记得|之前|上次|说好|答应|约定|昨天|前天|回忆|曾经)/i
 const RE_GAME = /(?:成语接龙|猜谜语|猜个谜|玩个游戏)/i
 
 // 恶意注入识别特征
@@ -148,7 +150,7 @@ export class CapabilityRouter {
           intent: INTENT.MEMORY_OP,
           allowed: false,
           reason: 'GROUP_MEMORY_WRITE_DENIED',
-          tools: ['memory_search'], // 群聊只读不写
+          tools: ['memory_recall', 'memory_search'], // 群聊只读不写
           safeReply: '群聊消息不会直接记入小满的个人私密日记哦~',
           isTask: false,
         }
@@ -156,7 +158,28 @@ export class CapabilityRouter {
       return {
         intent: INTENT.MEMORY_OP,
         allowed: true,
-        tools: ['memory_append', 'memory_search'],
+        tools: ['memory_remember', 'memory_recall', 'memory_append', 'memory_search'],
+        isTask: true,
+      }
+    }
+
+    // D2. 显式回忆与历史约定查询 (带权限与场景隔离)
+    if (RE_MEMORY_QUERY.test(text)) {
+      if (scope === 'group' && !this.trustedAdmins.has(senderId)) {
+        return {
+          intent: INTENT.MEMORY_QUERY,
+          allowed: false,
+          reason: 'GROUP_MEMORY_QUERY_DENIED',
+          tools: [],
+          safeReply: '这是小满和姐姐的专属秘密回忆哦，在群里不能翻看呢~',
+          isTask: false,
+        }
+      }
+      return {
+        intent: INTENT.MEMORY_QUERY,
+        allowed: true,
+        tools: ['memory_recall', 'memory_inspect'],
+        scope: scope === 'group' ? 'shared' : 'xiaoman_private',
         isTask: true,
       }
     }
