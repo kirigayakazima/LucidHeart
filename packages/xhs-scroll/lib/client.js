@@ -61,10 +61,19 @@ function degraded(fallback, id, reason) {
     message: ok ? (reason === 'invalid_url' ? '链接无效，满宝先读了分享卡片。' : unavailable) : '暂时读不到这篇小红书笔记。' }
 }
 
-export function createXhsClient({ fetcher = fetch, cookie, expiresAt, timeoutMs = 8000, now = Date.now } = {}) {
-  const credentials = cookieHeader(cookie)
+export function createXhsClient({ fetcher = fetch, cookie, getCookie, expiresAt, timeoutMs = 8000, now = Date.now } = {}) {
+  const resolveCredentials = () => {
+    if (typeof getCookie === 'function') {
+      const dynamic = getCookie()
+      if (dynamic) return cookieHeader(dynamic)
+    }
+    return cookieHeader(cookie)
+  }
   const expiry = Number.isSafeInteger(expiresAt) && expiresAt > 0 ? expiresAt : 0
-  const usable = () => credentials && (!expiry || expiry > now())
+  const usable = () => {
+    const creds = resolveCredentials()
+    return Boolean(creds && (!expiry || expiry > now()))
+  }
   const timed = signal => AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])])
   const request = async (url, signal, headers = {}) => fetcher(url, { redirect: 'manual', signal, headers: { ...BROWSER_HEADERS, ...headers } })
   const failure = signal => signal?.throwIfAborted()
@@ -72,8 +81,9 @@ export function createXhsClient({ fetcher = fetch, cookie, expiresAt, timeoutMs 
   return {
     async status(signal) {
       failure(signal)
+      const credentials = resolveCredentials()
       const out = { loggedIn: false, user: '', expiresAt: expiry }
-      if (!usable()) return { ...out, reason: credentials ? 'expired' : 'missing_cookie' }
+      if (!credentials || (expiry && expiry <= now())) return { ...out, reason: credentials ? 'expired' : 'missing_cookie' }
       try {
         const response = await request(profileUrl, timed(signal), { Accept: 'application/json', Cookie: credentials })
         if (!response.ok) {
@@ -91,7 +101,8 @@ export function createXhsClient({ fetcher = fetch, cookie, expiresAt, timeoutMs 
       failure(signal)
       let target = noteUrl(value)
       if (!target) return degraded(fallbackCard, undefined, 'invalid_url')
-      if (!usable()) return degraded(fallbackCard, target.id, 'not_logged_in')
+      const credentials = resolveCredentials()
+      if (!credentials || (expiry && expiry <= now())) return degraded(fallbackCard, target.id, 'not_logged_in')
       const deadline = timed(signal)
       try {
         for (let hop = 0; hop < 5; hop++) {

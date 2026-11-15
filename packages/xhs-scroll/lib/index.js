@@ -48,19 +48,30 @@ function sharedByUser(url, exec) {
 function resolveCookie(config = {}) {
   if (config.cookie && typeof config.cookie === 'string') return config.cookie
   if (process.env.DSH_XHS_COOKIE) return process.env.DSH_XHS_COOKIE
-  const filePath = config.cookieFile || process.env.DSH_XHS_COOKIE_FILE || '/root/.dsh/xhs/cookie.txt'
-  try {
-    if (fs.existsSync(filePath)) {
-      return fs.readFileSync(filePath, 'utf8').trim()
-    }
-  } catch {}
+  const candidates = [
+    config.cookieFile,
+    process.env.DSH_XHS_COOKIE_FILE,
+    '/root/.dsh/xhs/cookie.txt',
+    '/sdcard/dshproject/xhs_cookie.txt',
+    '/sdcard/dshproject/cookie.txt',
+  ].filter(Boolean)
+  for (const filePath of candidates) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf8').trim()
+        if (content) return content
+      }
+    } catch {}
+  }
   return undefined
 }
 
 export function apply(ctx, config = {}, { client, engine } = {}) {
-  const cookie = resolveCookie(config)
   const expiresAt = Number(config.expiresAt ?? process.env.DSH_XHS_COOKIE_EXPIRES_AT) || 0
-  const xhs = client ?? createXhsClient({ cookie, expiresAt })
+  const xhs = client ?? createXhsClient({
+    getCookie: () => resolveCookie(config),
+    expiresAt,
+  })
   const disposers = []
   function tool({ properties, required = [], ...spec }) {
     disposers.push(ctx.tools.register({ output, ...spec,
