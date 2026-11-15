@@ -28,7 +28,7 @@
       "id": "@dsh/qq-plus",
       "name": "QQ Plus",
       "type": "package",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "layer": "Actuator",
       "source": "packages/qq-plus",
       "description": "Dual-persona (Xiaoman/Axing) adaptive wake words, emotional typing cadence, and multi-bubble split."

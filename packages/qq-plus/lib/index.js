@@ -12,6 +12,7 @@ import {
 import { createWakeGate, wakeGate } from './wake-gate.js'
 import { optionalService } from './services.js'
 import { createDeliveryQueue, targetKey, waitForDelay, cancelled } from './delivery.js'
+import { CapabilityRouter, INTENT } from './capability_router.js'
 
 export const name = 'dsh-qq-plus'
 export const inject = ['qqbotSender']
@@ -24,6 +25,8 @@ export {
   wakeGate,
   XIAOMAN_PROFILE,
   AXING_PROFILE,
+  CapabilityRouter,
+  INTENT,
 }
 
 /**
