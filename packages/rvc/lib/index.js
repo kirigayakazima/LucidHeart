@@ -38,6 +38,12 @@ export const inject = ['tools']
 
 export const Config = z
   ? z.object({
+      provider: z.string().default('breezeblue').description('发声生成引擎：breezeblue (云端在线真实少女音) 或 rvc-onnx (本地 ONNX / PC GPU)'),
+      breezeApiKey: z.string().default('brz_XfxyZyDQK9a6Ex5-5l_9W9aJ9cMq9H8j').description('BreezeBlue API 密钥'),
+      breezeVoiceId: z.string().default('voc_myarmcyqm2zv').description('BreezeBlue 声音 ID (小满音色)'),
+      breezeEndpoint: z.string().default('https://api.breeze.blue/v1/text-to-speech').description('BreezeBlue TTS 服务端点'),
+      saveDataset: z.boolean().default(true).description('是否自动将在线合成的人声音频与标注保存至手机 /sdcard/rvc/dataset/'),
+      datasetDir: z.string().default('/sdcard/rvc/dataset').description('训练语料自动收集目录'),
       modelsDir: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1').description('RVC 移动端 ONNX 权重与检索索引所在目录'),
       voiceProfile: z.string().default('/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json').description('新音色配置文件路径；默认指向 feiyu-rvc-v1'),
       profilePython: z.string().default('').description('新音色运行环境的 Python 路径'),
@@ -113,9 +119,23 @@ export function apply(ctx, config = {}) {
       const activeSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal
       const { heart, pcBridge } = getVoiceServices(ctx)
       const acoustic = computeAcousticProfile(heart?.getSnapshot?.()?.mood || latestMood, {})
-      const result = await runSpeak({ text, acoustic, modelsDir: config.modelsDir, offloadBridge: pcBridge,
-        voiceProfile: config.voiceProfile, profilePython: config.profilePython, signal: activeSignal,
-        artifacts: voiceArtifacts })
+      const result = await runSpeak({
+        text,
+        acoustic,
+        provider: config.provider || 'breezeblue',
+        breezeApiKey: config.breezeApiKey,
+        breezeVoiceId: config.breezeVoiceId,
+        breezeEndpoint: config.breezeEndpoint,
+        saveDataset: config.saveDataset,
+        datasetDir: config.datasetDir,
+        mood: heart?.getSnapshot?.()?.mood || latestMood,
+        modelsDir: config.modelsDir,
+        offloadBridge: pcBridge,
+        voiceProfile: config.voiceProfile,
+        profilePython: config.profilePython,
+        signal: activeSignal,
+        artifacts: voiceArtifacts,
+      })
       try {
         activeSignal.throwIfAborted()
         if (!result.artifactId || (await stat(result.audioPath)).size > 1024 * 1024) throw new Error('Invalid watch audio artifact')
@@ -149,6 +169,14 @@ export function apply(ctx, config = {}) {
           type: 'string',
           description: '小满要说的话（文本内容）',
           required: true,
+        },
+        instructions: {
+          type: 'string',
+          description: '显式发音演绎要求（可选，如 "轻声耳语"、"带一点笑意" 等，仅 breezeblue 生效；默认根据文本与心境自动推导）',
+        },
+        provider: {
+          type: 'string',
+          description: '显式指定发声引擎（可选："breezeblue" 云端真实少女音，或 "rvc-onnx" 手机离线变声；默认使用全局配置）',
         },
         pitch: {
           type: 'number',
@@ -210,6 +238,14 @@ export function apply(ctx, config = {}) {
           res = await runSpeak({
             text,
             acoustic,
+            instructions: args.instructions,
+            provider: args.provider || config.provider || 'breezeblue',
+            breezeApiKey: config.breezeApiKey,
+            breezeVoiceId: config.breezeVoiceId,
+            breezeEndpoint: config.breezeEndpoint,
+            saveDataset: config.saveDataset,
+            datasetDir: config.datasetDir,
+            mood: snapshot?.mood || latestMood,
             modelsDir: config.modelsDir,
             offloadBridge,
             mock,
@@ -280,8 +316,10 @@ export function apply(ctx, config = {}) {
                 emotion: acoustic.emotion,
                 mode: res.mode,
                 profileId: res.profileId,
+                voiceId: res.voiceId,
+                instructions: res.acoustic?.instructions,
               },
-              summary: `通过 RVC 合成发声 (${res.mode}, 音高 ${acoustic.pitch})`,
+              summary: `通过 ${res.mode || 'RVC'} 合成发声 (${res.mode || 'RVC'}, ${res.voiceId ? '声音 ' + res.voiceId : '音高 ' + acoustic.pitch})`,
               timestamp: new Date().toISOString(),
             })
             heartObservation = 'recorded'
@@ -298,8 +336,10 @@ export function apply(ctx, config = {}) {
           audio_file: res.audioPath,
           duration_ms: res.durationMs,
           mode: res.mode,
-          profileId: res.profileId,
-          artifactId: res.artifactId,
+          ...(res.profileId ? { profileId: res.profileId } : {}),
+          ...(res.voiceId ? { voiceId: res.voiceId } : {}),
+          ...(res.artifactId ? { artifactId: res.artifactId } : {}),
+          ...(res.datasetPath ? { dataset_path: res.datasetPath } : {}),
           offload: res.offload || { attempted: false, status: 'not_applicable' },
           sent_to_qq: qqSent,
           qq_delivery: qqDelivery,
@@ -310,6 +350,7 @@ export function apply(ctx, config = {}) {
             pitch_name: acoustic.pitchName,
             brightness_db: acoustic.brightness,
             emotion: acoustic.emotion,
+            ...(res.acoustic?.instructions ? { instructions: res.acoustic.instructions } : {}),
           },
         }
       }),

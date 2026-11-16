@@ -1,7 +1,7 @@
 {
   "name": "@dsh/rvc",
-  "version": "0.2.14",
-  "description": "RVC 拟人语音：Heart 情绪适配、QQ 语音条、FullAwake PC ONNX 合成回传与手机本地回退。",
+  "version": "0.2.15",
+  "description": "RVC 拟人语音：Heart 情绪适配、QQ 语音条、BreezeBlue 云端拟人、FullAwake PC ONNX 合成回传与手机本地回退。",
   "type": "module",
   "main": "lib/index.js",
   "dsh": {

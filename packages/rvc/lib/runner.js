@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { runProfileSpeak, readVoiceProfile, renderDryVoice } from './voice-profile.js'
 import { voiceContract, saveOffloadAudio, offloadDryVoice, requestPcVoice } from './offload.js'
 import { DEFAULT_TTS_VOICE } from './acoustic.js'
+import { synthesizeBreezeVoice, resolveVoiceInstructions, archiveToDataset, DEFAULT_BREEZE_VOICE_ID, DEFAULT_BREEZE_ENDPOINT } from './breezeblue.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -177,22 +178,81 @@ export async function runSpeak(params) {
   const { artifacts } = params
   if (!artifacts || params.mock || params.outWav) return synthesize(params)
   const dir = artifacts.begin()
-  const output = path.join(dir, 'voice.wav')
+  const isBreeze = (params.provider === 'breezeblue' || (Boolean(params.breezeApiKey) && params.provider !== 'rvc-onnx')) && !params.mock
+  const output = path.join(dir, isBreeze ? 'voice.mp3' : 'voice.wav')
   let result
   try {
     const rendered = await synthesize({ ...params, outWav: output, artifactDir: dir })
-    if (path.resolve(rendered.audioPath) !== output) return rendered
-    const artifact = artifacts.describe(output, 'voice')
+    const actualPath = rendered?.audioPath || output
+    if (!artifacts.contains(actualPath)) return rendered
+    const artifact = artifacts.describe(actualPath, 'voice')
     result = rendered
     return { ...result, artifactId: artifact.artifactId, releaseArtifact: () => artifacts.finish(dir) }
   } finally {
-    artifacts.cleanJob(dir, output, Boolean(result))
+    artifacts.cleanJob(dir, result?.audioPath || output, Boolean(result))
     if (!result) artifacts.finish(dir)
   }
 }
 
 async function synthesize(params) {
   const { text, acoustic, outWav, modelsDir, offloadBridge, mock } = params
+
+  // 0. BreezeBlue 在线真实拟人少女音合成引擎
+  const isBreeze = (params.provider === 'breezeblue' || (Boolean(params.breezeApiKey) && params.provider !== 'rvc-onnx'))
+  if (isBreeze && !mock) {
+    const apiKey = params.breezeApiKey || 'brz_XfxyZyDQK9a6Ex5-5l_9W9aJ9cMq9H8j'
+    const voiceId = params.breezeVoiceId || DEFAULT_BREEZE_VOICE_ID
+    const endpoint = params.breezeEndpoint || DEFAULT_BREEZE_ENDPOINT
+    const instructions = params.instructions || resolveVoiceInstructions(text, acoustic, params.mood)
+    const started = Date.now()
+    try {
+      console.log(`[@dsh/rvc] 采用 BreezeBlue 在线真实少女音 (ID: ${voiceId})...`)
+      const audioBuffer = await synthesizeBreezeVoice({
+        text,
+        instructions,
+        voiceId,
+        apiKey,
+        outputFormat: 'mp3',
+        guidanceScale: 2,
+        signal: params.signal,
+        endpoint,
+      })
+      params.signal?.throwIfAborted()
+
+      const finalOut = outWav || path.join(os.tmpdir(), `breeze_voice_${Date.now()}.mp3`)
+      fs.mkdirSync(path.dirname(finalOut), { recursive: true })
+      fs.writeFileSync(finalOut, audioBuffer)
+
+      let datasetPath = null
+      if (params.saveDataset !== false) {
+        datasetPath = archiveToDataset({
+          datasetDir: params.datasetDir || '/sdcard/rvc/dataset',
+          text,
+          instructions,
+          audioBuffer,
+          voiceId,
+          ext: '.mp3',
+        })
+      }
+
+      return {
+        ok: true,
+        audioPath: finalOut,
+        durationMs: Date.now() - started,
+        acoustic: { ...acoustic, instructions },
+        mode: 'breezeblue_online',
+        voiceId,
+        datasetPath,
+        logs: `BreezeBlue TTS synthesized (${audioBuffer.length} bytes, instructions: ${instructions})`,
+      }
+    } catch (err) {
+      params.signal?.throwIfAborted()
+      console.warn('[@dsh/rvc] BreezeBlue 在线合成失败，自动无缝降级至本地 RVC 引擎:', err.message)
+      if (outWav && outWav.endsWith('.mp3')) {
+        params.outWav = outWav.replace(/\.mp3$/, '.wav')
+      }
+    }
+  }
 
   let profilePath = params.voiceProfile
   if (!profilePath && !mock) {

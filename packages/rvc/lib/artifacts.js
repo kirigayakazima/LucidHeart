@@ -6,7 +6,7 @@ const day = 86_400_000
 const jobName = /^(?:sing_[\w-]+|voice_[a-f0-9-]+)$/
 const legacyWork = /^\.work_sayvoice_[\w-]+$/
 const songName = /^song(?:_[\w-]+)?\.(?:mp3|wav)$/
-const voiceName = /^(?:voice(?:_profile)?|pc_voice|axing_voice|sayvoice)_[\w-]+\.wav$/
+const voiceName = /^(?:voice(?:_profile)?|pc_voice|axing_voice|sayvoice|breeze_voice)_[\w-]+\.(?:wav|mp3)$/
 const sourceAudio = /^(?:input|dry|input_dry|vocals|no_vocals|accompaniment|voc_new|mix)\.(?:wav|mp3|m4a|flac)$/
 const scratchFile = /^(?:chunk_\d+\.wav|(?:dry|voice|output)\.(?:dry\.mp3|result\.json)|manifest\.json|sing\.log|song_[\w-]+\.mp3\.part)$/
 
@@ -72,7 +72,7 @@ export class Artifacts {
         let type = 'other'
         if (depth <= 1 && songName.test(name)) type = 'song'
         else if ((depth === 0 && voiceName.test(name)) ||
-          (depth === 1 && name === 'voice.wav' && path.basename(dir).startsWith('voice_'))) type = 'voice'
+          (depth === 1 && (name === 'voice.wav' || name === 'voice.mp3') && path.basename(dir).startsWith('voice_'))) type = 'voice'
         else if ((depth > 0 || /^(?:dry\.wav|chunk_\d+\.wav)$/.test(name)) &&
           (sourceAudio.test(name) || scratchFile.test(name))) type = 'temporary'
         entries.push(this.describe(file, type, info))
