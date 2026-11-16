@@ -22,21 +22,22 @@ def attach_to_default_desktop() -> None:
         pass
 
 
-def is_desktop_locked() -> bool:
+def is_desktop_locked(*, strict: bool = False) -> bool:
     """Check if the current Windows session is locked."""
     try:
         user32 = ctypes.windll.user32
+        user32.OpenInputDesktop.restype = wintypes.HANDLE
+        user32.CloseDesktop.argtypes = (wintypes.HANDLE,)
         h_desk = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
         if not h_desk:
-            err = ctypes.GetLastError()
-            if err == 5:  # ERROR_ACCESS_DENIED
+            if strict or ctypes.windll.kernel32.GetLastError() == 5:  # ERROR_ACCESS_DENIED
                 return True
         else:
             user32.CloseDesktop(h_desk)
             return False
     except Exception:
         pass
-    return False
+    return strict
 
 
 def get_screen_resolution() -> tuple[int, int]:

@@ -20,6 +20,22 @@ Python环境和依赖统一本项目uv .venv与清华源；声库/语音运行�
 
 测试用tests/test_voice.py、tests/test_mcp_gateway.py等，在隔离环境运行；不得把测试客户端的HTTP200当生产QQ验收。新增provider保留身份/路径限制、限并发和真实回执。
 
+## 前台游戏点播
+
+`pc_snapshot({"target":"auto_game"})` 只拍当前前台游戏的客户区。`FULLAWAKE_GAME_PROCESSES` 是逗号分隔的可执行文件名列表，默认包含 `League of Legends.exe`、`VALORANT-Win64-Shipping.exe` 和 `Hades.exe`，启动器需与实际游戏进程区分。网关通过 `/status` 的 `snapshot_targets` 声明支持。窗口需完整显示在一台屏幕上，适用于普通窗口和无边框模式。遇到锁屏、前台切换、遮挡或黑帧时返回原因。
+
+手机 FullAwake 的 `gameWatchQqSessions` 填本人 QQ 私聊 session ID。PC 呼叫复用 `voiceEpochProtocol: true` 和已配置的 `duplexTarget`，需要已连接的桌宠播放器和 PC 路径中的 FFmpeg。会话使用支持图像输入的 DSH 模型，RVC 使用现有 BreezeBlue 配置。
+
+每轮用户明确邀请看当前游戏时，模型先调用 `pc_snapshot({"target":"auto_game"})`，收到一张 JPEG 图像块后只依据可见内容理解战况。再调用一次 `pc_game_commentary({"text":"…"})`，用 40 字以内的口语回应。QQ 回原私聊语音条，PC 呼叫回原桌宠播放器。语音未确认时可回文字。只有当前帧可见，问到截图之前发生的事时说明这一点。
+
+| 真机点播用例 | 布置与提问 | 验收结果 |
+| --- | --- | --- |
+| 英雄联盟 | 窗口模式，打开峡谷训练局并靠近龙坑。在 QQ 私聊说“小满看我这一把” | 一张客户区图像。点评应对应画面中可见的角色、地形或 HUD，收到一条 QQ 语音 |
+| VALORANT | 第二屏无边框模式，进入自定义局或练习场。从 PC 问“看我打到哪了” | 只取第二屏游戏客户区。点评匹配当前场地和可见 HUD，桌宠只播放一次 |
+| Hades | 无边框模式，停在可辨识的房间或结算界面。在 QQ 私聊说“小满看我游戏” | 根据可见内容区分房间与结算，收到一条 QQ 语音。切到浏览器后复测应只收到无法捕获的文字 |
+
+自动化用例以模拟窗口和画面覆盖以上三种场景，并用测试语音端点验证投递。运行 `tests/test_game_snapshot.py`、`tests/test_voice_bridge.py` 和手机 FullAwake 的 `test/game_watch.test.js`。
+
 ## QQ 语音条转录
 
 `POST /v1/voice/asr` 接收 Silk、WAV、AMR 或 MP3 二进制，返回文字、时长与语言。回环调用可直接发送音频。无法识别时返回 `AUDIO_UNCLEAR`。

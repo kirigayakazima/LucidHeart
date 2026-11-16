@@ -260,4 +260,16 @@ export class FullAwakeBridgeClient extends EventEmitter {
     if (!sent) this.#finish(task, 'cancelled', 'bridge_disconnected')
     return sent
   }
+
+  playAudio({ text: words, audio }, handle) {
+    const task = this.#task
+    if (!task || task.handle !== handle || task.phase !== 'prepared' || !text(words, 40) ||
+        !Buffer.isBuffer(audio) || !audio.length || audio.length > 1024 * 1024) return false
+    task.phase = 'audio'
+    const sent = this.#send(task.connection, 'audio.play', {
+      ...this.#identity(task), text: words, audioBase64: audio.toString('base64'), deadlineMs: 15_000,
+    })
+    if (!sent) this.#finish(task, 'cancelled', 'bridge_disconnected')
+    return sent
+  }
 }

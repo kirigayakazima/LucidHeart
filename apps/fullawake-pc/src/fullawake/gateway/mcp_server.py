@@ -169,7 +169,8 @@ class FullAwakeMCPGateway:
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
             """Authenticated PC status summary."""
-            return {**get_session_status(), 'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
+            return {**get_session_status(), 'snapshot_targets': ['auto_game'],
+                    'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
 
         @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])
         async def voice_asr_endpoint(request: Request):
@@ -642,6 +643,8 @@ class FullAwakeMCPGateway:
                                     "success": True,
                                     "original_size": result_data.get("original_size"),
                                     "snapshot_size": result_data.get("snapshot_size"),
+                                    **({"target": "auto_game", "game_process": result_data["game_process"]}
+                                       if result_data.get("target") == "auto_game" else {}),
                                 },
                                 ensure_ascii=False,
                             ),

@@ -75,6 +75,11 @@ class FullAwakeConfig(BaseModel):
     )
 
     # Screenshot constraints (prevent prompt token explosion)
+    game_processes: list[str] = Field(default_factory=lambda: [
+        name.strip().casefold() for name in os.getenv(
+            'FULLAWAKE_GAME_PROCESSES', 'League of Legends.exe,VALORANT-Win64-Shipping.exe,Hades.exe',
+        ).split(',') if name.strip()
+    ])
     max_snapshot_width: int = Field(default=1280, description="Max snapshot width in pixels")
     max_snapshot_height: int = Field(default=720, description="Max snapshot height in pixels")
     snapshot_quality: int = Field(default=75, description="JPEG compression quality (1-100)")

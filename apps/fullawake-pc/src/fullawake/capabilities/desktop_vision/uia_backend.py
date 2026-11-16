@@ -35,17 +35,22 @@ def attach_to_default_desktop() -> None:
 def get_process_name(pid: int) -> str:
     """Retrieve process executable name by PID using Windows kernel32."""
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                    ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h_proc:
         return ""
     try:
         buf = ctypes.create_unicode_buffer(1024)
         size = wintypes.DWORD(1024)
-        if ctypes.windll.kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
+        if kernel32.QueryFullProcessImageNameW(h_proc, 0, buf, ctypes.byref(size)):
             return os.path.basename(buf.value)
         return ""
     finally:
-        ctypes.windll.kernel32.CloseHandle(h_proc)
+        kernel32.CloseHandle(h_proc)
 
 
 def is_window_cloaked(hwnd: int) -> bool:

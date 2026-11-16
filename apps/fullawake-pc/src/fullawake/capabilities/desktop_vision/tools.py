@@ -58,7 +58,9 @@ class DesktopVisionCapability(BaseCapability):
                         "hwnd": {
                             "type": "integer",
                             "description": "Optional window handle ID (from pc_list_windows). If omitted, captures primary desktop screen.",
-                        }
+                        },
+                        "target": {"type": "string", "enum": ["auto_game"],
+                                   "description": "Capture the foreground allowlisted game client only. Mutually exclusive with hwnd."},
                     },
                 },
                 handler=self.handle_snapshot,
@@ -87,6 +89,10 @@ class DesktopVisionCapability(BaseCapability):
 
     async def handle_snapshot(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         hwnd = arguments.get("hwnd")
+        if "target" in arguments:
+            if arguments['target'] != 'auto_game' or hwnd is not None:
+                return {'error': 'target must be auto_game and cannot be combined with hwnd.', 'code': 'invalid_target'}
+            return capture_screenshot(auto_game=True)
         if hwnd is not None:
             hwnd = int(hwnd)
         return capture_screenshot(hwnd=hwnd)

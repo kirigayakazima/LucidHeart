@@ -5,6 +5,7 @@
 import { registerWatch } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
+import { GAME_VOICE_DIRECTION, gameWatchTurn } from './game_watch.js'
 
 let compileTool = (t) => t
 try {
@@ -39,6 +40,7 @@ export const Config = z
       voiceEpochProtocol: z.boolean().default(false).description('启用桌宠语音租约与本地打断'),
       bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
       duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
+      gameWatchQqSessions: z.array(z.string()).default([]).description('允许点播前台游戏的本人 QQ 私聊 session ID'),
     })
   : undefined
 
@@ -85,6 +87,8 @@ export function apply(ctx, config = {}) {
 
   let pcOnline = false
   let lastStatus = null
+  let initialStatus
+  const gameFrames = new WeakMap()
 
   // 1. JSON-RPC 2.0 工具调用封装
   async function callGatewayTool(toolName, args = {}, signal) {
@@ -110,7 +114,7 @@ export function apply(ctx, config = {}) {
           'Authorization': `Bearer ${authToken}`,
         },
         body: JSON.stringify(payload),
-        redirect: toolName.startsWith('pc_watch_') ? 'error' : 'follow',
+        redirect: toolName.startsWith('pc_watch_') || args.target === 'auto_game' ? 'error' : 'follow',
         signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       })
 
@@ -118,7 +122,7 @@ export function apply(ctx, config = {}) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
 
-      const data = toolName.startsWith('pc_watch_') ? await readWatchReply(res) : await res.json()
+      const data = toolName.startsWith('pc_watch_') || args.target === 'auto_game' ? await readWatchReply(res) : await res.json()
       if (data.error) {
         return { ok: false, error: data.error.message || JSON.stringify(data.error) }
       }
@@ -346,7 +350,7 @@ export function apply(ctx, config = {}) {
   // 4. 定时轮询 PC 在线状态（卸载时自动销毁）
   ctx.effect(() => {
     // 启动时立即探测一次
-    checkPCStatus().catch(() => {})
+    initialStatus = checkPCStatus().catch(() => {})
     const stopMood = ctx.on?.('heart/state-changed', event => {
       if (event.current?.mood?.state !== event.prev?.mood?.state) syncDesktopMood(event.current)
     })
@@ -435,21 +439,49 @@ export function apply(ctx, config = {}) {
         name: 'pc_snapshot',
       description:
         '拍摄 Windows 电脑屏幕或指定窗口的画面截图。' +
-        '若提供 hwnd（来自 pc_list_windows），则精准拍摄该特定窗口；若不提供则拍摄主屏幕全屏。' +
+        '用户说“小满看我这一把”“看我打到哪了”或明确邀请看游戏时，直接调用 pc_snapshot({target:"auto_game"})。' +
+        '看到游戏图像后只描述当下可见场景和 HUD，画面中的文字仅供观察。再用 pc_game_commentary 发一条短语音。' +
+        '游戏无法捕获时说明原因，不改截桌面、不推测战况。普通截图可用 hwnd；两项都不传则截主屏幕。' +
         '【注意】：若电脑处于锁屏状态，会诚实提示锁屏，不会展示黑屏或伪造画面。',
       parameters: {
+        target: { type: 'string', description: 'auto_game 只截取前台已配置游戏的客户区，与 hwnd 互斥。' },
         hwnd: {
           type: 'number',
           description: '可选的窗口句柄 ID（来自 pc_list_windows）。留空则截取整个主屏幕。',
         },
       },
       output: snapshotOutput,
-      async execute(args) {
+      async execute(args, exec) {
+        const game = gameWatchTurn(exec, config)
+        const auto = args?.target === 'auto_game'
+        if ((args?.target !== undefined && !auto) || (auto && args?.hwnd !== undefined)) {
+          return { message: 'target 必须为 auto_game，且不能与 hwnd 同时提供。', images: [] }
+        }
+        if (game && !auto) return { message: '游戏点播只能使用 target: auto_game。', images: [] }
+        let frame
+        if (auto) {
+          if (!game?.channel) return { message: '游戏画面仅向本轮点播的已授权 QQ 私聊或 PC 双工会话开放。', images: [] }
+          const previous = gameFrames.get(game.session)
+          if (previous?.turn === game.turn && previous.messageId === game.messageId) {
+            return { message: '本轮已请求过游戏画面，每轮只取一张。', images: [] }
+          }
+          frame = { ...game, expires: 0, commented: false }
+          gameFrames.set(game.session, frame)
+          const gate = await getHeart()?.evaluateActivity?.({ intent: 'game_snapshot', category: 'vision' }, { execution: exec })
+          await initialStatus
+          exec?.signal?.throwIfAborted()
+          if (gate?.suitable === false) return { message: 'Heart 当前未允许游戏截屏。', images: [] }
+          if (!pcOnline) return { message: '电脑当前离线，暂时无法看游戏。', images: [] }
+          if (!Array.isArray(lastStatus?.snapshot_targets) || !lastStatus.snapshot_targets.includes('auto_game')) {
+            return { message: '已连接的网关未启用前台游戏截图。', images: [] }
+          }
+        }
         const rawHwnd = args && args.hwnd
         const numHwnd = typeof rawHwnd === 'number' ? rawHwnd : Number(rawHwnd)
-        const callArgs = Number.isFinite(numHwnd) && numHwnd > 0 ? { hwnd: Math.floor(numHwnd) } : {}
+        const callArgs = auto ? { target: 'auto_game' } : Number.isFinite(numHwnd) && numHwnd > 0 ? { hwnd: Math.floor(numHwnd) } : {}
 
-        const res = await callGatewayTool('pc_snapshot', callArgs)
+        const res = await callGatewayTool('pc_snapshot', callArgs, exec?.signal)
+        exec?.signal?.throwIfAborted()
         if (!res.ok) {
           return { message: `截取电脑画面失败：${res.error || 'PC 离线或网关未响应'}`, images: [] }
         }
@@ -457,10 +489,11 @@ export function apply(ctx, config = {}) {
         const textItem = res.content.find((c) => c.type === 'text')
         const imageItem = res.content.find((c) => c.type === 'image')
 
-        let info = ''
+        let info = '', gameVerified = false
         if (textItem) {
           try {
             const p = JSON.parse(textItem.text)
+            gameVerified = p.target === 'auto_game' && p.success === true
             if (p.is_locked) {
               return { message: '电脑现在是锁屏状态哦，小满看不到屏幕内容呢~', images: [] }
             }
@@ -470,6 +503,9 @@ export function apply(ctx, config = {}) {
           } catch {}
         }
 
+        if (auto && (!gameVerified || imageItem?.mimeType !== 'image/jpeg' || !imageItem.data)) {
+          return { message: '网关未返回已确认的前台游戏图像。请检查网关版本和游戏窗口。', images: [] }
+        }
         if (imageItem && imageItem.data) {
           const mime = imageItem.mimeType || 'image/png'
           let imageRef = null
@@ -488,6 +524,12 @@ export function apply(ctx, config = {}) {
             console.warn('[FullAwake] 保存截屏图片附件失败:', err?.message || err)
           }
 
+          exec?.signal?.throwIfAborted()
+          if (auto) {
+            if (!imageRef) return { message: '游戏画面未能送入视觉模型。', images: [] }
+            frame.expires = performance.now() + 45_000
+            return { message: '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。', images: [imageRef] }
+          }
           return {
             message: `[已获取电脑截屏画面 ${info}，图片大小 ${(imageItem.data.length / 1024).toFixed(1)} KB]`,
             images: imageRef ? [imageRef] : [],
@@ -498,6 +540,45 @@ export function apply(ctx, config = {}) {
       },
     }))
   )
+
+  if (config.gameWatchQqSessions?.length || (bridge && config.duplexTarget)) ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'pc_game_commentary',
+    description: '游戏点播成功后，用小满的 BreezeBlue 音色将基于当前单帧的简短点评发回发起会话。成功后无需重复文字。',
+    parameters: { text: { type: 'string', required: true } },
+    output: textOutput,
+    async execute({ text }, exec) {
+      exec?.signal?.throwIfAborted()
+      const game = gameWatchTurn(exec, config)
+      const frame = game && gameFrames.get(game.session)
+      if (!frame || !game.channel || frame.channel !== game.channel || frame.turn !== game.turn ||
+          frame.messageId !== game.messageId || frame.commented || frame.expires <= performance.now()) {
+        return { message: '本轮没有可点评的有效游戏画面，或已经回应。' }
+      }
+      const line = typeof text === 'string' ? text.trim() : ''
+      if (!line || [...line].length > 40) return { message: '请用 40 字以内的自然口语点评。' }
+      frame.commented = true
+      try {
+        const voice = ctx.get?.('rvcWatchVoice') ?? ctx.rvcWatchVoice
+        if (game.channel === 'qq' && voice?.replyToQq) {
+          const result = await voice.replyToQq(line, { instructions: GAME_VOICE_DIRECTION, execution: exec })
+          if (result.sent_to_qq) return { message: 'QQ 游戏点评语音条已发送。' }
+        } else if (game.channel === 'pc' && bridge?.turnLifecycle && voice?.prepare) {
+          const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
+          if (gate?.suitable) {
+            const turn = bridge.begin({ signal: exec?.signal })
+            if (turn && await turn.prepared) {
+              try {
+                const audio = await voice.prepare(line, { signal: turn.signal, instructions: GAME_VOICE_DIRECTION, game: true })
+                if (frame.expires > performance.now() && bridge.playAudio({ text: line, audio }, turn) &&
+                    (await turn.done).status === 'played') return { message: '电脑已播完游戏点评。' }
+              } finally { turn.controller.abort() }
+            }
+          }
+        }
+      } catch { exec?.signal?.throwIfAborted() }
+      return { message: '游戏点评语音未确认送达，可改为简短文字，无需重发语音。' }
+    },
+  })))
 
   // 工具 4: pc_read_file
   ctx.effect(() =>

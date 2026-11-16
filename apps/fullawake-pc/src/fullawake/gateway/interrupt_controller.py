@@ -1,10 +1,12 @@
 """The PC side of lucid.voice/1. All lease state lives on the gateway event loop."""
 
 import asyncio
+import base64
 from contextlib import aclosing
 from dataclasses import dataclass, field
 import hmac
 import inspect
+from io import BytesIO
 import json
 import logging
 from pathlib import Path
@@ -18,7 +20,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from fullawake import __version__
-from fullawake.capabilities.desktop_vision.watch import native_loopback, wav_duration
+from fullawake.capabilities.desktop_vision.watch import MAX_WAV_BYTES, native_loopback, wav_duration
 from fullawake.capabilities.voice import ASSETS, DEFAULTS
 from fullawake.capabilities.voice_vad import VoiceVadListener
 from fullawake.core.config import config
@@ -31,6 +33,7 @@ INITIAL_EPOCH = 100
 REVOKED_TTL = 60
 RENDERER_ACK_TIMEOUT = 0.2
 MAX_EPOCH = 2**53 - 1
+MAX_AUDIO_BASE64 = 4 * ((MAX_WAV_BYTES + 2) // 3)
 
 
 class StrictFrame(BaseModel):
@@ -39,7 +42,7 @@ class StrictFrame(BaseModel):
 
 class Frame(StrictFrame):
     protocol: Literal['lucid.voice/1']
-    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.cancel', 'audio.interrupt_ack', 'pet.text']
+    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text']
     sessionId: str = Field(min_length=1, max_length=140)
     connectionId: str = Field(min_length=1, max_length=80)
     commandSeq: int = Field(ge=1, le=MAX_EPOCH)
@@ -85,6 +88,44 @@ class Speak(Utterance):
 class InterruptAck(StrictFrame):
     abortedEpoch: int = Field(ge=INITIAL_EPOCH, le=MAX_EPOCH)
     currentEpoch: int = Field(gt=INITIAL_EPOCH, le=MAX_EPOCH)
+
+
+class PlayAudio(Utterance):
+    text: str = Field(min_length=1, max_length=40)
+    audioBase64: str = Field(min_length=1, max_length=MAX_AUDIO_BASE64)
+    deadlineMs: int = Field(gt=0, le=15_000)
+
+
+async def game_audio_wav(encoded):
+    """Accept bounded RVC WAV or BreezeBlue MP3, then use the existing WAV renderer."""
+    audio = base64.b64decode(encoded, validate=True)
+    if len(audio) > MAX_WAV_BYTES:
+        raise ValueError('Audio too large')
+    if audio.startswith(b'RIFF'):
+        return encoded
+    if not (audio.startswith(b'ID3') or (len(audio) >= 2 and audio[0] == 0xff and audio[1] & 0xe0 == 0xe0)):
+        raise ValueError('Unsupported audio format')
+    process = await asyncio.create_subprocess_exec(
+        'ffmpeg', '-v', 'error', '-protocol_whitelist', 'pipe', '-f', 'mp3', '-i', 'pipe:0',
+        '-vn', '-sn', '-dn', '-t', '10.1', '-ac', '1', '-ar', '24000', '-f', 's16le', 'pipe:1',
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        pcm, _ = await asyncio.wait_for(process.communicate(audio), 4)
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.communicate()
+    if process.returncode or not pcm or len(pcm) > 480_000 or len(pcm) % 2:
+        raise ValueError('Invalid game audio')
+    output = BytesIO()
+    with wave.open(output, 'wb') as wav:
+        wav.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+        wav.writeframes(pcm)
+    return base64.b64encode(output.getvalue()).decode('ascii')
 
 
 @dataclass(eq=False)
@@ -222,7 +263,7 @@ class InterruptController:
 
     @staticmethod
     def _outcome(lease):
-        expected = 'played' if isinstance(lease.command, Speak) else 'text_delivered'
+        expected = 'played' if isinstance(lease.command, (Speak, PlayAudio)) else 'text_delivered'
         return expected if lease.receipt.result() == expected else 'discarded'
 
     async def _expire_prepared(self, peer, lease):
@@ -288,6 +329,9 @@ class InterruptController:
                     return
                 audio = result['audioBase64']
                 duration = wav_duration(audio)
+            elif isinstance(command, PlayAudio):
+                audio = await game_audio_wav(command.audioBase64)
+                duration = wav_duration(audio)
             else:
                 intent = command.intent
             if not self._can_render(peer, lease):
@@ -312,7 +356,7 @@ class InterruptController:
 
     async def _receive(self, socket, peer):
         while True:
-            frame = await self._read(socket)
+            frame = await self._read(socket, allow_audio=True)
             if (frame.sessionId != peer.session or frame.connectionId != peer.connection
                     or frame.type == 'session.handshake'):
                 raise ValueError('Wrong voice connection')
@@ -327,7 +371,8 @@ class InterruptController:
                     if peer.lease and peer.lease.command.epoch < peer.epoch_floor:
                         self._settle(peer, peer.lease, 'discarded')
                 continue
-            models = {'audio.prepare': Prepare, 'audio.speak': Speak, 'audio.cancel': Utterance, 'pet.text': PetText}
+            models = {'audio.prepare': Prepare, 'audio.speak': Speak, 'audio.play': PlayAudio,
+                      'audio.cancel': Utterance, 'pet.text': PetText}
             command = models[frame.type].model_validate(frame.payload)
             now = time.monotonic()
             peer.prune_revoked(now)
@@ -337,19 +382,20 @@ class InterruptController:
                 if matches:
                     self._settle(peer, lease, 'cancelled')
                 continue
-            if matches and isinstance(lease.command, Prepare) and isinstance(command, (Speak, PetText)):
+            if matches and isinstance(lease.command, Prepare) and isinstance(command, (Speak, PlayAudio, PetText)):
                 if now >= lease.deadline or not self._fresh_cue(lease):
                     self._settle(peer, lease, 'discarded')
                 else:
                     lease.command = command
-                    lease.deadline = min(lease.deadline, now + (command.deadlineMs / 1000 if isinstance(command, Speak) else 2))
+                    seconds = command.deadlineMs / 1000 if isinstance(command, (Speak, PlayAudio)) else 2
+                    lease.deadline = min(lease.deadline, now + seconds)
                     lease.worker = self._spawn(peer, self._play(peer, lease))
                 continue
             if (command.epoch < peer.epoch_floor or command.epoch <= peer.highest_epoch
                     or command.epoch in peer.revoked_epochs):
                 continue
             peer.highest_epoch = command.epoch
-            if peer.speaking or peer.lease or isinstance(command, PetText):
+            if peer.speaking or peer.lease or isinstance(command, (PetText, PlayAudio)):
                 self._result(peer, command, 'discarded')
                 continue
             if isinstance(command, Prepare):
@@ -366,14 +412,17 @@ class InterruptController:
                 lease.worker = self._spawn(peer, self._play(peer, lease))
 
     @staticmethod
-    async def _read(socket):
+    async def _read(socket, *, allow_audio=False):
         message = await socket.receive()
         if message['type'] == 'websocket.disconnect':
             raise WebSocketDisconnect(message['code'])
         raw = message.get('text')
-        if raw is None or len(raw) > 4096:
+        if raw is None or len(raw) > (MAX_AUDIO_BASE64 + 4096 if allow_audio else 4096):
             raise ValueError('Invalid voice frame size or encoding')
-        return Frame.model_validate_json(raw)
+        frame = Frame.model_validate_json(raw)
+        if len(raw) > 4096 and frame.type != 'audio.play':
+            raise ValueError('Invalid voice control frame size')
+        return frame
 
     def mount(self, app):
         @app.websocket('/ws/bridge')

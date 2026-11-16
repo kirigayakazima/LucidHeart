@@ -2,6 +2,7 @@ import asyncio
 import base64
 from io import BytesIO
 import json
+import subprocess
 from threading import Event
 from time import monotonic
 import wave
@@ -99,6 +100,29 @@ def test_authenticated_capture_relays_draft_and_final_once(bridge, monkeypatch):
         assert phone.receive_json()['payload'] == {'turnId': turn, 'audio_epoch': 5, 'text': '听到了', 'is_final': True}
         assert client.post(asr, content=b'duplicate', headers=final).status_code == 409
         assert client.post(route, params=params, headers=AUTH).status_code == 409
+
+
+def test_breezeblue_mp3_plays_through_prepared_game_voice_lease(bridge):
+    client, _ = bridge
+    mp3 = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=f=523:d=0.5',
+                          '-f', 'mp3', 'pipe:1'], check=True, capture_output=True).stdout
+    audio = base64.b64encode(mp3).decode()
+    identity = {'epoch': INITIAL_EPOCH, 'utteranceId': 'game-commentary'}
+    payload = {**identity, 'text': '还剩一点血，稳住呀。', 'audioBase64': audio, 'deadlineMs': 15000}
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True)
+        phone.send_json(frame('audio.play', 2, payload))
+        assert phone.receive_json()['payload']['status'] == 'discarded'
+
+        identity['epoch'] += 1
+        phone.send_json(frame('audio.prepare', 3, identity))
+        assert phone.receive_json()['type'] == 'audio.prepared'
+        phone.send_json(frame('audio.play', 4, {**payload, **identity}))
+        reaction, playback = pet.receive_json(), pet.receive_json()
+        assert reaction['text'] == payload['text'] and playback['event'] == 'playback_audio'
+        assert base64.b64decode(playback['audioBase64']).startswith(b'RIFF')
+        pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': reaction['utteranceId']})
+        assert phone.receive_json()['payload'] == {**identity, 'status': 'played'}
 
 
 def test_duplex_stream_correlates_each_sentence_and_retains_media_lease(bridge, monkeypatch):
