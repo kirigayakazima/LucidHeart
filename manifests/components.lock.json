@@ -37,10 +37,10 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.15",
+      "version": "0.2.16",
       "layer": "Actuator",
       "source": "packages/rvc",
-      "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, BreezeBlue cloud TTS, PC ONNX CPU offload and phone fallback."
+      "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, BreezeBlue cloud TTS, autonomous voice agency, PC ONNX CPU offload and phone fallback."
     },
     "qqbot": {
       "id": "@tencent-connect/dsh-qqbot",
