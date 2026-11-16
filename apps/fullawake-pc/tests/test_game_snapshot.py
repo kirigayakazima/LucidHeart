@@ -1,5 +1,7 @@
 import base64
+import asyncio
 from io import BytesIO
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -8,8 +10,9 @@ from PIL import Image
 import pytest
 
 from fullawake.capabilities.desktop_vision import screen
+from fullawake.capabilities.desktop_vision.game_storyboard import GameStoryboard, select_frames
 from fullawake.core.config import config
-from fullawake.gateway.mcp_server import app
+from fullawake.gateway.mcp_server import app, FullAwakeMCPGateway
 
 
 @pytest.fixture
@@ -67,8 +70,8 @@ def desktop(monkeypatch):
     return state
 
 
-def snapshot(**arguments):
-    reply = TestClient(app).post('/mcp', headers={'Authorization': f'Bearer {config.auth_token}'}, json={
+def snapshot(gateway_app=app, **arguments):
+    reply = TestClient(gateway_app).post('/mcp', headers={'Authorization': f'Bearer {config.auth_token}'}, json={
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': 'pc_snapshot', 'arguments': {'target': 'auto_game', **arguments}},
     })
@@ -114,3 +117,76 @@ def test_target_and_window_handle_are_exclusive(desktop):
     result = snapshot(hwnd=41)
     assert result['isError'] and 'invalid_target' in result['content'][0]['text']
     assert not desktop.grabs
+
+
+def test_burst_returns_one_ordered_768_jpeg(desktop):
+    gateway = FullAwakeMCPGateway()
+    identity, _ = screen.probe_game()
+    at = time.monotonic() - 3
+    for i, color in enumerate([(220, 20, 20), (20, 220, 20), (20, 20, 220), (220, 220, 20)]):
+        gateway.desktop.storyboard.record(identity, Image.new('RGB', (384, 216), color), at + i)
+    result = snapshot(gateway.app, mode='burst')
+    assert not result['isError'] and len(result['content']) == 2
+    image, meta = result['content']
+    assert '"frame_count": 4' in meta['text'] and '"duration_s": 3.0' in meta['text']
+    with Image.open(BytesIO(base64.b64decode(image['data']))) as sheet:
+        assert sheet.size == (768, 768)
+        for i, rgb in enumerate([(220, 20, 20), (20, 220, 20), (20, 20, 220), (220, 220, 20)]):
+            x, y = i % 2 * 384, i // 2 * 384
+            assert max(abs(a - b) for a, b in zip(sheet.getpixel((x + 192, y + 192)), rgb)) < 6
+            assert sheet.getpixel((x + 10, y + 10))[0] > 200
+    assert desktop.grabs == []
+
+
+def test_significant_motion_peak_replaces_an_interior_sample():
+    frames = [(i, Image.new('RGB', (32, 18), (240 if i >= 4 else 40,) * 3)) for i in range(6)]
+    assert [at for at, _ in select_frames(frames)] == [0, 2, 4, 5]
+
+
+def test_buffer_is_bounded_and_flushes_on_lock_and_switch(desktop):
+    story = GameStoryboard()
+    identity, _ = screen.probe_game()
+    at = time.monotonic()
+    for i in range(9):
+        story.record(identity, Image.new('RGB', (20, 20)), at - 8 + i)
+    assert len(story.frames) == 6
+    desktop.locked = True
+    assert asyncio.run(story.snapshot())['locked'] and not story.frames
+    desktop.locked = False
+    story.record(identity, Image.new('RGB', (20, 20)), at)
+    desktop.process = 'chrome.exe'
+    assert asyncio.run(story.snapshot())['code'] == 'no_foreground_game' and not story.frames
+
+
+def test_friendly_pet_pixels_are_masked_from_thumbnail(desktop):
+    desktop.covered = True
+    screen.ctypes.windll.user32.GetPropW = lambda *_: 1
+    screen.ctypes.windll.user32.GetWindowRect = lambda _, pointer: _set_pet_rect(pointer._obj)
+    result = screen.capture_screenshot(auto_game=True, sample=True)
+    image = result['image']
+    assert image.getpixel((15, 15)) == (20, 20, 24)
+    assert image.getpixel((300, 150)) == (210, 70, 30)
+
+
+def _set_pet_rect(rect):
+    rect.left, rect.top, rect.right, rect.bottom = 10, 10, 70, 70
+    return 1
+
+
+def test_burst_with_switch_during_encoding_discards_the_sheet(desktop, monkeypatch):
+    from fullawake.capabilities.desktop_vision import game_storyboard
+
+    story = GameStoryboard()
+    identity, _ = screen.probe_game()
+    for i in range(4):
+        story.record(identity, Image.new('RGB', (20, 20)), time.monotonic() - 3 + i)
+    encode = game_storyboard.encode_snapshot
+
+    def change_foreground(*args, **kwargs):
+        desktop.process = 'chrome.exe'
+        return encode(*args, **kwargs)
+
+    monkeypatch.setattr(game_storyboard, 'encode_snapshot', change_foreground)
+    result = asyncio.run(story.snapshot())
+    assert result['code'] == 'no_foreground_game' and 'base64_data' not in result
+    assert not story.frames

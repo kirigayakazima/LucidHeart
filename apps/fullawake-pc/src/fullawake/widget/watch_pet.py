@@ -2,9 +2,12 @@
 
 from array import array
 import base64
+import ctypes
+from ctypes import wintypes
 from io import BytesIO
 import json
 import math
+import sys
 import time
 import wave
 
@@ -14,6 +17,8 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
+
+from fullawake.capabilities.desktop_vision.screen import PET_OVERLAY_PROPERTY
 
 
 class MouthEnvelope:
@@ -80,6 +85,11 @@ class WatchPet(QWidget):
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self.tick)
         self.timer.start(33)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if sys.platform == 'win32':
+            ctypes.windll.user32.SetPropW(wintypes.HWND(int(self.winId())), PET_OVERLAY_PROPERTY, wintypes.HANDLE(1))
 
     def connect_socket(self):
         if self.socket.state() == QAbstractSocket.SocketState.UnconnectedState:

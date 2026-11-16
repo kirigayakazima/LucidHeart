@@ -38,7 +38,7 @@ async function fixture(t, initialEpoch = 100, capture = false) {
     assert.equal(hello.commandSeq, 1)
     assert.match(hello.sessionId, /^watch-session-/)
     assert.match(hello.connectionId, /^conn-[0-9a-f-]{36}$/)
-    assert.deepEqual(hello.payload, { clientVersion: '0.2.7', heartVersion: '0.21.3', device: 'redmi-note12turbo',
+    assert.deepEqual(hello.payload, { clientVersion: '0.2.8', heartVersion: '0.21.3', device: 'redmi-note12turbo',
       ...(capture ? { capture: true } : {}) })
     let seq = 0
     const send = (type, payload, overrides) => socket.send(JSON.stringify({ protocol: hello.protocol, type,

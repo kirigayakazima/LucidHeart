@@ -66,10 +66,11 @@ class FullAwakeMCPGateway:
         self.watch = WatchCapability()
         self.interrupts = InterruptController(self.watch, self.voice)
         self.capture_turn = None
+        self.desktop = DesktopVisionCapability()
 
         @asynccontextmanager
         async def lifespan(_app):
-            background = []
+            background = [asyncio.create_task(self.desktop.storyboard.run())]
             if config.voice_enabled:
                 self.voice.artifacts.sweep()
                 if config.voice_provider == CUDA and config.voice_profile:
@@ -139,7 +140,7 @@ class FullAwakeMCPGateway:
 
     def _register_default_capabilities(self) -> None:
         """Register standard Phase 1 capabilities."""
-        self.register_capability(DesktopVisionCapability())
+        self.register_capability(self.desktop)
         self.register_capability(self.watch)
         self.register_capability(SafeFSCapability())
 
@@ -169,7 +170,7 @@ class FullAwakeMCPGateway:
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
             """Authenticated PC status summary."""
-            return {**get_session_status(), 'snapshot_targets': ['auto_game'],
+            return {**get_session_status(), 'snapshot_targets': ['auto_game'], 'game_snapshot_modes': ['single', 'burst'],
                     'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
 
         @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])
@@ -645,6 +646,8 @@ class FullAwakeMCPGateway:
                                     "snapshot_size": result_data.get("snapshot_size"),
                                     **({"target": "auto_game", "game_process": result_data["game_process"]}
                                        if result_data.get("target") == "auto_game" else {}),
+                                    **({key: result_data[key] for key in ('mode', 'frame_count', 'duration_s')}
+                                       if result_data.get('mode') == 'burst' else {}),
                                 },
                                 ensure_ascii=False,
                             ),

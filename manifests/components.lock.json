@@ -18,11 +18,11 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
-      "description": "PC sensory bridge, opt-in player-clock watch and desktop widget, voice compute and singing."
+      "description": "PC sensory bridge, browser watch, on-demand foreground game storyboards, desktop widget, voice compute and singing."
     },
     "qq-plus": {
       "id": "@dsh/qq-plus",

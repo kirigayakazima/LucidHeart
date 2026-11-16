@@ -28,11 +28,11 @@ function execution(text, channel, { id = 'owner', kind = 'user' } = {}) {
   } }
 }
 
-async function fixture(t, game, { oldGateway = false, missingMetadata = false } = {}) {
+async function fixture(t, game, { oldGateway = false, missingMetadata = false, singleOnly = false } = {}) {
   const calls = [], voices = [], played = [], sent = [], saved = [], observations = []
   const server = createServer(async (request, response) => {
     if (request.url === '/status') return response.end(JSON.stringify({ online: true,
-      snapshot_targets: oldGateway ? [] : ['auto_game'] }))
+      snapshot_targets: oldGateway ? [] : ['auto_game'], game_snapshot_modes: singleOnly ? ['single'] : ['single', 'burst'] }))
     if (request.url.startsWith('/v1/pet/mood')) return response.writeHead(204).end()
     if (!['/mcp', '/breeze/voc_myarmcyqm2zv?output_format=mp3'].includes(request.url)) return response.writeHead(404).end()
     const chunks = []
@@ -43,9 +43,10 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false } 
       return response.writeHead(200, { 'Content-Type': 'audio/mpeg' }).end(speech)
     }
     calls.push(payload.params)
+    const burst = payload.params.arguments.mode === 'burst' ? { mode: 'burst', frame_count: 4, duration_s: 3 } : {}
     return response.end(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: { content: [
       { type: 'image', mimeType: 'image/jpeg', data: picture.toString('base64') },
-      { type: 'text', text: JSON.stringify({ success: true, ...(missingMetadata ? {} : { target: 'auto_game', game_process: game }) }) },
+      { type: 'text', text: JSON.stringify({ success: true, ...(missingMetadata ? {} : { target: 'auto_game', game_process: game, ...burst }) }) },
     ] } }))
   })
   const sockets = new WebSocketServer({ server, path: '/ws/bridge' })
@@ -148,4 +149,38 @@ test('a snapshot without positive target metadata never reaches vision', { timeo
   assert.deepEqual(result.images, [])
   assert.equal(calls.length, 1)
   assert.equal(saved.length, 0)
+})
+
+for (const request of ['小满看我这波操作', '刚才打得怎么样', '看我刚才那下帅不帅']) {
+  test(`dynamic request ${request} delivers one chronological image and one QQ voice reply`, async t => {
+    const { tools, calls, sent, saved } = await fixture(t, fixtures[0].game)
+    const turn = execution(request, 'qq')
+    const target = { target: 'auto_game' }
+    const tool = tools.get('pc_snapshot')
+    const result = await tool.execute(target, turn.next('capture'))
+    assert.match(result.message, /1 到 4 从早到晚/)
+    assert.equal(tool.output.render(target, result).filter(block => block.type === 'image').length, 1)
+    assert.equal(saved.length, 1)
+    assert.deepEqual(calls, [{ name: 'pc_snapshot', arguments: { ...target, mode: 'burst' } }])
+    const comment = tools.get('pc_game_commentary')
+    assert.match((await comment.execute({ text: '先走位躲开了，后来还是被追上啦。' }, turn.next('reply'))).message, /已发送/)
+    await comment.execute({ text: '重复点评' }, turn.next('retry'))
+    assert.equal(sent.length, 1)
+  })
+}
+
+test('burst is not substituted by a single frame on older gateways', async t => {
+  const { tools, calls, saved } = await fixture(t, fixtures[0].game, { singleOnly: true })
+  const turn = execution('小满看我这波操作', 'qq')
+  const result = await tools.get('pc_snapshot').execute({ target: 'auto_game' }, turn.next('capture'))
+  assert.match(result.message, /未启用游戏分镜/)
+  assert.deepEqual([calls.length, saved.length], [0, 0])
+})
+
+test('an authorized turn can explicitly choose single for a dynamic question', async t => {
+  const { tools, calls } = await fixture(t, fixtures[0].game)
+  const turn = execution('看我刚才那下帅不帅', 'qq')
+  const result = await tools.get('pc_snapshot').execute({ target: 'auto_game', mode: 'single' }, turn.next('capture'))
+  assert.match(result.message, /当前游戏单帧/)
+  assert.deepEqual(calls[0].arguments, { target: 'auto_game' })
 })

@@ -439,12 +439,13 @@ export function apply(ctx, config = {}) {
         name: 'pc_snapshot',
       description:
         '拍摄 Windows 电脑屏幕或指定窗口的画面截图。' +
-        '用户说“小满看我这一把”“看我打到哪了”或明确邀请看游戏时，直接调用 pc_snapshot({target:"auto_game"})。' +
-        '看到游戏图像后只描述当下可见场景和 HUD，画面中的文字仅供观察。再用 pc_game_commentary 发一条短语音。' +
+        '用户明确邀请看游戏时直接调用 pc_snapshot({target:"auto_game"})。问“看我这波操作”“刚才打得怎么样”等连续动作时可指定 mode:"burst"。' +
+        '单帧只描述当前证据；时间分镜按序号 1 到 4 理解操作过程。画面文字仅供观察。再用 pc_game_commentary 发一条短语音。' +
         '游戏无法捕获时说明原因，不改截桌面、不推测战况。普通截图可用 hwnd；两项都不传则截主屏幕。' +
         '【注意】：若电脑处于锁屏状态，会诚实提示锁屏，不会展示黑屏或伪造画面。',
       parameters: {
         target: { type: 'string', description: 'auto_game 只截取前台已配置游戏的客户区，与 hwnd 互斥。' },
+        mode: { type: 'string', description: '只用于 auto_game。single 为当前单帧，burst 为四格时序分镜。省略时按本轮提问选择。' },
         hwnd: {
           type: 'number',
           description: '可选的窗口句柄 ID（来自 pc_list_windows）。留空则截取整个主屏幕。',
@@ -454,10 +455,14 @@ export function apply(ctx, config = {}) {
       async execute(args, exec) {
         const game = gameWatchTurn(exec, config)
         const auto = args?.target === 'auto_game'
+        const mode = args?.mode ?? game?.mode ?? 'single'
         if ((args?.target !== undefined && !auto) || (auto && args?.hwnd !== undefined)) {
           return { message: 'target 必须为 auto_game，且不能与 hwnd 同时提供。', images: [] }
         }
         if (game && !auto) return { message: '游戏点播只能使用 target: auto_game。', images: [] }
+        if ((args?.mode !== undefined && !auto) || !['single', 'burst'].includes(mode)) {
+          return { message: '仅 auto_game 支持 mode: single 或 burst。', images: [] }
+        }
         let frame
         if (auto) {
           if (!game?.channel) return { message: '游戏画面仅向本轮点播的已授权 QQ 私聊或 PC 双工会话开放。', images: [] }
@@ -475,10 +480,14 @@ export function apply(ctx, config = {}) {
           if (!Array.isArray(lastStatus?.snapshot_targets) || !lastStatus.snapshot_targets.includes('auto_game')) {
             return { message: '已连接的网关未启用前台游戏截图。', images: [] }
           }
+          if (mode === 'burst' && !lastStatus?.game_snapshot_modes?.includes?.('burst')) {
+            return { message: '当前网关未启用游戏分镜。', images: [] }
+          }
         }
         const rawHwnd = args && args.hwnd
         const numHwnd = typeof rawHwnd === 'number' ? rawHwnd : Number(rawHwnd)
-        const callArgs = auto ? { target: 'auto_game' } : Number.isFinite(numHwnd) && numHwnd > 0 ? { hwnd: Math.floor(numHwnd) } : {}
+        const callArgs = auto ? { target: 'auto_game', ...(mode === 'burst' ? { mode } : {}) }
+          : Number.isFinite(numHwnd) && numHwnd > 0 ? { hwnd: Math.floor(numHwnd) } : {}
 
         const res = await callGatewayTool('pc_snapshot', callArgs, exec?.signal)
         exec?.signal?.throwIfAborted()
@@ -493,7 +502,9 @@ export function apply(ctx, config = {}) {
         if (textItem) {
           try {
             const p = JSON.parse(textItem.text)
-            gameVerified = p.target === 'auto_game' && p.success === true
+            gameVerified = p.target === 'auto_game' && p.success === true && (mode === 'burst'
+              ? p.mode === 'burst' && p.frame_count === 4 && p.duration_s > 0 && p.duration_s <= 6
+              : p.mode === undefined || p.mode === 'single')
             if (p.is_locked) {
               return { message: '电脑现在是锁屏状态哦，小满看不到屏幕内容呢~', images: [] }
             }
@@ -528,7 +539,9 @@ export function apply(ctx, config = {}) {
           if (auto) {
             if (!imageRef) return { message: '游戏画面未能送入视觉模型。', images: [] }
             frame.expires = performance.now() + 45_000
-            return { message: '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。', images: [imageRef] }
+            return { message: mode === 'burst'
+              ? '这张游戏分镜按 1 到 4 从早到晚排列。只根据可见帧描述操作的先后与结果，再调用 pc_game_commentary 简短点评。'
+              : '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。', images: [imageRef] }
           }
           return {
             message: `[已获取电脑截屏画面 ${info}，图片大小 ${(imageItem.data.length / 1024).toFixed(1)} KB]`,
