@@ -26,6 +26,7 @@ from fullawake import __version__
 
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.capabilities.desktop_vision import DesktopVisionCapability
+from fullawake.capabilities.desktop_vision.screen import active_game_window
 from fullawake.capabilities.desktop_vision.watch import WatchCapability, native_loopback
 from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
@@ -170,7 +171,9 @@ class FullAwakeMCPGateway:
         @app.get("/status", dependencies=[Depends(verify_token)])
         async def pc_status_endpoint():
             """Authenticated PC status summary."""
+            game = await asyncio.to_thread(active_game_window)
             return {**get_session_status(), 'snapshot_targets': ['auto_game'], 'game_snapshot_modes': ['single', 'burst'],
+                    'game_watch_active': game is not None, 'game_process': game[2] if game else None,
                     'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
 
         @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])

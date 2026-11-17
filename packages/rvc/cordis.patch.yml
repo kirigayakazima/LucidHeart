@@ -2,6 +2,7 @@
     - id: "@dsh/rvc"
       name: "@dsh/rvc"
       config:
+        provider: "breezeblue"
         modelsDir: "/sdcard/rvc/models/feiyu-rvc-v1"
         voiceProfile: "/sdcard/rvc/models/feiyu-rvc-v1/voice-profile.json"
         defaultPitch: 0

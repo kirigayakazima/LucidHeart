@@ -1,6 +1,6 @@
 const gameRequest = /(?:看(?:看)?我.{0,8}(?:游戏|这一把|这把|这一波|这波|操作|打到哪)|(?:看|瞧)(?:看|瞧)?.{0,6}(?:游戏|战况|打到哪|这波操作)|我卡.{0,6}(?:看看画面|看一下)|刚才怎么(?:死|输)的)/u
 const burstRequest = /(?:这一波|这波|上一波).{0,7}(?:操作|走位|打得|怎么打|团战)|(?:看看?|瞧瞧?).{0,5}(?:这一波|这波)(?:[，。！？!?\s]|$)|刚才.{0,8}(?:那下|打得|操作|怎么死|怎么输|怎么赢|怎么打|走位|帅不帅|发生了什么)/u
-const stopRequest = /(?:不要|不用|别|停止|取消|暂不).{0,6}(?:看|截|陪玩)|(?:如果|假如|举例|复述|引用|假装)/u
+const stopRequest = /(?:不要|不用|别|停止|取消|暂不)(?:再|继续|帮我|给我|先|去)?(?:看|截|陪玩)|(?:如果|假如|举例|复述|引用|假装)/u
 const turnBoundary = new Set(['turn/start', 'turn/end', 'session/end-seed'])
 
 export function gameWatchTurn(exec, config) {
@@ -30,7 +30,15 @@ export function gameWatchTurn(exec, config) {
       config.gameWatchQqSessions?.some(value => normalize(value) === id)) channel = 'qq'
   if (!qq && config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow' &&
       config.duplexTarget && exec.agent.id === config.duplexTarget) channel = 'pc'
-  return { session, turn, messageId: message.id, channel, mode: burst ? 'burst' : 'single' }
+  const preference = /(?:静音|别出声|不要出声|别发语音|不要发语音|只(?:回|发)?文字)/u.test(text) ? 'text'
+    : /(?:发|回|给我来)(?:我)?(?:一|个|段|条|句)*语音(?:条|消息)?/u.test(text) ? 'qq' : undefined
+  return { session, turn, messageId: message.id, channel, preference, mode: burst ? 'burst' : 'single' }
+}
+
+export function resolveDeliveryTarget({ channel, active, preference, muted }) {
+  if (muted || preference === 'text') return 'text_only'
+  if (preference === 'qq') return 'qq_voice'
+  return channel === 'pc' || active ? 'pc_pet' : 'qq_voice'
 }
 
 export const GAME_VOICE_DIRECTION = '亲近清亮，带一点忍不住的轻笑，像坐在旁边陪打游戏。情况紧张时轻声鼓励，不取笑失误。'

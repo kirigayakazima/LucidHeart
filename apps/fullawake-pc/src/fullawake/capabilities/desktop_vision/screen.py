@@ -106,6 +106,12 @@ def probe_game():
     return game, None
 
 
+def active_game_window():
+    """Check focus for audio playback, including while the pet itself is visible."""
+    if not is_desktop_locked(strict=True):
+        return foreground_game(ctypes.windll.user32)
+
+
 def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, sample: bool = False) -> Dict[str, Any]:
     """Capture a screenshot of the entire desktop or a specific window by HWND.
 

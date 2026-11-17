@@ -5,7 +5,7 @@
 import { registerWatch } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
-import { GAME_VOICE_DIRECTION, gameWatchTurn } from './game_watch.js'
+import { GAME_VOICE_DIRECTION, gameWatchTurn, resolveDeliveryTarget } from './game_watch.js'
 
 let compileTool = (t) => t
 try {
@@ -41,6 +41,7 @@ export const Config = z
       bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
       duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
       gameWatchQqSessions: z.array(z.string()).default([]).description('允许点播前台游戏的本人 QQ 私聊 session ID'),
+      gameWatchQqTargetSession: z.string().default('').description('PC 明确要求 QQ 语音条时使用的已授权本人私聊 session ID'),
     })
   : undefined
 
@@ -233,7 +234,8 @@ export function apply(ctx, config = {}) {
         const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
         if (!gate?.suitable) return { message: 'Heart 当前未允许发声。' }
         const turn = bridge.begin({ signal: exec.signal })
-        if (!turn || !(await turn.prepared) || !bridge.speak({ text, deadlineMs: 15_000 }, turn)) {
+        const direct = bridge.breezeDirect
+        if (!turn || !(await turn.prepared) || !bridge.speak({ text, voiceProfile: direct ? 'breezeblue' : 'feiyu-rvc-v1', pitchShift: direct ? 0 : -4, deadlineMs: 15_000 }, turn)) {
           return { message: '桌宠语音桥当前不可用。' }
         }
         const result = await turn.done
@@ -498,10 +500,11 @@ export function apply(ctx, config = {}) {
         const textItem = res.content.find((c) => c.type === 'text')
         const imageItem = res.content.find((c) => c.type === 'image')
 
-        let info = '', gameVerified = false
+        let info = '', gameVerified = false, gameProcess
         if (textItem) {
           try {
             const p = JSON.parse(textItem.text)
+            if (typeof p.game_process === 'string' && p.game_process.length <= 128) gameProcess = p.game_process
             gameVerified = p.target === 'auto_game' && p.success === true && (mode === 'burst'
               ? p.mode === 'burst' && p.frame_count === 4 && p.duration_s > 0 && p.duration_s <= 6
               : p.mode === undefined || p.mode === 'single')
@@ -539,6 +542,7 @@ export function apply(ctx, config = {}) {
           if (auto) {
             if (!imageRef) return { message: '游戏画面未能送入视觉模型。', images: [] }
             frame.expires = performance.now() + 45_000
+            frame.gameProcess = gameProcess
             return { message: mode === 'burst'
               ? '这张游戏分镜按 1 到 4 从早到晚排列。只根据可见帧描述操作的先后与结果，再调用 pc_game_commentary 简短点评。'
               : '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。', images: [imageRef] }
@@ -556,7 +560,7 @@ export function apply(ctx, config = {}) {
 
   if (config.gameWatchQqSessions?.length || (bridge && config.duplexTarget)) ctx.effect(() => ctx.tools.register(defineTool({
     name: 'pc_game_commentary',
-    description: '游戏点播成功后，用小满的 BreezeBlue 音色将基于当前单帧的简短点评发回发起会话。成功后无需重复文字。',
+    description: '游戏点播成功后，用小满的 BreezeBlue 音色发送简短点评。电脑游戏陪伴中优先桌宠，明确要求语音条则走已授权 QQ。静音时用文字。成功后无需重复文字。',
     parameters: { text: { type: 'string', required: true } },
     output: textOutput,
     async execute({ text }, exec) {
@@ -571,22 +575,55 @@ export function apply(ctx, config = {}) {
       if (!line || [...line].length > 40) return { message: '请用 40 字以内的自然口语点评。' }
       frame.commented = true
       try {
+        const heart = getHeart()
+        const gate = await heart?.evaluateActivity?.({ intent: 'game_commentary', category: 'voice' }, { execution: exec })
+        const muted = gate?.suitable !== true || heart?.getSnapshot?.()?.presence?.status === 'asleep'
+        let active = false
+        if (!muted && game.channel === 'qq' && !game.preference) {
+          try {
+            const timeout = AbortSignal.timeout(1000)
+            const response = await fetch(`${gatewayUrl}/status`, { headers: { Authorization: `Bearer ${authToken}` },
+              redirect: 'error', signal: exec?.signal ? AbortSignal.any([timeout, exec.signal]) : timeout })
+            if (response.ok) {
+              const status = await readWatchReply(response)
+              active = status.game_watch_active === true && Boolean(frame.gameProcess) && status.game_process === frame.gameProcess
+            } else await response.body?.cancel()
+          } catch { exec?.signal?.throwIfAborted() }
+        }
+        const target = resolveDeliveryTarget({ ...game, active, muted })
+        if (target === 'text_only') return { message: '当前使用文字，请直接用简短文字回复。' }
+        if (frame.expires <= performance.now()) return { message: '游戏画面已过期，请用简短文字回应。' }
+        exec?.signal?.throwIfAborted()
         const voice = ctx.get?.('rvcWatchVoice') ?? ctx.rvcWatchVoice
-        if (game.channel === 'qq' && voice?.replyToQq) {
-          const result = await voice.replyToQq(line, { instructions: GAME_VOICE_DIRECTION, execution: exec })
-          if (result.sent_to_qq) return { message: 'QQ 游戏点评语音条已发送。' }
-        } else if (game.channel === 'pc' && bridge?.turnLifecycle && voice?.prepare) {
-          const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
-          if (gate?.suitable) {
-            const turn = bridge.begin({ signal: exec?.signal })
-            if (turn && await turn.prepared) {
-              try {
-                const audio = await voice.prepare(line, { signal: turn.signal, instructions: GAME_VOICE_DIRECTION, game: true })
-                if (frame.expires > performance.now() && bridge.playAudio({ text: line, audio }, turn) &&
-                    (await turn.done).status === 'played') return { message: '电脑已播完游戏点评。' }
-              } finally { turn.controller.abort() }
-            }
+        const instructions = voice?.gameInstructions?.(line) ?? GAME_VOICE_DIRECTION
+        const direct = target === 'pc_pet' && bridge?.breezeDirect === true
+        let delivered = false
+        const started = performance.now()
+        if (target === 'qq_voice' && voice?.replyToQq) {
+          const targetSession = game.channel === 'pc' ? config.gameWatchQqTargetSession : undefined
+          if (game.channel === 'qq' || (targetSession && config.gameWatchQqSessions?.includes(targetSession))) {
+            delivered = (await voice.replyToQq(line, { instructions, execution: exec, targetSession, observe: false })).sent_to_qq
           }
+        } else if (target === 'pc_pet' && bridge?.turnLifecycle && (direct || voice?.prepare)) {
+          const expiry = AbortSignal.timeout(Math.max(1, Math.ceil(frame.expires - performance.now())))
+          const signal = exec?.signal ? AbortSignal.any([exec.signal, expiry]) : expiry
+          const turn = bridge.begin({ signal, gameProcess: frame.gameProcess })
+          if (turn) try {
+            if (await turn.prepared) {
+              const sent = direct
+                ? bridge.speak({ text: line, instructions, voiceProfile: 'breezeblue', pitchShift: 0, deadlineMs: 15_000 }, turn)
+                : bridge.playAudio({ text: line, audio: await voice.prepare(line, { signal: turn.signal, instructions, game: true }) }, turn)
+              delivered = Boolean(sent && (await turn.done).status === 'played')
+            }
+          } finally { turn.controller.abort() }
+        }
+        if (delivered) {
+          const elapsedMs = Math.round(performance.now() - started)
+          try { await heart.observe?.({ type: 'audio', source: 'game_companion', confidence: 1,
+            evidence: { scene: 'game_commentary', delivery: target, textLength: [...line].length, gameProcess: frame.gameProcess ?? null },
+            summary: '游戏陪伴语音点评已送达', timestamp: new Date().toISOString() }) } catch {}
+          try { ctx.logger?.info?.(`[FullAwake] game voice delivery=${target} mode=${direct ? 'pc_direct' : 'phone'} elapsedMs=${elapsedMs}`) } catch {}
+          return { message: target === 'pc_pet' ? '电脑已播完游戏点评。' : 'QQ 游戏点评语音条已发送。' }
         }
       } catch { exec?.signal?.throwIfAborted() }
       return { message: '游戏点评语音未确认送达，可改为简短文字，无需重发语音。' }

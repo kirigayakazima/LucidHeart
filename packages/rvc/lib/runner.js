@@ -5,12 +5,42 @@ import fs from 'node:fs'
 import { mkdtemp, readFile, rm, rmdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { runProfileSpeak, readVoiceProfile, renderDryVoice } from './voice-profile.js'
 import { voiceContract, saveOffloadAudio, offloadDryVoice, requestPcVoice } from './offload.js'
 import { DEFAULT_TTS_VOICE } from './acoustic.js'
 import { synthesizeBreezeVoice, resolveVoiceInstructions, archiveToDataset, DEFAULT_BREEZE_VOICE_ID, DEFAULT_BREEZE_ENDPOINT } from './breezeblue.js'
+
+const pExecFile = promisify(execFile)
+
+/**
+ * 为输出音频末尾补齐静音切片 (默认 400ms)
+ * 解决 QQ OpenAPI / QQ 移动端与桌面端语音播放器末尾 200~400ms 截断尾音问题
+ */
+export async function padAudioTrailingSilence(filePath, padSeconds = 0.4) {
+  if (!filePath || !fs.existsSync(filePath)) return filePath
+  const ext = path.extname(filePath).toLowerCase()
+  if (!['.mp3', '.wav'].includes(ext)) return filePath
+  const tempOutput = path.join(path.dirname(filePath), `padded_${Date.now()}_${path.basename(filePath)}`)
+  try {
+    await pExecFile('ffmpeg', [
+      '-y',
+      '-v', 'error',
+      '-i', filePath,
+      '-af', `apad=pad_dur=${padSeconds}`,
+      tempOutput,
+    ], { timeout: 8000 })
+    if (fs.existsSync(tempOutput) && fs.statSync(tempOutput).size > 100) {
+      fs.copyFileSync(tempOutput, filePath)
+      fs.unlinkSync(tempOutput)
+    }
+  } catch {
+    try { if (fs.existsSync(tempOutput)) fs.unlinkSync(tempOutput) } catch {}
+  }
+  return filePath
+}
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -235,6 +265,8 @@ async function synthesize(params) {
         })
       }
 
+      await padAudioTrailingSilence(finalOut, 0.4)
+
       return {
         ok: true,
         audioPath: finalOut,
@@ -310,6 +342,7 @@ async function synthesize(params) {
             params.signal?.throwIfAborted()
             saved = saveOffloadAudio(result, contract, outWav)
           }
+          if (saved?.audioPath) await padAudioTrailingSilence(saved.audioPath, 0.4)
           return { ...saved, durationMs: Date.now() - started, acoustic: { ...acoustic, ...saved.acoustic, ttsVoice: contract.settings.ttsVoice } }
         } catch (error) {
           params.signal?.throwIfAborted()
@@ -322,6 +355,7 @@ async function synthesize(params) {
       const fallback = offload.status === 'failed' && feiyuContract
       const local = await runProfileSpeak({ ...localParams, input,
         provider: fallback ? 'CPUExecutionProvider' : undefined })
+      if (local?.audioPath) await padAudioTrailingSilence(local.audioPath, 0.4)
       if (fallback) {
         if (local.validation.executionProvider !== 'CPUExecutionProvider' ||
             local.profileId !== profile.id || local.acoustic.pitch !== pitch) {

@@ -24,11 +24,17 @@ Python环境和依赖统一本项目uv .venv与清华源；声库/语音运行�
 
 `pc_snapshot({"target":"auto_game"})` 只拍当前前台游戏的客户区。`FULLAWAKE_GAME_PROCESSES` 是逗号分隔的可执行文件名列表，默认包含 `League of Legends.exe`、`VALORANT-Win64-Shipping.exe` 和 `Hades.exe`，启动器需与实际游戏进程区分。网关通过 `/status` 的 `snapshot_targets` 声明支持。窗口需完整显示在一台屏幕上，适用于普通窗口和无边框模式。遇到锁屏、前台切换、遮挡或黑帧时返回原因。
 
-手机 FullAwake 的 `gameWatchQqSessions` 填本人 QQ 私聊 session ID。PC 呼叫复用 `voiceEpochProtocol: true` 和已配置的 `duplexTarget`，需要已连接的桌宠播放器和 PC 路径中的 FFmpeg。会话使用支持图像输入的 DSH 模型，RVC 使用现有 BreezeBlue 配置。
+手机 FullAwake 的 `gameWatchQqSessions` 填本人 QQ 私聊 session ID。PC 呼叫复用 `voiceEpochProtocol: true` 和已配置的 `duplexTarget`，需要已连接的桌宠播放器和 PC 路径中的 FFmpeg。会话使用支持图像输入的 DSH 模型。PC 呼叫显式要求发 QQ 语音条时，`gameWatchQqTargetSession` 必须指向该白名单中的本人私聊。
 
 每轮用户明确邀请看游戏时，模型先调用 `pc_snapshot({"target":"auto_game"})`。普通请求用单帧，询问“看我这波操作”“刚才打得怎么样”时用 `mode: "burst"`。PC 仅在已允许的游戏处于前台时每秒在内存保留一张缩略图，最多六张。动态点播返回一张 768×768 的 2×2 JPEG，黄色角标和秒差按从早到晚排列。切窗、锁屏或出现未知遮挡时，缓存失效。自带桌宠的重叠区域会被遮罩。
 
-模型只依据可见帧描述先后与结果，再调用一次 `pc_game_commentary({"text":"…"})`，用 40 字以内的口语回应。QQ 回原私聊语音条，PC 呼叫回原桌宠播放器。进入游戏后先保持前台至少四秒，再用“看我这波操作”验收四格与一条 BreezeBlue 语音。用 `mode: "single"`、切到浏览器、锁屏及覆盖窗口分别复测单帧与失败提示。分镜的视觉预算为 384 tokens，实际用量以模型供应商计量为准。
+模型只依据可见帧描述先后与结果，再调用一次 `pc_game_commentary({"text":"…"})`，用 40 字以内的口语回应。PC 呼叫和游戏仍在前台的 QQ 点播默认回桌宠，游戏离开前台时 QQ 点播回原私聊语音条。明确要求语音条优先走已授权 QQ，用户静音、Heart 静音或语音未确认时回复文字。分镜的视觉预算为 384 tokens，实际用量以模型供应商计量为准。
+
+### PC 直出 BreezeBlue
+
+FullAwake **0.2.9** 与 RVC **0.2.17** 使用同一套手机 Voice Director。PC 进程通过 `FULLAWAKE_BREEZE_API_KEY` 读取独立凭据，通过 `FULLAWAKE_BREEZE_VOICE_ID` 选择音色。默认音色为 `voc_myarmcyqm2zv`，默认端点沿用手机已接入的 `https://api.breeze.blue/v1/text-to-speech`。配置凭据后，PC 在现有语音租约中接收点评台词和演绎提示，自行合成并送给桌宠。未配置 PC 凭据或连接旧网关时，继续使用手机合成回传。切出游戏、近端说话、掉线或取消会撤销当前租约。
+
+真机验收用同一款窗口化游戏和相近长度台词分别跑两条链路，记录手机日志中的 `game voice` 耗时与 PC 日志中的 `BreezeBlue audio ready` 耗时。前者从投递准备计到送达回执，后者从 PC 发起合成计到 WAV 就绪。检查头顶气泡、口型与近端打断，再比较各自的 P50/P95。进入游戏后保持前台至少四秒，发“小满看我这波操作”，另测追加“发语音条”和“只回文字”。
 
 | 真机点播用例 | 布置与提问 | 验收结果 |
 | --- | --- | --- |

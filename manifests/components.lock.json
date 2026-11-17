@@ -18,7 +18,7 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.8",
+      "version": "0.2.9",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
@@ -37,7 +37,7 @@
       "id": "@dsh/rvc",
       "name": "RVC Voice",
       "type": "package",
-      "version": "0.2.16",
+      "version": "0.2.17",
       "layer": "Actuator",
       "source": "packages/rvc",
       "description": "Feiyu voice synthesis, Heart mood mapping, QQ voice notes, BreezeBlue cloud TTS, autonomous voice agency, PC ONNX CPU offload and phone fallback."

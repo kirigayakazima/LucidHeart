@@ -20,6 +20,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from fullawake import __version__
+from fullawake.capabilities.breezeblue_adapter import BreezeBlueAdapter
+from fullawake.capabilities.desktop_vision.screen import active_game_window
 from fullawake.capabilities.desktop_vision.watch import MAX_WAV_BYTES, native_loopback, wav_duration
 from fullawake.capabilities.voice import ASSETS, DEFAULTS
 from fullawake.capabilities.voice_vad import VoiceVadListener
@@ -64,6 +66,7 @@ class Utterance(StrictFrame):
 class Prepare(Utterance):
     watchSessionId: str | None = Field(default=None, min_length=1, max_length=140)
     cueId: str | None = Field(default=None, min_length=1, max_length=40)
+    gameProcess: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class PetText(Utterance):
@@ -73,8 +76,9 @@ class PetText(Utterance):
 
 class Speak(Utterance):
     text: str = Field(min_length=1, max_length=200)
-    voiceProfile: Literal['feiyu-rvc-v1']
-    pitchShift: int
+    voiceProfile: Literal['feiyu-rvc-v1', 'breezeblue'] = 'feiyu-rvc-v1'
+    pitchShift: int = 0
+    instructions: str | None = Field(default=None, max_length=200)
     deadlineMs: int = Field(gt=0, le=30_000)
 
     @field_validator('pitchShift')
@@ -98,11 +102,11 @@ class PlayAudio(Utterance):
 
 async def game_audio_wav(encoded):
     """Accept bounded RVC WAV or BreezeBlue MP3, then use the existing WAV renderer."""
-    audio = base64.b64decode(encoded, validate=True)
+    audio = encoded if isinstance(encoded, bytes) else base64.b64decode(encoded, validate=True)
     if len(audio) > MAX_WAV_BYTES:
         raise ValueError('Audio too large')
     if audio.startswith(b'RIFF'):
-        return encoded
+        return base64.b64encode(audio).decode('ascii') if isinstance(encoded, bytes) else encoded
     if not (audio.startswith(b'ID3') or (len(audio) >= 2 and audio[0] == 0xff and audio[1] & 0xe0 == 0xe0)):
         raise ValueError('Unsupported audio format')
     process = await asyncio.create_subprocess_exec(
@@ -138,6 +142,7 @@ class Lease:
     receipt: asyncio.Future | None = None
     worker: asyncio.Task | None = None
     streaming: bool = False
+    game: tuple | None = None
 
 
 @dataclass(eq=False)
@@ -172,6 +177,7 @@ class InterruptController:
     def __init__(self, watch_cap, voice):
         self.watch = watch_cap
         self.voice = voice
+        self.breeze = BreezeBlueAdapter()
         self.peer = None
         self.vad = None
 
@@ -273,6 +279,17 @@ class InterruptController:
                 return
             await asyncio.sleep(0.1)
 
+    async def _guard_game(self, peer, lease):
+        while peer.lease is lease:
+            try:
+                game = await asyncio.to_thread(active_game_window)
+            except (OSError, RuntimeError, ValueError):
+                game = None
+            if game != lease.game:
+                self._settle(peer, lease, 'discarded')
+                return
+            await asyncio.sleep(0.1)
+
     async def _stream_to_renderer(self, peer, lease, request, cancelled):
         async def fragments():
             yield request['text']
@@ -313,7 +330,15 @@ class InterruptController:
             if await cancelled():
                 return
             audio, duration, intent = None, 4000, 'talk'
-            if isinstance(command, Speak):
+            if isinstance(command, Speak) and command.voiceProfile == 'breezeblue':
+                started = time.monotonic()
+                mp3 = await self.breeze.synthesize(command.text, command.instructions, deadline_s=min(8, lease.deadline - started))
+                if not self._can_render(peer, lease):
+                    return
+                audio = await game_audio_wav(mp3)
+                duration = wav_duration(audio)
+                log.info('BreezeBlue audio ready in %.0f ms', (time.monotonic() - started) * 1000)
+            elif isinstance(command, Speak):
                 profile = json.loads(Path(config.voice_profile).read_text(encoding='utf-8-sig'))
                 request = {'text': command.text, 'voice': {
                     'id': command.voiceProfile,
@@ -334,6 +359,8 @@ class InterruptController:
                 duration = wav_duration(audio)
             else:
                 intent = command.intent
+            if lease.game is not None and await asyncio.to_thread(active_game_window) != lease.game:
+                return
             if not self._can_render(peer, lease):
                 return
             lease.receipt = self.watch.play_bridge(lease.renderer_id, command.text, audio, duration, intent)
@@ -383,7 +410,9 @@ class InterruptController:
                     self._settle(peer, lease, 'cancelled')
                 continue
             if matches and isinstance(lease.command, Prepare) and isinstance(command, (Speak, PlayAudio, PetText)):
-                if now >= lease.deadline or not self._fresh_cue(lease):
+                direct = isinstance(command, Speak) and command.voiceProfile == 'breezeblue'
+                if (now >= lease.deadline or not self._fresh_cue(lease)
+                        or (direct and (not config.breeze_api_key or len(command.text) > 120))):
                     self._settle(peer, lease, 'discarded')
                 else:
                     lease.command = command
@@ -395,7 +424,8 @@ class InterruptController:
                     or command.epoch in peer.revoked_epochs):
                 continue
             peer.highest_epoch = command.epoch
-            if peer.speaking or peer.lease or isinstance(command, (PetText, PlayAudio)):
+            if (peer.speaking or peer.lease or isinstance(command, (PetText, PlayAudio))
+                    or (isinstance(command, Speak) and command.voiceProfile == 'breezeblue')):
                 self._result(peer, command, 'discarded')
                 continue
             if isinstance(command, Prepare):
@@ -404,9 +434,17 @@ class InterruptController:
                         bool(command.cueId) != bool(command.watchSessionId) or not self._fresh_cue(lease)):
                     self._result(peer, command, 'discarded')
                     continue
+                if command.gameProcess is not None:
+                    game = await asyncio.to_thread(active_game_window)
+                    if not game or game[2].casefold() != command.gameProcess.casefold():
+                        self._result(peer, command, 'discarded')
+                        continue
+                    lease.game = game
                 peer.lease = lease
                 peer.send('audio.prepared', epoch=command.epoch, utteranceId=command.utteranceId)
                 self._spawn(peer, self._expire_prepared(peer, lease))
+                if lease.game is not None:
+                    self._spawn(peer, self._guard_game(peer, lease))
             else:
                 lease = peer.lease = Lease(command, now + command.deadlineMs / 1000)
                 lease.worker = self._spawn(peer, self._play(peer, lease))
@@ -466,7 +504,8 @@ class InterruptController:
                     supported = await asyncio.to_thread(vad.start)
                     self.vad = vad
                 peer.send('session.handshake_ack', status='ready', gatewayVersion=__version__,
-                          initialEpoch=INITIAL_EPOCH, vadSupported=supported, **({'turnLifecycle': True} if lifecycle else {}))
+                          initialEpoch=INITIAL_EPOCH, vadSupported=supported, **({'turnLifecycle': True} if lifecycle else {}),
+                          **({'gameVoice': bool(config.breeze_api_key)} if lifecycle and tuple(map(int, version)) >= (0, 2, 9) else {}))
 
                 async def send():
                     while True:

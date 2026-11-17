@@ -25,9 +25,9 @@ def frame(kind, seq, payload, connection='test-connection'):
             'sessionId': 'test-session', 'connectionId': connection, 'payload': payload}
 
 
-def handshake(phone, connection='test-connection', *, vad_supported=False, lifecycle=False, capture=False):
+def handshake(phone, connection='test-connection', *, vad_supported=False, lifecycle=False, capture=False, direct=False):
     phone.send_json(frame('session.handshake', 1, {
-        'clientVersion': '0.2.6' if lifecycle else '0.2.5', 'heartVersion': '0.21.3', 'device': 'redmi-note12turbo',
+        'clientVersion': '0.2.9' if direct else '0.2.6' if lifecycle else '0.2.5', 'heartVersion': '0.21.3', 'device': 'redmi-note12turbo',
         **({'capture': True} if capture else {}),
     }, connection))
     reply = phone.receive_json()
@@ -36,6 +36,10 @@ def handshake(phone, connection='test-connection', *, vad_supported=False, lifec
     assert reply['payload']['initialEpoch'] == INITIAL_EPOCH
     assert reply['payload']['vadSupported'] is vad_supported
     assert reply['payload'].get('turnLifecycle', False) is lifecycle
+    if direct:
+        assert reply['payload']['gameVoice'] is True
+    else:
+        assert 'gameVoice' not in reply['payload']
 
 
 def speak(phone, seq, epoch, utterance, connection='test-connection'):
@@ -123,6 +127,57 @@ def test_breezeblue_mp3_plays_through_prepared_game_voice_lease(bridge):
         assert base64.b64decode(playback['audioBase64']).startswith(b'RIFF')
         pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': reaction['utteranceId']})
         assert phone.receive_json()['payload'] == {**identity, 'status': 'played'}
+
+
+@pytest.mark.parametrize('change_focus', [None, 'synthesis', 'playback'])
+def test_direct_breezeblue_uses_prepared_active_game_lease(bridge, monkeypatch, change_focus):
+    client, gateway = bridge
+    game = (41, 9, 'Hades.exe', {'left': 0})
+    active, begun, cancelled = Event(), Event(), Event()
+    active.set()
+    monkeypatch.setattr(config, 'breeze_api_key', 'fixture-only')
+    monkeypatch.setattr('fullawake.gateway.interrupt_controller.active_game_window',
+                        lambda: game if active.is_set() else None)
+    mp3 = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=f=523:d=0.3',
+                          '-f', 'mp3', 'pipe:1'], check=True, capture_output=True).stdout
+
+    async def synthesize(text, instructions, deadline_s):
+        assert text == '稳住呀。' and instructions == '轻笑' and 0 < deadline_s <= 8
+        begun.set()
+        if change_focus == 'synthesis':
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+        return mp3
+
+    monkeypatch.setattr(gateway.interrupts.breeze, 'synthesize', synthesize)
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, direct=True)
+        identity = {'epoch': INITIAL_EPOCH, 'utteranceId': 'direct-commentary'}
+        phone.send_json(frame('audio.prepare', 2, {**identity, 'gameProcess': game[2]}))
+        assert phone.receive_json()['type'] == 'audio.prepared'
+        phone.send_json(frame('audio.speak', 3, {**identity, 'text': '稳住呀。', 'instructions': '轻笑',
+                                                  'voiceProfile': 'breezeblue', 'deadlineMs': 15000}))
+        assert begun.wait(2)
+        if change_focus == 'synthesis':
+            active.clear()
+            assert phone.receive_json()['payload']['status'] == 'discarded'
+            assert cancelled.wait(2)
+            assert gateway.watch.bridge_output is None
+        else:
+            bubble, playback = pet.receive_json(), pet.receive_json()
+            assert bubble['text'] == '稳住呀。' and playback['event'] == 'playback_audio'
+            assert base64.b64decode(playback['audioBase64']).startswith(b'RIFF')
+            if change_focus == 'playback':
+                active.clear()
+                assert phone.receive_json()['payload']['status'] == 'discarded'
+                stopped = pet.receive_json()
+                assert stopped['event'] == 'playback_clock' and stopped['mode'] == 'idle'
+                assert stopped['utteranceId'] == bubble['utteranceId']
+            else:
+                pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': bubble['utteranceId']})
+                assert phone.receive_json()['payload']['status'] == 'played'
 
 
 def test_duplex_stream_correlates_each_sentence_and_retains_media_lease(bridge, monkeypatch):

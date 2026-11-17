@@ -3,6 +3,7 @@
 
 import { computeAcousticProfile } from './acoustic.js'
 import { runSpeak } from './runner.js'
+import { resolveVoiceInstructions } from './breezeblue.js'
 import { getOptionalService, getVoiceServices } from './services.js'
 import { findSong, PcSongCancelled, queuePcSong, renderSong } from './sing.js'
 import fs from 'node:fs'
@@ -114,8 +115,14 @@ export function apply(ctx, config = {}) {
   ctx.effect?.(() => () => lifetime.abort())
 
   ctx.effect?.(() => ctx.provide?.('rvcWatchVoice', {
-    async replyToQq(text, { instructions, execution } = {}) {
-      return speak({ text, instructions, provider: 'breezeblue' }, execution, { game: true })
+    gameInstructions(text) {
+      const mood = getOptionalService(ctx, 'heart')?.getSnapshot?.()?.mood || latestMood
+      const acoustic = computeAcousticProfile(mood, {})
+      if (!['tired', 'sleepy'].includes(mood?.state)) acoustic.emotion = 'playful'
+      return resolveVoiceInstructions(text, acoustic, mood)
+    },
+    async replyToQq(text, { instructions, execution, targetSession, observe = true } = {}) {
+      return speak({ text, instructions, provider: 'breezeblue' }, execution, { game: true, targetSession, observe })
     },
     async prepare(text, { signal, instructions, game = false } = {}) {
       if (mock) throw new Error('Watch requires real RVC audio')
@@ -200,7 +207,7 @@ export function apply(ctx, config = {}) {
     })
   )
 
-  async function speak(args, exec, { game = false } = {}) {
+  async function speak(args, exec, { game = false, targetSession, observe = true } = {}) {
     if (exec?.signal?.aborted) return { ok: false, cancelled: true, sent_to_qq: false, heart_observation: 'cancelled', plugin_version: pluginVersion };
     const text = String(args.text || '').trim()
     if (!text) {
@@ -211,8 +218,8 @@ export function apply(ctx, config = {}) {
     // Resolve for each invocation, so services loaded/reloaded later are used.
     const { heart, mediaSender, pcBridge: offloadBridge } = getVoiceServices(ctx)
     const gameTarget = game && config.autoSendQq !== false &&
-      mediaSender?.resolveTargetForSession?.(exec?.agent?.id)
-    if (game && (!gameTarget || typeof mediaSender?.sendVoice !== 'function')) {
+      mediaSender?.resolveTargetForSession?.(targetSession ?? exec?.agent?.id)
+    if (game && (gameTarget?.scope !== 'c2c' || !gameTarget.targetId || typeof mediaSender?.sendVoice !== 'function')) {
       return { ok: false, sent_to_qq: false, error: '当前会话没有已验证的 QQ 语音投递目标' }
     }
     let activityGate = { origin: 'unknown', reason: 'heart_unavailable' }
@@ -315,7 +322,7 @@ export function apply(ctx, config = {}) {
     res.releaseArtifact?.()
     // E. 发声经验回流心智 (heart.observe)
     let heartObservation = 'service_unavailable'
-    if (heart && typeof heart.observe === 'function') {
+    if (observe && heart && typeof heart.observe === 'function') {
       try {
         await heart.observe({
           type: 'audio',

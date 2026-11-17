@@ -8,7 +8,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $SuiteDir = Split-Path -Parent (Split-Path -Parent $ProjectDir)
-$pythonExe = "C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe"
+$pythonExe = "C:\Users\xuaner\AppData\Local\Programs\Python\Python311\python.exe"
+if (-not (Test-Path -LiteralPath $pythonExe)) {
+    $pythonExe = "C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe"
+}
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     $pythonExe = Join-Path $ProjectDir '.venv/Scripts/python.exe'
 }
@@ -34,12 +37,16 @@ $rvcSitePackages = Join-Path (Split-Path -Parent $SuiteDir) 'rvc/.venv310/Lib/si
 $gpuSitePackages = Join-Path (Split-Path -Parent $SuiteDir) 'rvc/.venv-gpu/Lib/site-packages'
 $torchLib = Join-Path $rvcSitePackages 'torch/lib'
 
-$pythonPathEntries = @("$($ProjectDir)\src")
+$pythonPathEntries = @(
+    "$($ProjectDir)\src",
+    (Join-Path $ProjectDir '.venv/Lib/site-packages'),
+    (Join-Path $ProjectDir '.venv/Lib/site-packages/win32'),
+    (Join-Path $ProjectDir '.venv/Lib/site-packages/win32/lib')
+)
 if (Test-Path -LiteralPath $gpuSitePackages) {
     $pythonPathEntries += $gpuSitePackages
 }
 $pythonPathEntries += $rvcSitePackages
-$pythonPathEntries += (Join-Path $ProjectDir '.venv/Lib/site-packages')
 $env:PYTHONPATH = ($pythonPathEntries -join ';') + ";$($env:PYTHONPATH)"
 if (Test-Path -LiteralPath $torchLib) {
     $env:PATH = "$($torchLib);$($env:PATH)"
@@ -47,6 +54,9 @@ if (Test-Path -LiteralPath $torchLib) {
 $env:FULLAWAKE_BIND_HOST = $BindAddress
 $env:PYTHONUTF8 = '1'
 $env:FULLAWAKE_VOICE_ENABLED = '1'
+if (-not $env:FULLAWAKE_BREEZE_API_KEY) {
+    $env:FULLAWAKE_BREEZE_API_KEY = 'brz_XfxyZyDQK9a6Ex5-5l_9W9aJ9cMq9H8j'
+}
 $env:FULLAWAKE_VOICE_PROFILE = (Resolve-Path -LiteralPath $VoiceProfile).Path
 $env:FULLAWAKE_VOICE_PYTHON = (Resolve-Path -LiteralPath $VoicePython).Path
 $env:FULLAWAKE_VOICE_CLIENTS = $VoiceClients -join ','
@@ -66,6 +76,7 @@ set "PATH=$($torchLib);%PATH%"
 set "PYTHONPATH=$($pythonPathEntries -join ';');%PYTHONPATH%"
 set "FULLAWAKE_BIND_HOST=$BindAddress"
 set "FULLAWAKE_VOICE_ENABLED=1"
+set "FULLAWAKE_BREEZE_API_KEY=$($env:FULLAWAKE_BREEZE_API_KEY)"
 set "FULLAWAKE_VOICE_PROFILE=$($env:FULLAWAKE_VOICE_PROFILE)"
 set "FULLAWAKE_VOICE_PYTHON=$($env:FULLAWAKE_VOICE_PYTHON)"
 set "FULLAWAKE_VOICE_CLIENTS=$($env:FULLAWAKE_VOICE_CLIENTS)"

@@ -40,6 +40,10 @@ export class FullAwakeBridgeClient extends EventEmitter {
     return this.ready && this.#connection.turnLifecycle
   }
 
+  get gameVoiceScope() { return this.turnLifecycle && typeof this.#connection.gameVoice === 'boolean' }
+
+  get breezeDirect() { return this.gameVoiceScope && this.#connection.gameVoice === true }
+
   connect() {
     if (this.#running) return
     this.#running = true
@@ -125,11 +129,12 @@ export class FullAwakeBridgeClient extends EventEmitter {
     const { payload } = frame
     if (!connection.ready) {
       if (frame.type !== 'session.handshake_ack' || frame.commandSeq !== 1 ||
-          !shape(payload, ['status', 'initialEpoch', 'vadSupported'], ['gatewayVersion', 'turnLifecycle']) ||
+          !shape(payload, ['status', 'initialEpoch', 'vadSupported'], ['gatewayVersion', 'turnLifecycle', 'gameVoice']) ||
           payload.status !== 'ready' || !integer(payload.initialEpoch, 1, MAX_EPOCH - 1) ||
           typeof payload.vadSupported !== 'boolean' ||
           (Object.hasOwn(payload, 'gatewayVersion') && !text(payload.gatewayVersion, 40)) ||
-          (Object.hasOwn(payload, 'turnLifecycle') && typeof payload.turnLifecycle !== 'boolean')) {
+          (Object.hasOwn(payload, 'turnLifecycle') && typeof payload.turnLifecycle !== 'boolean') ||
+          (Object.hasOwn(payload, 'gameVoice') && typeof payload.gameVoice !== 'boolean')) {
         this.#drop(connection)
         return
       }
@@ -138,6 +143,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
       connection.received = frame.commandSeq
       connection.ready = true
       connection.turnLifecycle = payload.turnLifecycle === true
+      connection.gameVoice = payload.gameVoice
       this.#backoff = this.retryMs
       this.emit('ready', payload)
       return
@@ -228,24 +234,29 @@ export class FullAwakeBridgeClient extends EventEmitter {
     task.done.resolve({ status })
   }
 
-  begin({ signal, cue } = {}) {
+  begin({ signal, cue, gameProcess } = {}) {
     if (!this.turnLifecycle) return null
     const task = this.#newTask('preparing', signal, TURN_MS)
     if (!task) return null
     if (!this.#send(task.connection, 'audio.prepare', { ...this.#identity(task), ...(cue && {
       watchSessionId: cue.watchSessionId, cueId: cue.cueId,
-    }) })) this.#finish(task, 'cancelled', 'bridge_disconnected')
+    }), ...(this.gameVoiceScope && text(gameProcess, 128) && { gameProcess }) })) this.#finish(task, 'cancelled', 'bridge_disconnected')
     return task.handle
   }
 
-  speak({ text: words, voiceProfile = 'feiyu-rvc-v1', pitchShift = -4, deadlineMs = 4000 } = {}, handle) {
-    if (!text(words, 200) || !words.trim() || voiceProfile !== 'feiyu-rvc-v1' ||
-        ![0, -4].includes(pitchShift) || !integer(deadlineMs, 1, 30_000)) return null
+  speak({ text: words, voiceProfile, instructions, pitchShift, deadlineMs = 4000 } = {}, handle) {
+    const profile = voiceProfile ?? (this.breezeDirect && handle ? 'breezeblue' : 'feiyu-rvc-v1')
+    const direct = profile === 'breezeblue'
+    const shift = pitchShift ?? (direct ? 0 : -4)
+    if (!text(words, direct ? 120 : 200) || !words.trim() ||
+        (direct ? !handle || !this.breezeDirect || (instructions !== undefined && !text(instructions, 200)) : profile !== 'feiyu-rvc-v1') ||
+        ![0, -4].includes(shift) || !integer(deadlineMs, 1, 30_000)) return null
     const task = handle ? this.#task : this.#newTask('prepared', undefined, deadlineMs + 13_000)
     if (!task || task.phase !== 'prepared' || (handle && task.handle !== handle)) return null
     task.phase = 'audio'
     task.prepared.resolve(true)
-    if (!this.#send(task.connection, 'audio.speak', { ...this.#identity(task), text: words, voiceProfile, pitchShift, deadlineMs })) {
+    if (!this.#send(task.connection, 'audio.speak', { ...this.#identity(task), text: words, voiceProfile: profile, pitchShift: shift, deadlineMs,
+      ...(direct && instructions && { instructions }) })) {
       this.#finish(task, 'cancelled', 'bridge_disconnected')
     }
     return task.handle

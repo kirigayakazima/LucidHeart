@@ -28,11 +28,13 @@ function execution(text, channel, { id = 'owner', kind = 'user' } = {}) {
   } }
 }
 
-async function fixture(t, game, { oldGateway = false, missingMetadata = false, singleOnly = false } = {}) {
-  const calls = [], voices = [], played = [], sent = [], saved = [], observations = []
+async function fixture(t, game, { oldGateway = false, missingMetadata = false, singleOnly = false,
+  active = false, direct = false, muted = false, qqTarget = 'owner', qqScope = 'c2c' } = {}) {
+  const calls = [], voices = [], played = [], sent = [], saved = [], observations = [], prepared = []
   const server = createServer(async (request, response) => {
     if (request.url === '/status') return response.end(JSON.stringify({ online: true,
-      snapshot_targets: oldGateway ? [] : ['auto_game'], game_snapshot_modes: singleOnly ? ['single'] : ['single', 'burst'] }))
+      snapshot_targets: oldGateway ? [] : ['auto_game'], game_snapshot_modes: singleOnly ? ['single'] : ['single', 'burst'],
+      game_watch_active: active, game_process: active ? game : null }))
     if (request.url.startsWith('/v1/pet/mood')) return response.writeHead(204).end()
     if (!['/mcp', '/breeze/voc_myarmcyqm2zv?output_format=mp3'].includes(request.url)) return response.writeHead(404).end()
     const chunks = []
@@ -59,10 +61,13 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
         protocol: 'lucid.voice/1', commandSeq: ++seq, payload: body }))
       const { epoch, utteranceId } = payload
       if (type === 'session.handshake') {
-        send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: true, turnLifecycle: true })
+        send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: true, turnLifecycle: true,
+          ...(direct && { gameVoice: true }) })
         ready.resolve()
-      } else if (type === 'audio.prepare') send('audio.prepared', { epoch, utteranceId })
-      else if (type === 'audio.play') {
+      } else if (type === 'audio.prepare') {
+        prepared.push(payload)
+        send('audio.prepared', { epoch, utteranceId })
+      } else if (type === 'audio.play' || type === 'audio.speak') {
         played.push(payload)
         send('audio.result', { epoch, utteranceId, status: 'played' })
       }
@@ -84,17 +89,19 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
     effect(fn) { const stop = fn(); if (typeof stop === 'function') dispose.push(stop) } }
   services.set('attachments', { async saveImage(value) { saved.push(value); return { id: 'game-frame', mediaType: 'image/jpeg' } } })
   services.set('heart', { version: '0.21.3', getSnapshot: () => ({ mood: { state: 'calm' } }),
-    evaluateActivity: () => ({ suitable: true, origin: 'user_request' }), async observe(item) { observations.push(item) } })
+    evaluateActivity: ({ category }) => ({ suitable: category !== 'voice' || !muted, origin: 'user_request' }),
+    async observe(item) { observations.push(item) } })
   services.set('qqbotMediaSender', {
-    resolveTargetForSession: id => id === 'owner' ? { channel: 'direct', userId: 'owner-qq' } : undefined,
+    resolveTargetForSession: id => id === 'owner' ? { scope: qqScope, targetId: 'owner-qq' } : undefined,
     async sendVoice(target, value) { sent.push({ target, value }); return { ok: true } },
   })
-  apply(host, { gatewayUrl: base, gameWatchQqSessions: ['owner'], voiceEpochProtocol: true, duplexTarget: 'pc-game' })
+  apply(host, { gatewayUrl: base, gameWatchQqSessions: ['owner'], gameWatchQqTargetSession: qqTarget,
+    voiceEpochProtocol: true, duplexTarget: 'pc-game' })
   applyRvc(host, { breezeApiKey: 'fixture-only', breezeEndpoint: `${base}/breeze`, songsDir: root,
     saveDataset: true, datasetDir: path.join(root, 'dataset') })
   await ready.promise
   await setImmediate()
-  return { tools, calls, voices, played, sent, saved, observations }
+  return { tools, calls, voices, played, sent, saved, observations, prepared }
 }
 
 for (const { game, request, line, channel } of fixtures) {
@@ -117,7 +124,7 @@ for (const { game, request, line, channel } of fixtures) {
     assert.equal(voices[0].text, line)
     assert.match(voices[0].instructions, /轻笑/)
     if (channel === 'pc') assert.deepEqual(Buffer.from(played[0].audioBase64, 'base64'), speech)
-    else assert.equal(sent[0]?.target.userId, 'owner-qq')
+    else assert.equal(sent[0]?.target.targetId, 'owner-qq')
     assert.deepEqual([sent.length, played.length], channel === 'pc' ? [0, 1] : [1, 0])
   })
 }
@@ -183,4 +190,49 @@ test('an authorized turn can explicitly choose single for a dynamic question', a
   const result = await tools.get('pc_snapshot').execute({ target: 'auto_game', mode: 'single' }, turn.next('capture'))
   assert.match(result.message, /当前游戏单帧/)
   assert.deepEqual(calls[0].arguments, { target: 'auto_game' })
+})
+
+for (const [channel, suffix, muted, expected] of [
+  ['pc', '', false, 'pc_pet'], ['qq', '', false, 'pc_pet'],
+  ['qq', '，发语音条', false, 'qq_voice'], ['pc', '，发语音条', false, 'qq_voice'],
+  ['qq', '，只回文字', false, 'text_only'], ['pc', '，发语音条', true, 'text_only'],
+]) {
+  test(`game voice ${channel}${suffix} muted=${muted} routes to ${expected}`, async t => {
+    const game = fixtures[2].game
+    const { tools, voices, played, sent, observations, prepared } = await fixture(t, game, { active: true, direct: true, muted })
+    const turn = execution(`小满看我游戏${suffix}`, channel, { id: channel === 'pc' ? 'pc-game' : 'owner' })
+    const view = await tools.get('pc_snapshot').execute({ target: 'auto_game' }, turn.next('capture'))
+    assert.equal(view.images.length, 1)
+    const line = '这点血得省着用呀。'
+    const result = await tools.get('pc_game_commentary').execute({ text: line }, turn.next('reply'))
+    const logs = observations.filter(item => item.source === 'game_companion')
+    if (expected === 'text_only') {
+      assert.match(result.message, /文字/)
+      assert.deepEqual([voices.length, played.length, sent.length, logs.length], [0, 0, 0, 0])
+      return
+    }
+    if (expected === 'pc_pet') {
+      assert.match(result.message, /已播完/)
+      assert.equal(prepared[0].gameProcess, game)
+      assert.equal(played[0].voiceProfile, 'breezeblue')
+      assert.match(played[0].instructions, /轻笑/)
+      assert(!Object.hasOwn(played[0], 'audioBase64'))
+      assert.deepEqual([voices.length, played.length, sent.length], [0, 1, 0])
+    } else {
+      assert.match(result.message, /已发送/)
+      assert.equal(sent[0].target.targetId, 'owner-qq')
+      assert.deepEqual([voices.length, played.length, sent.length], [1, 0, 1])
+    }
+    assert.deepEqual(logs.map(item => item.evidence), [{ scene: 'game_commentary', delivery: expected,
+      textLength: [...line].length, gameProcess: game }])
+  })
+}
+
+test('a configured PC-to-QQ route refuses a group resolution before synthesis', async t => {
+  const { tools, voices, played, sent } = await fixture(t, fixtures[2].game, { direct: true, qqScope: 'group' })
+  const turn = execution('小满看我游戏，发语音条', 'pc', { id: 'pc-game' })
+  await tools.get('pc_snapshot').execute({ target: 'auto_game' }, turn.next('capture'))
+  const result = await tools.get('pc_game_commentary').execute({ text: '看见啦。' }, turn.next('reply'))
+  assert.match(result.message, /未确认送达/)
+  assert.deepEqual([voices.length, played.length, sent.length], [0, 0, 0])
 })
