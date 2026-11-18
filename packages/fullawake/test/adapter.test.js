@@ -339,8 +339,9 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 首次装载
   const ctx1 = host.createContext('dsh-fullawake')
   apply(ctx1, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 11)
+  assert.equal(host.tools.size, 12)
   assert.equal(host.tools.has('pc_voice_control'), true)
+  assert.equal(host.tools.has('pc_game_commentary'), true)
 
   // 卸载
   ctx1.dispose()
@@ -350,7 +351,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 重新装载
   const ctx2 = host.createContext('dsh-fullawake')
   apply(ctx2, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 11)
+  assert.equal(host.tools.size, 12)
 
   ctx2.dispose()
   assert.equal(host.tools.size, 0)

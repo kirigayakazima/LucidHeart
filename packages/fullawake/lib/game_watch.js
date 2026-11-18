@@ -25,10 +25,11 @@ function gameUserTurn(exec, config) {
   const normalize = id => typeof id === 'string' ? id.replace(/^session-/, '') : ''
   const id = normalize(session.id ?? session.header?.id ?? exec.agent.id)
   let channel = null
-  if (qq?.channel === 'direct' && id &&
-      config.gameWatchQqSessions?.some(value => normalize(value) === id)) channel = 'qq'
-  if (!qq && config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow' &&
-      config.duplexTarget && exec.agent.id === config.duplexTarget) channel = 'pc'
+  const qqSessionAllowed = !config.gameWatchQqSessions?.length ||
+    config.gameWatchQqSessions.some(value => normalize(value) === id)
+  if (qq?.channel === 'direct' && id && qqSessionAllowed) channel = 'qq'
+  if (!qq && config.voiceEpochProtocol !== false && config.watchDecisionMode !== 'shadow' &&
+      (!config.duplexTarget || exec.agent.id === config.duplexTarget)) channel = 'pc'
   return { session, turn, messageId: message.id, channel, text }
 }
 

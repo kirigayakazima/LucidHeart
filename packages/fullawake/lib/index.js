@@ -190,7 +190,7 @@ export function apply(ctx, config = {}) {
   if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
       heartVersion: () => getHeart()?.version,
-      capture: Boolean(config.duplexTarget),
+      capture: true,
     })
     ctx.effect(() => {
       const observeInterrupt = ({ elapsedAudioMs }) => {
@@ -210,8 +210,9 @@ export function apply(ctx, config = {}) {
         block.text = clue + block.text
         if (Number.isSafeInteger(message.source.qq?.start)) message.source.qq.start += clue.length
       }, { global: true })
-      const offCancel = config.duplexTarget && ctx.on?.('conversation/cancel', event => {
-        if ((event?.agent?.id ?? event?.agentId ?? event?.id) === config.duplexTarget) bridge.cancelCurrent()
+      const offCancel = ctx.on?.('conversation/cancel', event => {
+        const targetId = event?.agent?.id ?? event?.agentId ?? event?.id
+        if (!config.duplexTarget || targetId === config.duplexTarget) bridge.cancelCurrent()
       })
       bridge.connect()
       return () => {
@@ -221,17 +222,17 @@ export function apply(ctx, config = {}) {
         bridge.stop()
       }
     })
-    if (config.duplexTarget) ctx.effect(() => registerVoiceCall(ctx, config, {
+    ctx.effect(() => registerVoiceCall(ctx, config, {
       bridge, defineTool, output: textOutput,
       readyForCall: async () => { await initialStatus; return lastStatus?.voice_calls === true },
     }))
-    if (config.duplexTarget) ctx.effect(() => ctx.tools.register(defineTool({
+    ctx.effect(() => ctx.tools.register(defineTool({
       name: 'pc_duplex_speak',
-      description: '在当前已配置的 PC 双工语音会话中，用桌宠扬声器回答用户。',
+      description: '在当前 PC 双工语音通话中，用桌宠扬声器回答用户。',
       parameters: { text: { type: 'string', required: true } },
       output: textOutput,
       async execute({ text }, exec) {
-        if (exec?.agent?.id !== config.duplexTarget || typeof text !== 'string' || !text.trim() || [...text].length > 200) {
+        if ((config.duplexTarget && exec?.agent?.id !== config.duplexTarget) || typeof text !== 'string' || !text.trim() || [...text].length > 200) {
           return { message: '当前会话或文本无法用于电脑双工发声。' }
         }
         const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
@@ -619,7 +620,7 @@ export function apply(ctx, config = {}) {
     }))
   )
 
-  if (config.gameWatchQqSessions?.length || (bridge && config.duplexTarget)) ctx.effect(() => ctx.tools.register(defineTool({
+  ctx.effect(() => ctx.tools.register(defineTool({
     name: 'pc_game_commentary',
     description: '游戏点播成功后，用小满的 BreezeBlue 音色发送简短点评。电脑游戏陪伴中优先桌宠，明确要求语音条则走已授权 QQ。静音时用文字。成功后无需重复文字。',
     parameters: { text: { type: 'string', required: true } },

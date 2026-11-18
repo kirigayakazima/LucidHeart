@@ -13,10 +13,11 @@ function callCommand(exec, config) {
   const block = message.content?.[0]
   if (block?.type !== 'text' || typeof block.text !== 'string') return null
   const qq = message.source.qq
-  if (!qq && exec.agent.id === config.duplexTarget) return { text: block.text, channel: 'direct' }
+  if (!qq && (!config.duplexTarget || exec.agent.id === config.duplexTarget)) return { text: block.text, channel: 'direct' }
   const normalize = id => typeof id === 'string' ? id.replace(/^session-/, '') : ''
   const id = normalize(session.id ?? session.header?.id ?? exec.agent.id)
-  if (qq?.channel !== 'direct' || !config.duplexQqSessions?.some(value => normalize(value) === id) ||
+  const sessionAllowed = !config.duplexQqSessions?.length || config.duplexQqSessions.some(value => normalize(value) === id)
+  if (qq?.channel !== 'direct' || !sessionAllowed ||
       typeof qq.speaker !== 'string' || !Number.isSafeInteger(qq.start) || !Number.isSafeInteger(qq.length) ||
       qq.start < 0 || qq.length <= 0 || qq.start > block.text.length - qq.length) return null
   return { text: block.text.slice(qq.start, qq.start + qq.length), channel: 'direct', speaker: qq.speaker }
@@ -73,7 +74,7 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
         const gate = await service('heart')?.evaluateActivity?.({ intent: 'voice_call', category: 'voice' }, { execution: exec })
         if (gate?.suitable !== true) return { message: 'Heart 当前未允许开启通话。' }
         if (!await readyForCall() || signal.aborted || !bridge.turnLifecycle) return { message: '电脑通话链路尚未就绪。' }
-        const agent = service('agents')?.get?.(config.duplexTarget)
+        const agent = service('agents')?.get?.(config.duplexTarget || exec?.agent?.id) ?? exec?.agent
         const duplex = service('voiceDuplex')
         if (!agent || !duplex?.startCall || !service('memory')?.handoff?.saveCall) return { message: '语音会话或记忆接力服务尚未就绪。' }
         handoffError = false
