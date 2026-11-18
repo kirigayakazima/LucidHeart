@@ -483,6 +483,7 @@ class InterruptController:
                 if not peer.turn_lifecycle or not peer.capture_enabled:
                     raise ValueError('Capture-capable peer required')
                 peer.call_active = command.active
+                log.info('Voice call state changed: active=%s', peer.call_active)
                 if self.on_call_change is not None:
                     self.on_call_change()
                 if not command.active:

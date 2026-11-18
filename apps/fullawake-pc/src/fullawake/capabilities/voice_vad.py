@@ -88,7 +88,7 @@ class SpeechGate:
             min_rms = max(220.0, self.noise * 4.5)
             required_voiced = 4
         else:
-            min_rms = max(80.0, self.noise * 2.5)
+            min_rms = max(30.0, self.noise * 2.5)
             required_voiced = 2
 
         if voiced and rms >= min_rms:
