@@ -66,6 +66,9 @@ $env:FULLAWAKE_VOICE_WORK_DIR = Join-Path $runDir 'voice-work'
 if (-not $env:FULLAWAKE_ASR_MODEL_DIR) {
     $env:FULLAWAKE_ASR_MODEL_DIR = Join-Path $runDir 'faster-whisper-base'
 }
+if (-not $env:FULLAWAKE_WATCH_TOKEN) {
+    $env:FULLAWAKE_WATCH_TOKEN = 'xiaoman-watch-loopback-token-2026'
+}
 if ($Background) {
     $stdoutFile = Join-Path $runDir 'gateway.stdout.log'
     $stderrFile = Join-Path $runDir 'gateway.stderr.log'
@@ -82,6 +85,8 @@ set "FULLAWAKE_VOICE_PYTHON=$($env:FULLAWAKE_VOICE_PYTHON)"
 set "FULLAWAKE_VOICE_CLIENTS=$($env:FULLAWAKE_VOICE_CLIENTS)"
 set "FULLAWAKE_VOICE_WORK_DIR=$($env:FULLAWAKE_VOICE_WORK_DIR)"
 set "FULLAWAKE_ASR_MODEL_DIR=$($env:FULLAWAKE_ASR_MODEL_DIR)"
+set "FULLAWAKE_WATCH_TOKEN=$($env:FULLAWAKE_WATCH_TOKEN)"
+set "FULLAWAKE_AUTH_TOKEN=$($env:FULLAWAKE_AUTH_TOKEN)"
 set "PYTHONUTF8=1"
 cd /d "$ProjectDir"
 "$pythonExe" -m fullawake.gateway.mcp_server > "$stdoutFile" 2> "$stderrFile"
