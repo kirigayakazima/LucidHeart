@@ -302,7 +302,7 @@ test('FullAwake reports the initial and changed Heart mood to the desktop', asyn
     assert.equal(event, 'heart/state-changed')
     stateChanged = handler
   }
-  apply(ctx, { gatewayUrl: gateway.url })
+  apply(ctx, { gatewayUrl: gateway.url, voiceEpochProtocol: false })
   await host.services.get('pcBridge').checkNow()
   stateChanged({ prev: { mood: { state: 'calm' } }, current: { mood: { state: 'tired' } } })
   for (let retries = 0; moods.length < 2 && retries < 100; retries++) await sleep(10)
@@ -339,9 +339,11 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 首次装载
   const ctx1 = host.createContext('dsh-fullawake')
   apply(ctx1, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 12)
+  assert.equal(host.tools.size, 14)
   assert.equal(host.tools.has('pc_voice_control'), true)
   assert.equal(host.tools.has('pc_game_commentary'), true)
+  assert.equal(host.tools.has('voice_call_toggle'), true)
+  assert.equal(host.tools.has('pc_duplex_speak'), true)
 
   // 卸载
   ctx1.dispose()
@@ -351,7 +353,7 @@ test('FullAwake Adapter: 5. 插件重载生命周期测试（无重复工具、�
   // 重新装载
   const ctx2 = host.createContext('dsh-fullawake')
   apply(ctx2, { gatewayUrl: 'http://127.0.0.1:8765' })
-  assert.equal(host.tools.size, 12)
+  assert.equal(host.tools.size, 14)
 
   ctx2.dispose()
   assert.equal(host.tools.size, 0)
@@ -410,7 +412,7 @@ test('watch tool yields one visual attachment and discards a scene changed durin
   host.services.set('attachments', { async saveImage() { return { id: 'watch-image' } } })
   host.services.set('heart', { getSnapshot: () => ({}), async evaluateActivity(args) { calls.push(args); return { suitable: allow } } })
   host.services.set('rvcWatchVoice', { async prepare() { voiceCalls++; watch.timeline = 'seek'; return Buffer.from('wav') } })
-  apply(ctx, { gatewayUrl: gateway.url })
+  apply(ctx, { gatewayUrl: gateway.url, voiceEpochProtocol: false })
   const exec = { agent: { id: 'owner' } }
   const get = () => host.tools.get('pc_watch_get_summary').execute({}, exec)
   const reply = (exec, voice = false) => host.tools.get('pc_watch_react').execute({
@@ -454,7 +456,7 @@ test('watch autoplay uses one image in an isolated DSH model call', async () => 
     yield { type: 'block-end', index: 0, block: { type: 'text', text: '{"text":"好利落的切镜。","intent":"nod"}' } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   } })
-  apply(ctx, { gatewayUrl: gateway.url, watchProvider: 'mock-vision', watchModel: 'mock-model' })
+  apply(ctx, { gatewayUrl: gateway.url, watchProvider: 'mock-vision', watchModel: 'mock-model', voiceEpochProtocol: false })
   const exec = { agent: { id: 'owner' } }
   try {
     assert.equal((await host.tools.get('pc_watch_auto').execute({ enabled: true }, exec)).status, 'started')

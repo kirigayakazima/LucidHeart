@@ -39,7 +39,7 @@ export const Config = z
       watchProvider: z.string().default('').description('自动陪看的 DSH 视觉模型提供者'),
       watchModel: z.string().default('').description('自动陪看的 DSH 视觉模型'),
       watchDecisionMode: z.union(['legacy', 'shadow', 'heart']).default('legacy').description('陪看决策模式'),
-      voiceEpochProtocol: z.boolean().default(false).description('启用桌宠语音租约与本地打断'),
+      voiceEpochProtocol: z.boolean().default(true).description('启用桌宠语音租约与本地打断（默认开启）'),
       bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
       duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
       duplexQqSessions: z.array(z.string()).default([]).description('允许开启电脑连麦的本人 QQ 私聊 session ID'),
@@ -187,7 +187,7 @@ export function apply(ctx, config = {}) {
   }
   let pcVoiceMuted = false
   let bridge
-  if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
+  if (config.voiceEpochProtocol !== false && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
       heartVersion: () => getHeart()?.version,
       capture: true,
