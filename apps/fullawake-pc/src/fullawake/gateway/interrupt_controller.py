@@ -241,6 +241,7 @@ class InterruptController:
             peer.speaking = False
 
     async def _transcribe_utterance(self, peer, wav_bytes: bytes):
+        log.info('VAD utterance (%d bytes), call_active=%s', len(wav_bytes), peer.call_active)
         if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
             return
         self._capture_epoch += 1
