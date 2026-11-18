@@ -244,15 +244,15 @@ class InterruptController:
         log.info('VAD utterance (%d bytes), call_active=%s', len(wav_bytes), peer.call_active)
         if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
             return
-        self._capture_epoch += 1
-        epoch = self._capture_epoch
-        turn_id = uuid4().hex
         try:
-            peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
             if text and self.peer is peer and peer.call_active:
+                self._capture_epoch += 1
+                epoch = self._capture_epoch
+                turn_id = uuid4().hex
                 log.info('PC mic transcript (%d chars): %s', len(text), text[:60])
+                peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
                           text=text[:1500], is_final=True)
         except Exception as error:
