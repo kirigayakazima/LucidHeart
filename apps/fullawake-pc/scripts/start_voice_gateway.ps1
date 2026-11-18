@@ -69,6 +69,9 @@ if (-not $env:FULLAWAKE_ASR_MODEL_DIR) {
 if (-not $env:FULLAWAKE_WATCH_TOKEN) {
     $env:FULLAWAKE_WATCH_TOKEN = 'xiaoman-watch-loopback-token-2026'
 }
+if (-not $env:FULLAWAKE_VAD_DEVICE_MODE) {
+    $env:FULLAWAKE_VAD_DEVICE_MODE = 'speaker'
+}
 if ($Background) {
     $stdoutFile = Join-Path $runDir 'gateway.stdout.log'
     $stderrFile = Join-Path $runDir 'gateway.stderr.log'
