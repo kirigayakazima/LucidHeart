@@ -179,17 +179,18 @@ class VoiceCompute:
         except (FFmpegError, ValueError, IndexError):
             return AUDIO_UNCLEAR
 
-        asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '小满，大肥鱼，清羽，阿醒，满宝，妹妹，姐姐')
+        asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '以下是普通话简体中文日常对话。小满，大肥鱼，清羽，阿醒，满宝。')
+        asr_lang = os.environ.get('FULLAWAKE_ASR_LANGUAGE', 'zh').strip() or None
+        transcribe_opts = dict(
+            beam_size=1, vad_filter=True, initial_prompt=asr_prompt,
+            language=asr_lang, condition_on_previous_text=False, no_speech_threshold=0.6,
+        )
         try:
-            segments, info = self.asr_model.transcribe(
-                samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
-            )
+            segments, info = self.asr_model.transcribe(samples, **transcribe_opts)
             segment_list = list(segments)
         except RuntimeError:
             self.__dict__['asr_model'] = self._load_asr_model('cpu')
-            segments, info = self.asr_model.transcribe(
-                samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
-            )
+            segments, info = self.asr_model.transcribe(samples, **transcribe_opts)
             segment_list = list(segments)
         transcript = ''.join(segment.text for segment in segment_list).strip()
         if not transcript:
