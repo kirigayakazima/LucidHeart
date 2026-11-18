@@ -34,6 +34,7 @@ import {
   dateOf,
   inQuietHours,
   readSpeak,
+  resolveQuietHours,
   resolveRoot,
 } from './store.js'
 import { log } from './logger.js'
@@ -89,13 +90,12 @@ export class HeartService {
     const now = new Date()
     const snapshot = this.getSnapshot()
     const config = this.#liveConfig()
-    const speak = readSpeak(this.root)
+    const { quietFrom, quietTo } = resolveQuietHours(config, readSpeak(this.root))
     const decision = this.#arbiter.evaluate({
       ...snapshot,
       idle: { ...snapshot.idle, totalReserved: countAutonomousReservations(this.root, now) },
       agency: {
-        quietHours: inQuietHours(now, config.quietFrom || speak.quietFrom || '23:00',
-          config.quietTo || speak.quietTo || '08:00', 'Asia/Shanghai'),
+        quietHours: inQuietHours(now, quietFrom, quietTo, 'Asia/Shanghai'),
         cooldownRemainingMs: Math.max(0, this.#interruptUntil - performance.now()),
       },
     }, { active, sceneChange })
@@ -279,20 +279,19 @@ export class HeartService {
     const mood = readMood(root)
     const trigger = readTrigger(root)
     const liveConfig = this.#liveConfig()
-    const speakState = readSpeak(root)
     const timeZone = 'Asia/Shanghai'
     const now = new Date()
 
-    // 1. 安静时段检查
-    const quietFrom = liveConfig.quietFrom || speakState?.quietFrom || '23:00'
-    const quietTo = liveConfig.quietTo || speakState?.quietTo || '08:00'
-    if (inQuietHours(now, quietFrom, quietTo, timeZone)) {
+    // 安静时段保护用户休息，真实用户回合仍可回应。
+    const { quietFrom, quietTo } = resolveQuietHours(liveConfig, readSpeak(root))
+    const isNight = inQuietHours(now, quietFrom, quietTo, timeZone)
+    if (autonomous && isNight) {
       return {
         suitable: false,
         reason: 'quiet-hours',
         origin,
         currentMood: mood.state,
-        recommendation: `当前处于安静时段（${quietFrom} - ${quietTo}），建议静默休息，不建议执行活动。`,
+        recommendation: `当前处于安静时段（${quietFrom} - ${quietTo}），小满自主活动建议静默休息。`,
       }
     }
 
@@ -344,13 +343,14 @@ export class HeartService {
       reason: 'ok',
       origin,
       quotaApplied: autonomous,
+      quietBypassed: !autonomous && isNight,
       currentMood: mood.state,
       quota: targetCat
         ? { used: targetCat.used, cap: targetCat.dailyCap, remaining: targetCat.remaining }
         : { used, cap, remaining: Math.max(0, cap - used) },
       recommendation: autonomous
         ? `当前状态 (${mood.state}) 适合进行该项活动 (${intent})。自主活动请通过正规工具记账。`
-        : `当前活动由用户消息触发，不占用自主活动配额；安静时段与心境门控仍然适用。`,
+        : isNight ? '夜深了，注意早点休息哦。' : '当前活动由用户消息触发，不占用自主活动配额。',
     }
   }
 

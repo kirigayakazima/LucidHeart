@@ -884,7 +884,7 @@ export function applyPulse(ctx, root, config, routeState, service = null) {
         if (routeState && !routeState.ready) registerRoutes(ctx, root, config, routeState)
         // 设置页改的是 heart/config.json；每个 tick 重读，类别/上限立即生效。
         const live = { ...config, ...readHeartConfig(root) }
-        const delivered = deliver(ctx, root)
+        const delivered = deliver(ctx, root, live)
         if (live.sense !== false) {
           const isStartup = isFirstTick
           isFirstTick = false
@@ -957,10 +957,10 @@ function createSelfMessage(text) {
 }
 
 /** 有排队的话、且能说，就通过 agent.followup 开一轮她自己的回合。 */
-export function deliver(ctx, root) {
+export function deliver(ctx, root, config) {
   const items = readOutbox(root)
   if (!items.length) return false
-  const gate = canSpeak(root)
+  const gate = canSpeak(root, new Date(), config)
   if (!gate.ok && !(gate.reason === 'budget' && items[0].kind === 'delivery')) {
     trace(root, 'speak:skip ' + gate.reason)
     return false

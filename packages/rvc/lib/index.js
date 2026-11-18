@@ -234,7 +234,8 @@ export function apply(ctx, config = {}) {
           error: `Heart 发声门控失败: ${error?.message || String(error)}` }
       }
       activityGate = { origin: evalRes?.origin || 'unknown', reason: evalRes?.reason,
-        quotaApplied: evalRes?.quotaApplied }
+        quotaApplied: evalRes?.quotaApplied,
+        ...(typeof evalRes?.quietBypassed === 'boolean' && { quietBypassed: evalRes.quietBypassed }) }
       if (evalRes && evalRes.suitable === false) {
         return {
           ok: false,
@@ -252,6 +253,13 @@ export function apply(ctx, config = {}) {
       ? heart.getSnapshot()
       : null
     let acoustic = computeAcousticProfile(snapshot?.mood || latestMood, { pitch: args.pitch, emotion: args.emotion })
+    let instructions = args.instructions
+    if (activityGate.quietBypassed === true) {
+      const requested = typeof instructions === 'string' ? instructions.trim() : ''
+      instructions = requested
+        ? `${requested}。夜深了，请放轻声音，轻声细语，体贴温柔。`
+        : '轻声细语，体贴温柔。'
+    }
 
     // C. 执行声音转换 (跨端分流与执行)
     let res
@@ -259,7 +267,7 @@ export function apply(ctx, config = {}) {
       res = await runSpeak({
         text,
         acoustic,
-        instructions: args.instructions,
+        instructions,
         provider: args.provider || config.provider || 'breezeblue',
         breezeApiKey: config.breezeApiKey,
         breezeVoiceId: config.breezeVoiceId,

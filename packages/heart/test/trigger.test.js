@@ -387,8 +387,8 @@ test('空闲额度按时段释放，未用额度顺延，当日最多六次', ()
     triggerState: { idleDate: '2026-10-21', idleCount },
     now: new Date(time),
   })
-  assert.equal(decide('2026-10-21T07:59:00', 0).reason, 'quiet-hours')
-  assert.equal(decide('2026-10-21T08:00:00', 0).ok, true)
+  assert.equal(decide('2026-10-21T06:59:00', 0).reason, 'quiet-hours')
+  assert.equal(decide('2026-10-21T07:00:00', 0).ok, true)
   assert.equal(decide('2026-10-21T11:59:00', 2).reason, 'bucket-cap')
   assert.equal(decide('2026-10-21T12:00:00', 2).ok, true)
   assert.equal(decide('2026-10-21T17:59:00', 3).ok, true)
@@ -396,7 +396,7 @@ test('空闲额度按时段释放，未用额度顺延，当日最多六次', ()
   assert.equal(decide('2026-10-21T18:00:00', 4).ok, true)
   assert.equal(decide('2026-10-21T22:59:00', 6).reason, 'daily-cap')
   assert.equal(decide('2026-10-21T23:00:00', 0).reason, 'quiet-hours')
-  assert.equal(decide('2026-10-22T08:00:00', 6).ok, true)
+  assert.equal(decide('2026-10-22T07:00:00', 6).ok, true)
 })
 
 test('类别额度：记一次、用完拒绝、跨日清零', () => {

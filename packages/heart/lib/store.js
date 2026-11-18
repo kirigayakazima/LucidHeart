@@ -1616,7 +1616,7 @@ export const SPEAK_DEFAULT = {
   lastSpokeAt: null,
   lastSpokeDate: null,
   quietFrom: '23:00',
-  quietTo: '08:00',
+  quietTo: '07:00',
   target: '',
 }
 
@@ -1639,11 +1639,20 @@ export function writeSpeak(root, patch) {
 }
 
 function minutesOf(text) {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(text || '').trim())
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(text || '').trim())
   return m ? Number(m[1]) * 60 + Number(m[2]) : null
 }
 
-/** 安静时段：跨午夜也成立（23:00–08:00）。 */
+export function resolveQuietHours(config = {}, speakState = {}) {
+  return {
+    quietFrom: [config.quietFrom, process.env.DSH_HEART_QUIET_FROM, speakState?.quietFrom, SPEAK_DEFAULT.quietFrom]
+      .find(value => minutesOf(value) !== null),
+    quietTo: [config.quietTo, process.env.DSH_HEART_QUIET_TO, speakState?.quietTo, SPEAK_DEFAULT.quietTo]
+      .find(value => minutesOf(value) !== null),
+  }
+}
+
+/** 安静时段：支持跨午夜。 */
 export function inQuietHours(now = new Date(), from, to, timeZone) {
   const f = minutesOf(from)
   const t = minutesOf(to)
@@ -1654,10 +1663,11 @@ export function inQuietHours(now = new Date(), from, to, timeZone) {
 }
 
 /** 今天还能不能说；说明理由，便于面板显示和自查。 */
-export function canSpeak(root, now = new Date()) {
+export function canSpeak(root, now = new Date(), config = readHeartConfig(root)) {
   const state = readSpeak(root)
   const tz = getHeartTimeZone(root)
-  if (inQuietHours(now, state.quietFrom, state.quietTo, tz)) return { ok: false, reason: 'quiet-hours', state }
+  const { quietFrom, quietTo } = resolveQuietHours(config, state)
+  if (inQuietHours(now, quietFrom, quietTo, tz)) return { ok: false, reason: 'quiet-hours', state }
   const today = dateOf(now, tz)
   const used = state.lastSpokeDate === today ? state.usedToday : 0
   if (used >= state.level) return { ok: false, reason: 'budget', state: { ...state, usedToday: used } }

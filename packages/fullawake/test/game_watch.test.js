@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { setImmediate } from 'node:timers/promises'
+import { setImmediate, setTimeout as delay } from 'node:timers/promises'
 import { test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { apply } from '../lib/index.js'
@@ -29,12 +29,14 @@ function execution(text, channel, { id = 'owner', kind = 'user' } = {}) {
 }
 
 async function fixture(t, game, { oldGateway = false, missingMetadata = false, singleOnly = false,
-  active = false, direct = false, muted = false, qqTarget = 'owner', qqScope = 'c2c' } = {}) {
+  active = false, direct = false, muted = false, qqTarget = 'owner', qqScope = 'c2c',
+  companion = false, decisionMode, playback = 'played' } = {}) {
   const calls = [], voices = [], played = [], sent = [], saved = [], observations = [], prepared = []
+  const controls = [], cancelled = []
   const server = createServer(async (request, response) => {
     if (request.url === '/status') return response.end(JSON.stringify({ online: true,
       snapshot_targets: oldGateway ? [] : ['auto_game'], game_snapshot_modes: singleOnly ? ['single'] : ['single', 'burst'],
-      game_watch_active: active, game_process: active ? game : null }))
+      game_watch_active: active, game_process: active ? game : null, game_watch_sessions: companion }))
     if (request.url.startsWith('/v1/pet/mood')) return response.writeHead(204).end()
     if (!['/mcp', '/breeze/voc_myarmcyqm2zv?output_format=mp3'].includes(request.url)) return response.writeHead(404).end()
     const chunks = []
@@ -53,6 +55,7 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
   })
   const sockets = new WebSocketServer({ server, path: '/ws/bridge' })
   const ready = Promise.withResolvers()
+  let push
   sockets.on('connection', socket => {
     let seq = 0
     socket.on('message', raw => {
@@ -61,6 +64,7 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
         protocol: 'lucid.voice/1', commandSeq: ++seq, payload: body }))
       const { epoch, utteranceId } = payload
       if (type === 'session.handshake') {
+        push = send
         send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: true, turnLifecycle: true,
           ...(direct && { gameVoice: true }) })
         ready.resolve()
@@ -69,7 +73,13 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
         send('audio.prepared', { epoch, utteranceId })
       } else if (type === 'audio.play' || type === 'audio.speak') {
         played.push(payload)
-        send('audio.result', { epoch, utteranceId, status: 'played' })
+        if (playback) send('audio.result', { epoch, utteranceId, status: playback })
+      } else if (type === 'audio.cancel') {
+        cancelled.push(payload)
+      } else if (type === 'game.watch') {
+        controls.push(payload.action)
+        const start = payload.action === 'start'
+        send('game.watch.status', { requestId: payload.requestId, status: start ? 'started' : 'stopped', watchId: start ? 'watch' : null })
       }
     })
   })
@@ -81,7 +91,7 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
     while (dispose.length) dispose.pop()()
     for (const socket of sockets.clients) socket.terminate()
     await new Promise(resolve => sockets.close(resolve))
-    await new Promise(resolve => server.close(resolve))
+    await new Promise(resolve => { server.close(resolve); server.closeAllConnections() })
     await rm(root, { recursive: true, force: true })
   })
   const host = { tools: { register(tool) { tools.set(tool.name, tool) } }, on() {},
@@ -96,13 +106,108 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
     async sendVoice(target, value) { sent.push({ target, value }); return { ok: true } },
   })
   apply(host, { gatewayUrl: base, gameWatchQqSessions: ['owner'], gameWatchQqTargetSession: qqTarget,
-    voiceEpochProtocol: true, duplexTarget: 'pc-game' })
+    voiceEpochProtocol: true, duplexTarget: 'pc-game', gameWatchCompanion: companion, watchDecisionMode: decisionMode })
   applyRvc(host, { breezeApiKey: 'fixture-only', breezeEndpoint: `${base}/breeze`, songsDir: root,
     saveDataset: true, datasetDir: path.join(root, 'dataset') })
-  await ready.promise
+  if (decisionMode !== 'shadow') await Promise.race([
+    ready.promise, delay(4000, undefined, { ref: false }).then(() => assert.fail('Game bridge handshake timed out')),
+  ])
   await setImmediate()
-  return { tools, calls, voices, played, sent, saved, observations, prepared }
+  return { tools, calls, voices, played, sent, saved, observations, prepared, controls, cancelled, heart: services.get('heart'),
+    candidate(eventId, extra) { push('game.watch.event', { watchId: 'watch', eventId, kind: 'death', outcome: null, remainingMs: 2500, ...extra }) } }
 }
+
+async function until(predicate) {
+  for (let tries = 0; tries < 100; tries++) {
+    if (predicate()) return
+    await delay(10)
+  }
+  assert.fail('Game watch side effect was not received')
+}
+
+for (const playback of ['played', 'discarded', null]) {
+  test(`game companion settles quota after ${playback ?? 'explicit stop'}`, { timeout: 5000 }, async t => {
+    const f = await fixture(t, fixtures[0].game, { companion: true, direct: true, playback })
+    let suitable = false
+    const quota = []
+    Object.assign(f.heart, {
+      evaluateActivity(request, context) {
+        assert.equal(context, undefined)
+        assert.deepEqual(request, { intent: 'game_companion', category: 'game' })
+        return { suitable }
+      },
+      agency: { evaluate: () => ({ action: 'SPEAK' }) },
+      reserveAutonomousQuota(category) { quota.push(['reserve', category]); return { ok: true, reservationId: 'held' } },
+      commitQuota(id) { quota.push(['commit', id]); return true },
+      rollbackQuota(id) { quota.push(['rollback', id]); return true },
+    })
+    const tool = f.tools.get('pc_game_watch')
+    const start = (text, channel, options) => tool.execute({ action: 'start' }, execution(text, channel, options).next('watch-start'))
+    await start('小满来陪我玩会儿游戏', 'group')
+    await start('小满来陪我玩会儿游戏', 'qq', { id: 'someone-else' })
+    await start('如果小满来陪我玩会儿游戏', 'qq')
+    await start('小满陪我看游戏', 'qq')
+    await start('小满来陪我玩会儿游戏', 'qq', { kind: 'schedule' })
+    assert.deepEqual(f.controls, [])
+    assert.match((await start('小满来陪我玩会儿游戏', 'qq')).message, /已开启/)
+    await tool.execute({ action: 'stop' }, execution('小满，打完这把再休息', 'qq').next('later'))
+    assert.deepEqual(f.controls, ['start'])
+    f.candidate('gated')
+    await delay(30)
+    assert.deepEqual(quota, [])
+    suitable = true
+    f.candidate('candidate', { kind: 'victory', outcome: 'loss' })
+    await until(() => f.played.length)
+    f.candidate('candidate')
+    assert.equal(f.prepared[0].gameEventId, 'candidate')
+    assert.equal(f.played[0].voiceProfile, 'breezeblue')
+    assert.equal(f.played[0].text, '这把辛苦啦，我还在呢。')
+    assert.ok(f.played[0].deadlineMs <= 2500)
+    await tool.execute({ action: 'stop' }, execution('小满，不打了', 'pc', { id: 'pc-game' }).next('watch-stop'))
+    await until(() => quota.length === 2)
+    if (playback === null) await until(() => f.cancelled.length === 1)
+    f.candidate('after-stop')
+    await delay(30)
+    assert.deepEqual(quota, [['reserve', 'game'], [playback === 'played' ? 'commit' : 'rollback', 'held']])
+    assert.equal(f.observations.filter(item => item.source === 'game_companion').length, playback === 'played' ? 1 : 0)
+    assert.equal(f.played.length, 1)
+    assert.deepEqual([f.calls, f.voices, f.sent, f.saved], [[], [], [], []])
+    assert.deepEqual(f.controls, ['start', 'stop'])
+  })
+}
+
+test('shadow cannot open an autonomous game companion', { timeout: 5000 }, async t => {
+  const f = await fixture(t, fixtures[0].game, { companion: true, direct: true, decisionMode: 'shadow' })
+  assert.equal(f.tools.has('pc_game_watch'), false)
+  assert.deepEqual(f.controls, [])
+})
+
+test('game companion drops denied and expired events before reserving quota', { timeout: 5000 }, async t => {
+  const f = await fixture(t, fixtures[0].game, { companion: true, direct: true })
+  const gates = []
+  const quotas = []
+  let decisions = 0
+  Object.assign(f.heart, {
+    evaluateActivity() { const gate = Promise.withResolvers(); gates.push(gate); return gate.promise },
+    agency: { evaluate() { decisions++; return { action: 'SILENCE' } } },
+    reserveAutonomousQuota(category) { quotas.push(category) },
+    commitQuota() {},
+    rollbackQuota() {},
+  })
+  const exec = execution('小满来陪我玩会儿游戏', 'pc', { id: 'pc-game' }).next('start')
+  assert.match((await f.tools.get('pc_game_watch').execute({ action: 'start' }, exec)).message, /已开启/)
+  f.candidate('expired', { remainingMs: 10 })
+  await until(() => gates.length === 1)
+  await delay(20)
+  gates[0].resolve({ suitable: true })
+  await setImmediate()
+  assert.equal(decisions, 0)
+  f.candidate('muted')
+  await until(() => gates.length === 2)
+  gates[1].resolve({ suitable: true })
+  await until(() => decisions === 1)
+  assert.deepEqual([quotas, f.prepared, f.played], [[], [], []])
+})
 
 for (const { game, request, line, channel } of fixtures) {
   test(`${game} single frame becomes one BreezeBlue reply on ${channel}`, { timeout: 8000 }, async t => {

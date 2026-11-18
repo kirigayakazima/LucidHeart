@@ -18,6 +18,7 @@ class FullAwakeConfig(BaseModel):
     host: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_BIND_HOST', '0.0.0.0').strip(), description="Bind IP")
     port: int = Field(default=8765, description="Port for MCP SSE and HTTP gateway")
     voice_enabled: bool = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_ENABLED') == '1')
+    game_watch_profiles: str = Field(default_factory=lambda: os.getenv('FULLAWAKE_GAME_WATCH_PROFILES', '').strip())
     breeze_api_key: str = Field(default_factory=lambda: (os.getenv('FULLAWAKE_BREEZE_API_KEY', '').strip() or 'brz_XfxyZyDQK9a6Ex5-5l_9W9aJ9cMq9H8j'), repr=False, exclude=True)
     breeze_endpoint: str = Field(default_factory=lambda: os.getenv('FULLAWAKE_BREEZE_ENDPOINT', 'https://api.breeze.blue/v1/text-to-speech'))
     breeze_voice_id: str = Field(default_factory=lambda: os.getenv('FULLAWAKE_BREEZE_VOICE_ID', 'voc_myarmcyqm2zv'))

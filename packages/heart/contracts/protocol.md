@@ -126,6 +126,7 @@ interface ActivityEvaluation {
   currentMood: string;
   origin?: 'user_request' | 'autonomous' | 'unknown';
   quotaApplied?: boolean;           // 成功评估时，自主配额是否参与判定
+  quietBypassed?: boolean;          // 成功评估时，真实用户回合是否获得夜间豁免
   quota?: {
     used: number;
     cap: number;

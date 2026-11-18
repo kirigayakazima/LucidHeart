@@ -5,7 +5,7 @@
 import { registerWatch } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
-import { GAME_VOICE_DIRECTION, gameWatchTurn, resolveDeliveryTarget } from './game_watch.js'
+import { GAME_VOICE_DIRECTION, gameWatchTurn, registerGameCompanion, resolveDeliveryTarget } from './game_watch.js'
 
 let compileTool = (t) => t
 try {
@@ -42,6 +42,7 @@ export const Config = z
       duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
       gameWatchQqSessions: z.array(z.string()).default([]).description('允许点播前台游戏的本人 QQ 私聊 session ID'),
       gameWatchQqTargetSession: z.string().default('').description('PC 明确要求 QQ 语音条时使用的已授权本人私聊 session ID'),
+      gameWatchCompanion: z.boolean().default(false).description('启用本人授权的前台游戏陪看会话与安全窗口短句'),
     })
   : undefined
 
@@ -244,6 +245,10 @@ export function apply(ctx, config = {}) {
     })))
   }
   registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge })
+  if (bridge && (config.gameWatchQqSessions?.length || config.duplexTarget)) ctx.effect(() => registerGameCompanion(ctx, config, {
+    bridge, defineTool, output: textOutput,
+    readyForWatch: async () => { await initialStatus; return lastStatus?.game_watch_sessions === true },
+  }))
   ctx.effect(() => registerTaskView(ctx, defineTool))
 
   // 2. PC 状态检测与 Heart 联动

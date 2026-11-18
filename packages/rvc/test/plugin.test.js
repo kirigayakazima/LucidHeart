@@ -1,6 +1,10 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { apply } from '../lib/index.js'
+import { HeartService } from '../../heart/lib/service.js'
 
 describe('@dsh/rvc Cordis Plugin & Heart Protocol v1 Integration', () => {
   function createMockCtx() {
@@ -156,6 +160,40 @@ describe('@dsh/rvc Cordis Plugin & Heart Protocol v1 Integration', () => {
     const result = await ctx._getTool('rvc_speak').execute({ text: '用户让我说话', origin: 'autonomous' }, exec)
     assert.equal(result.activity_gate.origin, 'user_request')
     assert.equal(result.activity_gate.quotaApplied, false)
+  })
+
+  test('rvc_speak applies gentle BreezeBlue direction to night replies and delivers morning replies', async t => {
+    const root = mkdtempSync(path.join(tmpdir(), 'rvc-quiet-hours-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const ctx = createMockCtx()
+    ctx.heart = new HeartService(null, path.join(root, 'heart'))
+    const exec = kind => ({ agent: { session: { events: [
+      { type: 'user/message', data: { role: 'user', source: { kind } } },
+    ] } } })
+    const requests = []
+    t.mock.method(globalThis, 'fetch', async (_url, options) => {
+      requests.push(JSON.parse(options.body))
+      return new Response(Buffer.concat([Buffer.from('ID3'), Buffer.alloc(4000, 1)]))
+    })
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-17T02:00:00+08:00') })
+    apply(ctx, { songsDir: root, breezeApiKey: 'test-only', breezeEndpoint: 'https://test.invalid', saveDataset: false })
+    const speak = ctx._getTool('rvc_speak').execute
+    const text = '哥哥，我在呢。'
+    const autonomous = await speak({ text, quietBypassed: true }, exec('schedule'))
+    assert.equal(autonomous.reason, 'quiet-hours')
+    assert.equal(requests.length, 0)
+    const night = await speak({ text }, exec('user'))
+    assert.equal(night.sent_to_qq, true)
+    assert.equal(night.activity_gate.quietBypassed, true)
+    assert.match(requests[0].instructions, /轻声细语，体贴温柔/)
+    const directions = '带一点笑意'
+    await speak({ text, instructions: directions }, exec('user'))
+    assert.match(requests[1].instructions, /^带一点笑意。.*轻声细语/)
+    t.mock.timers.setTime(Date.parse('2026-11-17T07:15:00+08:00'))
+    const morning = await speak({ text, instructions: directions }, exec('user'))
+    assert.equal(morning.sent_to_qq, true)
+    assert.equal(morning.activity_gate.quietBypassed, false)
+    assert.equal(requests[2].instructions, directions)
   })
   test('cancelled host execution never auto-delivers a completed audio result', async () => {
     const ctx = createMockCtx()

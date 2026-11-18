@@ -3,7 +3,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { canSpeak, consumeSpeak, dateOf, timeOf, ensureLayout, inQuietHours, readSpeak, resolveRoot, getZonedParts, safeAtomicReplace } from './store.js'
+import { canSpeak, consumeSpeak, dateOf, timeOf, ensureLayout, inQuietHours, readSpeak, resolveQuietHours, resolveRoot, getZonedParts, safeAtomicReplace } from './store.js'
 import { findActiveAgent } from './target.js'
 import { formatCommitmentCarePrompt } from './prompt.js'
 
@@ -156,8 +156,7 @@ export function shouldTriggerReturned({ prev, next, triggerState = {}, config = 
   }
 
   const tz = 'Asia/Shanghai'
-  const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
-  const quietTo = speakState?.quietTo || config.quietTo || '08:00'
+  const { quietFrom, quietTo } = resolveQuietHours(config, speakState)
   if (inQuietHours(now, quietFrom, quietTo, tz)) {
     return { ok: false, reason: 'quiet-hours' }
   }
@@ -192,11 +191,12 @@ export function shouldTriggerReturned({ prev, next, triggerState = {}, config = 
   return { ok: true, awayDuration }
 }
 
+const IDLE_BUCKET_START_HOUR = 7
 const IDLE_BUCKET_END_HOURS = [12, 18, 23]
 
 function idleBucket(now, timeZone) {
   const hour = getZonedParts(now, timeZone).hour
-  return hour >= 8 ? IDLE_BUCKET_END_HOURS.findIndex((end) => hour < end) : -1
+  return hour >= IDLE_BUCKET_START_HOUR ? IDLE_BUCKET_END_HOURS.findIndex((end) => hour < end) : -1
 }
 
 function idleRhythmAt(at, bucket, available, timeZone) {
@@ -208,7 +208,7 @@ function idleRhythmAt(at, bucket, available, timeZone) {
     const interval = Math.max(HOUR, (end - at) / available)
     return Math.min(at.getTime() + interval, end)
   }
-  return bucket === 2 ? midnight + 32 * HOUR : end
+  return bucket === 2 ? midnight + (24 + IDLE_BUCKET_START_HOUR) * HOUR : end
 }
 
 /** 空闲自主回合：消息静默达到阈值，且当前作息时段与排程均允许时触发。 */
@@ -230,8 +230,7 @@ export function shouldTriggerIdle({ next, triggerState = {}, config = {}, speakS
   }
 
   const tz = 'Asia/Shanghai'
-  const quietFrom = speakState?.quietFrom || config.quietFrom || '23:00'
-  const quietTo = speakState?.quietTo || config.quietTo || '08:00'
+  const { quietFrom, quietTo } = resolveQuietHours(config, speakState)
   const bucket = idleBucket(now, tz)
   if (bucket === -1 || inQuietHours(now, quietFrom, quietTo, tz)) {
     return { ok: false, reason: 'quiet-hours' }
@@ -405,7 +404,7 @@ export async function maybeTrigger(ctx, root, prev, next, config = {}, now = new
 
   const care = service && ctx.get?.('memory')?.commitments?.getActiveCommitmentCare?.(now, 'Asia/Shanghai')
   if (care && (used + held.length >= 6 || next?.presence === 'asleep' ||
-      inQuietHours(now, '23:00', '08:00', 'Asia/Shanghai') || !canSpeak(dir, now).ok ||
+      !canSpeak(dir, now, config).ok ||
       !service.evaluateActivity({ intent: 'companion_care', category: 'chat' }).suitable)) return false
 
   // 当空闲条件成立时，发布 heart/idle 契约事件

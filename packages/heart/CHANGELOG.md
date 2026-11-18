@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.21.4] - 2026-11-17
+
+- 默认安静时段为上海时间 23:00–07:00。来源明确的用户回合在夜间可响应，评估返回 `quietBypassed: true`，自主活动和未知来源继续静默。
+
 ## [0.20.2] - 2026-11-02
 
 - 本地运行诊断随 Heart 加载自动启动，不依赖手动 nohup 或自主唤醒开关；每60秒记录当前宿主PID、运行时长、RSS、heap及Linux MemAvailable。

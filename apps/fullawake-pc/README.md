@@ -44,6 +44,27 @@ FullAwake **0.2.9** 与 RVC **0.2.17** 使用同一套手机 Voice Director。PC
 
 自动化用例以模拟窗口和画面覆盖以上三种场景，并用测试语音端点验证投递。运行 `tests/test_game_snapshot.py`、`tests/test_voice_bridge.py` 和手机 FullAwake 的 `test/game_watch.test.js`。
 
+### 游戏陪看 3.0
+
+手机配置 `gameWatchCompanion: true` 和 `voiceEpochProtocol: true`。本人 QQ 私聊使用 `gameWatchQqSessions`，PC 麦克风使用绑定的 `duplexTarget`。主动短句需要 Heart 的 `agency2PCQuota: true`、PC BreezeBlue 和已连接的桌宠播放器。授权后，说“小满来陪我玩会儿游戏”开启，说“不打了”或“休息”结束。锁屏、桥接断开或目标窗口连续离开前台三分钟也会结束会话。
+
+PC 设置 `FULLAWAKE_GAME_WATCH_PROFILES` 为本地 JSON 文件路径，游戏进程还需在 `FULLAWAKE_GAME_PROCESSES` 中。按当前游戏 HUD、语言和缩放，分别截取死亡界面固定标识、胜利、失败、基地标识和基地状态小地图的模板。所有 ROI 都是相对游戏客户区的 `[左, 上, 右, 下]`，范围 0–1。模板路径相对于 JSON 文件且位于同一目录树。以下坐标仅演示格式：
+
+```json
+{
+  "League of Legends.exe": {
+    "death": { "roi": [0.42, 0.12, 0.58, 0.18], "template": "death.png" },
+    "timer": [0.46, 0.18, 0.54, 0.24],
+    "victory": { "roi": [0.32, 0.30, 0.68, 0.50], "template": "victory.png" },
+    "defeat": { "roi": [0.32, 0.30, 0.68, 0.50], "template": "defeat.png" },
+    "base": { "roi": [0.25, 0.55, 0.42, 0.72], "template": "base.png" },
+    "minimap": { "roi": [0.82, 0.71, 1.00, 1.00], "template": "base-map.png" }
+  }
+}
+```
+
+守望每 2.5 秒取样，PC 只保留最近两次本地特征。手机只收状态事件，Heart 决定是否发声，确认桌宠播完后才提交配额。事件到语音提交桌宠有 2.5 秒硬截止，切窗、画面回到战斗或临时失去安全特征时丢弃短句。真机可用 PC 日志 `Game watch … event to renderer` 核对时延，并分别验证死亡、回城、胜负结算和战斗静默。
+
 ## QQ 语音条转录
 
 `POST /v1/voice/asr` 接收 Silk、WAV、AMR 或 MP3 二进制，返回文字、时长与语言。回环调用可直接发送音频。无法识别时返回 `AUDIO_UNCLEAR`。

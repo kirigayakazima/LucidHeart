@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from fullawake import __version__
 from fullawake.capabilities.breezeblue_adapter import BreezeBlueAdapter
+from fullawake.capabilities.desktop_vision.game_watcher import EVENT_SECONDS, GameEvent, GameWatcher, WatchSession, load_profiles
 from fullawake.capabilities.desktop_vision.screen import active_game_window
 from fullawake.capabilities.desktop_vision.watch import MAX_WAV_BYTES, native_loopback, wav_duration
 from fullawake.capabilities.voice import ASSETS, DEFAULTS
@@ -44,7 +45,7 @@ class StrictFrame(BaseModel):
 
 class Frame(StrictFrame):
     protocol: Literal['lucid.voice/1']
-    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text']
+    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch']
     sessionId: str = Field(min_length=1, max_length=140)
     connectionId: str = Field(min_length=1, max_length=80)
     commandSeq: int = Field(ge=1, le=MAX_EPOCH)
@@ -67,6 +68,12 @@ class Prepare(Utterance):
     watchSessionId: str | None = Field(default=None, min_length=1, max_length=140)
     cueId: str | None = Field(default=None, min_length=1, max_length=40)
     gameProcess: str | None = Field(default=None, min_length=1, max_length=128)
+    gameEventId: str | None = Field(default=None, min_length=32, max_length=32)
+
+
+class GameWatchControl(StrictFrame):
+    requestId: str = Field(min_length=1, max_length=64)
+    action: Literal['start', 'stop']
 
 
 class PetText(Utterance):
@@ -143,6 +150,8 @@ class Lease:
     worker: asyncio.Task | None = None
     streaming: bool = False
     game: tuple | None = None
+    game_session: WatchSession | None = None
+    game_event: GameEvent | None = None
 
 
 @dataclass(eq=False)
@@ -159,10 +168,12 @@ class Peer:
     revoked_epochs: dict = field(default_factory=dict)
     speaking: bool = False
     lease: Lease | None = None
+    speech_generation: int = 0
+    game_offer: tuple[str, int] | None = None
     jobs: set = field(default_factory=set)
     outbound: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=16))
 
-    def send(self, kind, **payload):
+    def send(self, kind, /, **payload):
         self.sent_seq += 1
         self.outbound.put_nowait({'protocol': PROTOCOL, 'type': kind, 'sessionId': self.session,
                                  'connectionId': self.connection, 'commandSeq': self.sent_seq, 'payload': payload})
@@ -178,6 +189,12 @@ class InterruptController:
         self.watch = watch_cap
         self.voice = voice
         self.breeze = BreezeBlueAdapter()
+        try:
+            profiles = load_profiles(config.game_watch_profiles)
+        except (OSError, ValueError, TypeError, KeyError):
+            log.warning('Game watch profiles could not be loaded')
+            profiles = {}
+        self.game_watch = GameWatcher(profiles)
         self.peer = None
         self.vad = None
 
@@ -187,6 +204,7 @@ class InterruptController:
         if self.vad and hasattr(self.vad, 'set_playback_active'):
             self.vad.set_playback_active(False)
         peer.speaking = True
+        peer.speech_generation += 1
         lease = peer.lease
         if not lease:
             self.watch.interrupt_media()
@@ -212,6 +230,35 @@ class InterruptController:
     def on_speech_end(self, peer):
         if self.peer is peer:
             peer.speaking = False
+
+    def game_candidate(self, session, event):
+        peer = session.owner
+        remaining = min(2500, int((event.timestamp + EVENT_SECONDS - time.monotonic()) * 1000))
+        if (self.peer is peer and not peer.speaking and peer.lease is None and not peer.outbound.full()
+                and remaining > 0 and config.breeze_api_key and self.watch.player is not None):
+            peer.game_offer = (event.id, peer.speech_generation)
+            peer.send('game.watch.event', watchId=session.id, eventId=event.id, kind=event.type,
+                      outcome=event.outcome, remainingMs=remaining)
+
+    def game_ended(self, session, reason):
+        peer = session.owner
+        peer.game_offer = None
+        if peer.lease is not None and peer.lease.game_session is session:
+            self._settle(peer, peer.lease, 'discarded')
+        if self.peer is peer and not peer.outbound.full():
+            peer.send('game.watch.ended', watchId=session.id, reason=reason)
+
+    async def _control_game(self, peer, command):
+        if command.action == 'start':
+            available = peer.turn_lifecycle and config.breeze_api_key and self.watch.player is not None
+            session = await self.game_watch.start(peer) if available else None
+            peer.send('game.watch.status', requestId=command.requestId,
+                      status='started' if session else 'unavailable', watchId=session.id if session else None)
+        else:
+            session = self.game_watch.stop(peer)
+            if session:
+                self.game_ended(session, 'stopped')
+            peer.send('game.watch.status', requestId=command.requestId, status='stopped', watchId=None)
 
     async def _report_interrupt(self, peer, lease, receipt):
         elapsed = None
@@ -285,7 +332,8 @@ class InterruptController:
                 game = await asyncio.to_thread(active_game_window)
             except (OSError, RuntimeError, ValueError):
                 game = None
-            if game != lease.game:
+            if (game != lease.game or (lease.game_event is not None and
+                    self.game_watch.event(peer, lease.game_event.id)[1] is not lease.game_event)):
                 self._settle(peer, lease, 'discarded')
                 return
             await asyncio.sleep(0.1)
@@ -332,10 +380,19 @@ class InterruptController:
             audio, duration, intent = None, 4000, 'talk'
             if isinstance(command, Speak) and command.voiceProfile == 'breezeblue':
                 started = time.monotonic()
-                mp3 = await self.breeze.synthesize(command.text, command.instructions, deadline_s=min(8, lease.deadline - started))
-                if not self._can_render(peer, lease):
+                async def render_direct():
+                    mp3 = await self.breeze.synthesize(command.text, command.instructions,
+                                                       deadline_s=min(8, lease.deadline - started))
+                    if not self._can_render(peer, lease):
+                        return None
+                    wav = await game_audio_wav(mp3)
+                    if lease.game_event and not await self.game_watch.revalidate(lease.game_session, lease.game_event):
+                        return None
+                    return wav
+
+                audio = await asyncio.wait_for(render_direct(), lease.deadline - started)
+                if audio is None:
                     return
-                audio = await game_audio_wav(mp3)
                 duration = wav_duration(audio)
                 log.info('BreezeBlue audio ready in %.0f ms', (time.monotonic() - started) * 1000)
             elif isinstance(command, Speak):
@@ -366,6 +423,9 @@ class InterruptController:
             lease.receipt = self.watch.play_bridge(lease.renderer_id, command.text, audio, duration, intent)
             if not lease.receipt:
                 return
+            if lease.game_event is not None:
+                log.info('Game watch %s event to renderer in %.0f ms', lease.game_event.type,
+                         (time.monotonic() - lease.game_event.timestamp) * 1000)
             if audio is not None and self.vad and hasattr(self.vad, 'set_playback_active'):
                 self.vad.set_playback_active(True)
             end = time.monotonic() + (duration / 1000 + 2 if audio is not None else 2)
@@ -374,7 +434,7 @@ class InterruptController:
                 await asyncio.sleep(0.1)
             if lease.receipt.done():
                 outcome = self._outcome(lease)
-        except (OSError, ValueError, KeyError, TypeError, RuntimeError, wave.Error, EOFError) as error:
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError, wave.Error, EOFError, asyncio.TimeoutError) as error:
             log.info('Voice bridge speech discarded (%s)', type(error).__name__)
         finally:
             if self.vad and hasattr(self.vad, 'set_playback_active'):
@@ -390,6 +450,9 @@ class InterruptController:
             if frame.commandSeq <= peer.received_seq:
                 continue
             peer.received_seq = frame.commandSeq
+            if frame.type == 'game.watch':
+                await self._control_game(peer, GameWatchControl.model_validate(frame.payload))
+                continue
             if frame.type == 'audio.interrupt_ack':
                 ack = InterruptAck.model_validate(frame.payload)
                 if ack.abortedEpoch == peer.last_interrupted and ack.currentEpoch > ack.abortedEpoch:
@@ -412,6 +475,7 @@ class InterruptController:
             if matches and isinstance(lease.command, Prepare) and isinstance(command, (Speak, PlayAudio, PetText)):
                 direct = isinstance(command, Speak) and command.voiceProfile == 'breezeblue'
                 if (now >= lease.deadline or not self._fresh_cue(lease)
+                        or (lease.game_event is not None and (not direct or len(command.text) > 25))
                         or (direct and (not config.breeze_api_key or len(command.text) > 120))):
                     self._settle(peer, lease, 'discarded')
                 else:
@@ -440,6 +504,17 @@ class InterruptController:
                         self._result(peer, command, 'discarded')
                         continue
                     lease.game = game
+                if command.gameEventId is not None:
+                    session, event = self.game_watch.event(peer, command.gameEventId)
+                    offer = (command.gameEventId, peer.speech_generation)
+                    if (not config.breeze_api_key or command.cueId or command.gameProcess or not session or session.claimed
+                            or peer.game_offer != offer or now >= event.timestamp + EVENT_SECONDS
+                            or not await self.game_watch.revalidate(session, event) or peer.speech_generation != offer[1]):
+                        self._result(peer, command, 'discarded')
+                        continue
+                    session.claimed = True
+                    lease.game, lease.game_session, lease.game_event = session.game, session, event
+                    lease.deadline = event.timestamp + EVENT_SECONDS
                 peer.lease = lease
                 peer.send('audio.prepared', epoch=command.epoch, utteranceId=command.utteranceId)
                 self._spawn(peer, self._expire_prepared(peer, lease))
@@ -526,6 +601,7 @@ class InterruptController:
                     for task in readers:
                         task.cancel()
                     if peer is not None:
+                        self.game_watch.stop(peer)
                         lease, peer.lease = peer.lease, None
                         if lease is not None:
                             self.watch.cancel_output(bridge_utterance=lease.renderer_id)

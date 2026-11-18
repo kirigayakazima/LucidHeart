@@ -12,6 +12,7 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from fullawake.capabilities.voice import ASSETS
+from fullawake.capabilities.desktop_vision.game_watcher import GameEvent
 from fullawake.capabilities.voice_vad import SpeechGate
 from fullawake.core.config import config
 from fullawake.gateway.interrupt_controller import INITIAL_EPOCH, REVOKED_TTL
@@ -127,6 +128,86 @@ def test_breezeblue_mp3_plays_through_prepared_game_voice_lease(bridge):
         assert base64.b64decode(playback['audioBase64']).startswith(b'RIFF')
         pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': reaction['utteranceId']})
         assert phone.receive_json()['payload'] == {**identity, 'status': 'played'}
+
+
+@pytest.mark.parametrize('case', ['played', 'stale', 'timeout', 'unsafe', 'speech'])
+def test_game_watch_event_is_lease_scoped_and_uses_absolute_deadline(bridge, monkeypatch, case):
+    client, gateway = bridge
+    game = (41, 9, 'FixtureGame.exe', {'left': 0})
+    controller = gateway.interrupts
+    watcher = controller.game_watch
+    monkeypatch.setattr(config, 'breeze_api_key', 'fixture-only')
+    monkeypatch.setattr(watcher, 'profiles', {game[2].casefold(): object()})
+    monkeypatch.setattr(watcher, 'probe', lambda: (game, None))
+    monkeypatch.setattr('fullawake.gateway.interrupt_controller.active_game_window', lambda: game)
+    calls = []
+    event_id = 'a' * 32
+
+    async def revalidate(session, event):
+        calls.append(event.id)
+        if case == 'speech':
+            controller.on_speech_start(session.owner)
+            controller.on_speech_end(session.owner)
+        return case != 'unsafe' or len(calls) == 1
+
+    async def synthesize(text, instructions, deadline_s):
+        assert text == '缓一缓，我陪你等复活。' and 0 < deadline_s <= 2.5
+        if case == 'timeout':
+            await asyncio.sleep(1.2)
+            pytest.fail('Synthesis outlived the event deadline')
+        return b'test-audio'
+
+    async def decode(_):
+        return long_audio()
+
+    monkeypatch.setattr(watcher, 'revalidate', revalidate)
+    monkeypatch.setattr(controller.breeze, 'synthesize', synthesize)
+    monkeypatch.setattr('fullawake.gateway.interrupt_controller.game_audio_wav', decode)
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, direct=True)
+        phone.send_json(frame('game.watch', 2, {'action': 'start', 'requestId': 'start'}))
+        start = phone.receive_json()
+        assert start['type'] == 'game.watch.status' and start['payload']['status'] == 'started'
+
+        def emit():
+            session = watcher.session
+            timestamp = monotonic() - (1.75 if case == 'timeout' else 0)
+            session.pending = GameEvent(event_id, 'death', timestamp)
+            controller.game_candidate(session, session.pending)
+            if case == 'stale':
+                session.pending = GameEvent(event_id, 'death', timestamp - 3)
+
+        client.portal.call(emit)
+        candidate = phone.receive_json()
+        assert candidate['type'] == 'game.watch.event'
+        assert candidate['payload']['watchId'] == start['payload']['watchId']
+        assert set(candidate['payload']) == {'watchId', 'eventId', 'kind', 'outcome', 'remainingMs'}
+        identity = {'epoch': INITIAL_EPOCH, 'utteranceId': 'scene-commentary'}
+        phone.send_json(frame('audio.prepare', 3, {**identity, 'gameEventId': event_id}))
+        reply = phone.receive_json()
+        seq = 4
+        if case == 'stale':
+            assert reply['payload']['status'] == 'discarded' and not calls
+        elif case == 'speech':
+            assert reply['payload']['status'] == 'discarded' and calls == [event_id]
+        else:
+            assert reply['type'] == 'audio.prepared'
+            phone.send_json(frame('audio.speak', seq, {**identity, 'text': '缓一缓，我陪你等复活。',
+                                                       'voiceProfile': 'breezeblue', 'pitchShift': 0, 'deadlineMs': 2500}))
+            seq += 1
+            if case == 'played':
+                bubble, audio = pet.receive_json(), pet.receive_json()
+                assert audio['event'] == 'playback_audio' and len(calls) == 2
+                pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': bubble['utteranceId']})
+            assert phone.receive_json()['payload']['status'] == ('played' if case == 'played' else 'discarded')
+            assert gateway.watch.bridge_output is None
+        replay = {'epoch': INITIAL_EPOCH + 1, 'utteranceId': 'again', 'gameEventId': event_id}
+        phone.send_json(frame('audio.prepare', seq, replay))
+        assert phone.receive_json()['payload']['status'] == 'discarded'
+        phone.send_json(frame('game.watch', seq + 1, {'action': 'stop', 'requestId': 'stop'}))
+        assert phone.receive_json()['payload']['reason'] == 'stopped'
+        assert phone.receive_json()['payload']['status'] == 'stopped'
+    assert watcher.session is None
 
 
 @pytest.mark.parametrize('change_focus', [None, 'synthesis', 'playback'])

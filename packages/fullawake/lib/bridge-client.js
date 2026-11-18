@@ -1,4 +1,4 @@
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import pkg from '../package.json' with { type: 'json' }
 
@@ -96,6 +96,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
   #drop(connection) {
     if (connection !== this.#connection) return
     this.#connection = null
+    connection.gameRequest?.settle(null)
     this.emit('disconnected')
     clearTimeout(connection.timer)
     if (this.#task) this.#finish(this.#task, 'cancelled', 'bridge_disconnected')
@@ -149,6 +150,24 @@ export class FullAwakeBridgeClient extends EventEmitter {
       return
     }
     connection.received = frame.commandSeq
+    if (frame.type === 'game.watch.status' && shape(payload, ['requestId', 'status', 'watchId']) &&
+        text(payload.requestId, 80) && (payload.status === 'started' ? text(payload.watchId, 80) :
+          ['stopped', 'unavailable'].includes(payload.status) && payload.watchId === null)) {
+      if (connection.gameRequest?.id === payload.requestId) connection.gameRequest.settle(payload)
+      return
+    }
+    if (frame.type === 'game.watch.event' && shape(payload, ['watchId', 'eventId', 'kind', 'outcome', 'remainingMs']) &&
+        text(payload.watchId, 80) && text(payload.eventId, 80) && integer(payload.remainingMs, 1, 2500) &&
+        (payload.kind === 'victory' ? ['win', 'loss'].includes(payload.outcome) :
+          ['death', 'recall'].includes(payload.kind) && payload.outcome === null)) {
+      this.emit('game-watch-event', payload)
+      return
+    }
+    if (frame.type === 'game.watch.ended' && shape(payload, ['watchId', 'reason']) &&
+        text(payload.watchId, 80) && ['locked', 'away', 'stopped'].includes(payload.reason)) {
+      this.emit('game-watch-ended', payload)
+      return
+    }
     const task = this.#task
     if (this.capture && frame.type === 'audio.capture' && shape(payload, ['turnId', 'audio_epoch']) &&
         integer(payload.audio_epoch, 1) && (payload.turnId === null || text(payload.turnId, 80))) {
@@ -234,13 +253,40 @@ export class FullAwakeBridgeClient extends EventEmitter {
     task.done.resolve({ status })
   }
 
-  begin({ signal, cue, gameProcess } = {}) {
-    if (!this.turnLifecycle) return null
+  async watchGame(action, { signal } = {}) {
+    if (!['start', 'stop'].includes(action) || signal?.aborted) return null
+    if (action === 'start' && !this.ready && this.#running) {
+      const deadline = AbortSignal.timeout(2500)
+      try { await once(this, 'ready', { signal: signal ? AbortSignal.any([signal, deadline]) : deadline }) } catch { return null }
+    }
+    const connection = this.#connection
+    if (!this.breezeDirect || connection.gameRequest || signal?.aborted) return null
+    const { promise, resolve } = Promise.withResolvers()
+    const id = randomUUID()
+    const abort = () => this.#drop(connection)
+    const timer = setTimeout(abort, 2500)
+    timer.unref?.()
+    const settle = value => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', abort)
+      connection.gameRequest = null
+      resolve(value)
+    }
+    connection.gameRequest = { id, settle }
+    signal?.addEventListener('abort', abort, { once: true })
+    if (!this.#send(connection, 'game.watch', { action, requestId: id })) settle(null)
+    return promise
+  }
+
+  begin({ signal, cue, gameProcess, gameEventId } = {}) {
+    if (!this.turnLifecycle || (gameEventId !== undefined && (!this.breezeDirect || !text(gameEventId, 80) || cue || gameProcess))) return null
     const task = this.#newTask('preparing', signal, TURN_MS)
     if (!task) return null
     if (!this.#send(task.connection, 'audio.prepare', { ...this.#identity(task), ...(cue && {
       watchSessionId: cue.watchSessionId, cueId: cue.cueId,
-    }), ...(this.gameVoiceScope && text(gameProcess, 128) && { gameProcess }) })) this.#finish(task, 'cancelled', 'bridge_disconnected')
+    }), ...(this.gameVoiceScope && text(gameProcess, 128) && { gameProcess }), ...(gameEventId && { gameEventId }) })) {
+      this.#finish(task, 'cancelled', 'bridge_disconnected')
+    }
     return task.handle
   }
 

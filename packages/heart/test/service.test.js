@@ -192,12 +192,40 @@ test('user requests bypass autonomous quotas without modifying counters or other
   const { updateMood } = await import('../lib/mood.js')
   assert.equal(updateMood(root, { state: 'tired', intensity: 0.5, reason: 'deep_work' }).ok, true)
   assert.equal(service.evaluateActivity({ intent: 'heavy_audit' }, context('user')).reason, 'mood-tired')
-  const now = new Date()
-  const start = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-  const next = new Date(now.getTime() + 60000)
-  const end = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`
-  const night = new HeartService(new MockCordisContext(), root, { ...config, quietFrom: start, quietTo: end })
-  assert.equal(night.evaluateActivity(input, context('user')).reason, 'quiet-hours')
+})
+
+test('evaluateActivity: 用户夜间发声豁免，自主和未知来源静默，上海 07:00 解除', t => {
+  const root = tmpDir()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const service = new HeartService(new MockCordisContext(), root)
+  const input = { intent: 'voice_speak', category: 'voice' }
+  const context = kind => ({ execution: { agent: { session: { events: [
+    { type: 'user/message', data: { role: 'user', source: { kind } } },
+  ] } } } })
+  const at = time => Date.parse(`2026-11-17T${time}:00+08:00`)
+  t.mock.timers.enable({ apis: ['Date'], now: at('02:00') })
+  writeTrigger(root, { idleDate: dateOf(), idleCount: 6 })
+  const before = readTrigger(root)
+  for (const kind of ['schedule', 'plugin', 'unknown']) {
+    const gate = service.evaluateActivity(input, context(kind))
+    assert.equal(gate.reason, 'quiet-hours')
+    assert.equal(gate.suitable, false)
+  }
+  assert.equal(service.evaluateActivity({ ...input, origin: 'user_request' }).reason, 'quiet-hours')
+  const user = service.evaluateActivity(input, context('user'))
+  assert.equal(user.suitable, true)
+  assert.equal(user.origin, 'user_request')
+  assert.equal(user.quietBypassed, true)
+  assert.equal(user.quotaApplied, false)
+  assert.deepEqual(readTrigger(root), before)
+  t.mock.timers.setTime(at('06:59'))
+  assert.equal(service.evaluateActivity(input).reason, 'quiet-hours')
+  t.mock.timers.setTime(at('07:00'))
+  assert.equal(service.evaluateActivity(input).reason, 'daily-cap')
+  assert.equal(service.evaluateActivity(input, context('user')).quietBypassed, false)
+  writeHeartConfig(root, { quietTo: '08:00' })
+  assert.equal(service.evaluateActivity(input).reason, 'quiet-hours')
+  assert.equal(service.evaluateActivity(input, context('user')).quietBypassed, true)
 })
 
 test('HeartService 容错防御: 外部事件监听器异常不阻断 Heart 内部运行', async () => {

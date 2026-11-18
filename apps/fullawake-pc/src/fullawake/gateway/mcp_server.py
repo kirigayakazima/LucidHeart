@@ -72,6 +72,9 @@ class FullAwakeMCPGateway:
         @asynccontextmanager
         async def lifespan(_app):
             background = [asyncio.create_task(self.desktop.storyboard.run())]
+            if self.interrupts.game_watch.profiles:
+                background.append(asyncio.create_task(self.interrupts.game_watch.run(
+                    self.interrupts.game_candidate, self.interrupts.game_ended)))
             if config.voice_enabled:
                 self.voice.artifacts.sweep()
                 if config.voice_provider == CUDA and config.voice_profile:
@@ -174,6 +177,7 @@ class FullAwakeMCPGateway:
             game = await asyncio.to_thread(active_game_window)
             return {**get_session_status(), 'snapshot_targets': ['auto_game'], 'game_snapshot_modes': ['single', 'burst'],
                     'game_watch_active': game is not None, 'game_process': game[2] if game else None,
+                    'game_watch_sessions': bool(self.interrupts.game_watch.profiles and config.breeze_api_key),
                     'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
 
         @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])

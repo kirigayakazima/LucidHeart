@@ -10,6 +10,7 @@ import {
   readProfile,
   detectBodyProfile,
   resolveRoot,
+  resolveQuietHours,
 } from './store.js'
 import { findSessionMtimes } from './target.js'
 import { sampleWin } from './sense-win.js'
@@ -50,15 +51,14 @@ export function getSinceMsgMin(sessionsRoot, now = new Date()) {
 /**
  * 计算单次采样的原始 presence 状态（未去抖）。
  * 规则：
- *   asleep  = 安静时段（23:00–08:00）
+ *   asleep  = 安静时段（默认 23:00–07:00）
  *   present = idleMs <= 120_000 或 sinceMsgMin <= 5
  *   nearby  = sinceMsgMin <= awayMinutes（默认 30）
  *   away    = 其他
  */
 export function computeRawPresence(sample, options = {}) {
   const now = options.now ? new Date(options.now) : new Date(sample.at || Date.now())
-  const quietFrom = options.speakState?.quietFrom || options.quietFrom || '23:00'
-  const quietTo = options.speakState?.quietTo || options.quietTo || '08:00'
+  const { quietFrom, quietTo } = resolveQuietHours(options, options.speakState)
   const awayMinutes = Number(options.awayMinutes) || 30
 
   if (inQuietHours(now, quietFrom, quietTo)) {
@@ -93,8 +93,7 @@ export function applyPresence(prev, sample, config = {}, options = {}) {
   // 重启后的第一拍不继承上一次进程的 away 状态：否则隔天重启时，
   // 第一拍只写不触发、第二拍把旧的 awaySince 当成本次离开，长度算成几千分钟。
   if (options.isStartup) prev = null
-  const quietFrom = options.speakState?.quietFrom || options.quietFrom || config.quietFrom || '23:00'
-  const quietTo = options.speakState?.quietTo || options.quietTo || config.quietTo || '08:00'
+  const { quietFrom, quietTo } = resolveQuietHours({ ...config, ...options }, options.speakState)
   const awayMinutes = Number(config.awayMinutes) || 30
   const now = options.now ? new Date(options.now) : new Date(sample.at || Date.now())
 
