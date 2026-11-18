@@ -9,6 +9,33 @@ from threading import Event, Thread
 
 log = logging.getLogger(__name__)
 FRAME_MS = 20
+PTT_VIRTUAL_KEYS = {
+    'rctrl': 0xA3,
+    'lctrl': 0xA2,
+    'ctrl': 0x11,
+    'ralt': 0xA5,
+    'f8': 0x77,
+    'f9': 0x78,
+    'f10': 0x79,
+}
+
+
+def build_ptt_probe(ptt_key: str | None):
+    """Return a callable polling whether the configured push-to-talk key is held, or None."""
+    key = (ptt_key or '').strip().lower()
+    if not key or key in ('none', 'off', 'false', '0'):
+        return None
+    vk = PTT_VIRTUAL_KEYS.get(key)
+    if vk is None:
+        log.warning('Unknown push-to-talk key %r; PTT disabled', ptt_key)
+        return None
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        return lambda: bool(user32.GetAsyncKeyState(vk) & 0x8000)
+    except Exception:
+        log.warning('Push-to-talk key polling unavailable on this platform')
+        return None
 
 
 def playback_reference(wav_data):
@@ -109,13 +136,16 @@ class SpeechGate:
 
 
 class VoiceVadListener:
-    def __init__(self, on_speech_start, on_speech_end=None, sample_rate=16000, *, device=None, device_mode="headphone", on_utterance=None):
+    def __init__(self, on_speech_start, on_speech_end=None, sample_rate=16000, *, device=None,
+                 device_mode="headphone", on_utterance=None, ptt_key=None, ptt_probe=None):
         self.on_start = on_speech_start
         self.on_end = on_speech_end or (lambda: None)
         self.on_utterance = on_utterance
         self.sample_rate = sample_rate
         self.device = device
         self.device_mode = device_mode
+        self.ptt_key = (ptt_key or '').strip().lower()
+        self.ptt_probe = ptt_probe if ptt_probe is not None else build_ptt_probe(self.ptt_key)
         self._gate = None
         self._playback_active = False
         self.reference_provider = None
@@ -184,6 +214,9 @@ class VoiceVadListener:
             gate = SpeechGate(webrtcvad.Vad(2), self.sample_rate, _handle_start, _handle_end, device_mode=self.device_mode)
             gate.set_playback_active(self._playback_active)
             self._gate = gate
+            ptt_was_active = False
+            if self.ptt_probe is not None:
+                log.info('Push-to-talk enabled (key=%s): hold key to speak', self.ptt_key or 'custom')
             with sounddevice.RawInputStream(device=self.device, samplerate=self.sample_rate,
                                            blocksize=frames, channels=1, dtype='int16', latency='low') as stream:
                 self._available = True
@@ -191,6 +224,19 @@ class VoiceVadListener:
                 while not self._stop.is_set():
                     pcm, overflowed = stream.read(frames)
                     if not overflowed and not self._stop.is_set():
+                        if self.ptt_probe is not None:
+                            ptt_active = bool(self.ptt_probe())
+                            if ptt_active != ptt_was_active:
+                                log.info('PTT %s', 'pressed: mic gate open' if ptt_active else 'released: mic gate closed')
+                                ptt_was_active = ptt_active
+                            if not ptt_active:
+                                if capturing:
+                                    _handle_end()
+                                gate.speaking = False
+                                gate.voiced = 0
+                                gate.quiet = 0
+                                pre_roll.clear()
+                                continue
                         raw = bytes(pcm)
                         if capturing:
                             if len(utterance) < 750:

@@ -39,6 +39,10 @@ class FullAwakeConfig(BaseModel):
     def validate_vad_device_mode(cls, v):
         clean = str(v or 'headphone').strip().lower()
         return clean if clean in ('headphone', 'speaker') else 'headphone'
+    ptt_key: str = Field(
+        default_factory=lambda: os.getenv('FULLAWAKE_PTT_KEY', '').strip().lower(),
+        description="Optional push-to-talk key name (e.g. 'rctrl', 'f8', or '' to disable)",
+    )
     voice_profile: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROFILE', ''))
     voice_python: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PYTHON', ''))
     voice_provider: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_PROVIDER', 'CUDAExecutionProvider'))

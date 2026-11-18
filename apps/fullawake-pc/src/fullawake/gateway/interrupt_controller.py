@@ -613,6 +613,8 @@ class InterruptController:
                         sig = inspect.signature(VoiceVadListener.__init__)
                         if 'device_mode' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
                             vad_kwargs['device_mode'] = mode
+                        if 'ptt_key' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                            vad_kwargs['ptt_key'] = getattr(config, 'ptt_key', '')
                         if handshake.capture and ('on_utterance' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())):
                             vad_kwargs['on_utterance'] = lambda wav: loop.call_soon_threadsafe(
                                 self._spawn, peer, self._transcribe_utterance(peer, wav)

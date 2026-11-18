@@ -153,3 +153,78 @@ def test_config_vad_device_mode(monkeypatch):
     monkeypatch.setenv("FULLAWAKE_VAD_DEVICE_MODE", "unsupported_xyz")
     cfg_fallback = FullAwakeConfig()
     assert cfg_fallback.vad_device_mode == "headphone"
+
+
+def test_build_ptt_probe_and_config(monkeypatch):
+    from fullawake.capabilities.voice_vad import build_ptt_probe
+
+    assert build_ptt_probe("") is None
+    assert build_ptt_probe("none") is None
+    assert callable(build_ptt_probe("rctrl"))
+
+    monkeypatch.setenv("FULLAWAKE_PTT_KEY", "RCtrl")
+    assert FullAwakeConfig().ptt_key == "rctrl"
+
+
+def test_vad_listener_push_to_talk_gates_and_flushes(monkeypatch):
+    import sys
+    import threading
+    import types
+
+    pcm_loud = make_pcm(350)
+    # 10 frames unpressed, 15 frames pressed, 5 frames released
+    pressed_seq = [False] * 10 + [True] * 15 + [False] * 5
+    idx = {"i": 0}
+    starts, ends, utterances = [], [], []
+    done = threading.Event()
+
+    class FakeStream:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, frames):
+            i = idx["i"]
+            idx["i"] += 1
+            if i >= len(pressed_seq):
+                done.set()
+                return b"\x00" * (frames * 2), False
+            return pcm_loud, False
+
+    fake_sd = types.SimpleNamespace(RawInputStream=lambda **kw: FakeStream(**kw))
+
+    class FakeVad:
+        def __init__(self, mode):
+            pass
+
+        def is_speech(self, pcm, rate):
+            return True
+
+    fake_vad = types.SimpleNamespace(Vad=FakeVad)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setitem(sys.modules, "webrtcvad", fake_vad)
+
+    def probe():
+        pos = max(0, min(idx["i"] - 1, len(pressed_seq) - 1))
+        return pressed_seq[pos]
+
+    listener = VoiceVadListener(
+        lambda: starts.append(True),
+        lambda: ends.append(True),
+        on_utterance=lambda wav: utterances.append(wav),
+        ptt_key="rctrl",
+        ptt_probe=probe,
+    )
+    assert listener.start() is True
+    assert done.wait(2) is True
+    listener.stop()
+
+    assert len(starts) == 1
+    assert len(ends) >= 1
+    assert len(utterances) == 1
+    assert utterances[0].startswith(b"RIFF")
