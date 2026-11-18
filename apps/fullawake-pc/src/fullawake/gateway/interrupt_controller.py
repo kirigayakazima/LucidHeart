@@ -196,6 +196,7 @@ class InterruptController:
         self.watch = watch_cap
         self.voice = voice
         self.on_call_change = on_call_change
+        self._capture_epoch = 0
         self.breeze = BreezeBlueAdapter()
         try:
             profiles = load_profiles(config.game_watch_profiles)
@@ -238,6 +239,23 @@ class InterruptController:
     def on_speech_end(self, peer):
         if self.peer is peer:
             peer.speaking = False
+
+    async def _transcribe_utterance(self, peer, wav_bytes: bytes):
+        if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
+            return
+        self._capture_epoch += 1
+        epoch = self._capture_epoch
+        turn_id = uuid.uuid4().hex
+        try:
+            peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
+            result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
+            text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
+            if text and self.peer is peer and peer.call_active:
+                log.info('PC mic transcript (%d chars): %s', len(text), text[:60])
+                peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
+                          text=text[:1500], is_final=True)
+        except Exception as error:
+            log.warning('PC mic transcription failed: %s', error)
 
     def game_candidate(self, session, event):
         peer = session.owner
@@ -585,7 +603,7 @@ class InterruptController:
                 if lifecycle and tuple(map(int, version)) >= (0, 2, 10):
                     peer.call_active = False
                 supported = False
-                if config.voice_vad_enabled and not handshake.capture:
+                if config.voice_vad_enabled:
                     loop = asyncio.get_running_loop()
                     mode = getattr(config, 'vad_device_mode', 'headphone')
                     vad_kwargs = {'device': config.voice_vad_device}
@@ -593,6 +611,10 @@ class InterruptController:
                         sig = inspect.signature(VoiceVadListener.__init__)
                         if 'device_mode' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
                             vad_kwargs['device_mode'] = mode
+                        if handshake.capture and ('on_utterance' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())):
+                            vad_kwargs['on_utterance'] = lambda wav: loop.call_soon_threadsafe(
+                                self._spawn, peer, self._transcribe_utterance(peer, wav)
+                            )
                     except (ValueError, TypeError):
                         pass
                     vad = VoiceVadListener(lambda: loop.call_soon_threadsafe(self.on_speech_start, peer),

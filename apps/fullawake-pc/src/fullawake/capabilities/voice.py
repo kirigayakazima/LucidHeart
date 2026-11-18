@@ -153,7 +153,20 @@ class VoiceCompute:
         model_dir = os.environ.get('FULLAWAKE_ASR_MODEL_DIR')
         if not model_dir or not Path(model_dir).is_dir():
             raise RuntimeError('FULLAWAKE_ASR_MODEL_DIR must point to a local model')
-        return WhisperModel(model_dir, device='cuda', compute_type='float16', local_files_only=True)
+        return self._load_asr_model(os.environ.get('FULLAWAKE_ASR_DEVICE', 'cuda'))
+
+    def _load_asr_model(self, device: str):
+        from faster_whisper import WhisperModel
+
+        model_dir = os.environ.get('FULLAWAKE_ASR_MODEL_DIR')
+        if not model_dir or not Path(model_dir).is_dir():
+            raise RuntimeError('FULLAWAKE_ASR_MODEL_DIR must point to a local model')
+        if device == 'cpu':
+            return WhisperModel(model_dir, device='cpu', compute_type='int8', local_files_only=True)
+        try:
+            return WhisperModel(model_dir, device='cuda', compute_type='float16', local_files_only=True)
+        except RuntimeError:
+            return WhisperModel(model_dir, device='cpu', compute_type='int8', local_files_only=True)
 
     def transcribe(self, audio: bytes):
         from av.error import FFmpegError
@@ -167,10 +180,18 @@ class VoiceCompute:
             return AUDIO_UNCLEAR
 
         asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '小满，大肥鱼，清羽，阿醒，满宝，妹妹，姐姐')
-        segments, info = self.asr_model.transcribe(
-            samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
-        )
-        transcript = ''.join(segment.text for segment in segments).strip()
+        try:
+            segments, info = self.asr_model.transcribe(
+                samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
+            )
+            segment_list = list(segments)
+        except RuntimeError:
+            self.__dict__['asr_model'] = self._load_asr_model('cpu')
+            segments, info = self.asr_model.transcribe(
+                samples, beam_size=1, vad_filter=True, initial_prompt=asr_prompt
+            )
+            segment_list = list(segments)
+        transcript = ''.join(segment.text for segment in segment_list).strip()
         if not transcript:
             return AUDIO_UNCLEAR
         return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),

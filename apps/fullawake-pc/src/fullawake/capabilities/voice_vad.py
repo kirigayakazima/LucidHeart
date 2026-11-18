@@ -109,9 +109,10 @@ class SpeechGate:
 
 
 class VoiceVadListener:
-    def __init__(self, on_speech_start, on_speech_end=None, sample_rate=16000, *, device=None, device_mode="headphone"):
+    def __init__(self, on_speech_start, on_speech_end=None, sample_rate=16000, *, device=None, device_mode="headphone", on_utterance=None):
         self.on_start = on_speech_start
         self.on_end = on_speech_end or (lambda: None)
+        self.on_utterance = on_utterance
         self.sample_rate = sample_rate
         self.device = device
         self.device_mode = device_mode
@@ -147,13 +148,40 @@ class VoiceVadListener:
 
     def _run(self):
         try:
+            from collections import deque
             import sounddevice
             import webrtcvad
 
             if self._stop.is_set():
                 return
             frames = self.sample_rate * FRAME_MS // 1000
-            gate = SpeechGate(webrtcvad.Vad(2), self.sample_rate, self.on_start, self.on_end, device_mode=self.device_mode)
+            pre_roll = deque(maxlen=15)
+            utterance = []
+            capturing = False
+
+            def _handle_start():
+                nonlocal capturing, utterance
+                capturing = True
+                utterance = list(pre_roll)
+                self.on_start()
+
+            def _handle_end():
+                nonlocal capturing, utterance
+                was_capturing = capturing
+                captured = utterance
+                capturing = False
+                utterance = []
+                self.on_end()
+                if was_capturing and self.on_utterance and len(captured) >= 12:
+                    buf = BytesIO()
+                    with wave.open(buf, 'wb') as out:
+                        out.setnchannels(1)
+                        out.setsampwidth(2)
+                        out.setframerate(self.sample_rate)
+                        out.writeframes(b''.join(captured))
+                    self.on_utterance(buf.getvalue())
+
+            gate = SpeechGate(webrtcvad.Vad(2), self.sample_rate, _handle_start, _handle_end, device_mode=self.device_mode)
             gate.set_playback_active(self._playback_active)
             self._gate = gate
             with sounddevice.RawInputStream(device=self.device, samplerate=self.sample_rate,
@@ -163,10 +191,16 @@ class VoiceVadListener:
                 while not self._stop.is_set():
                     pcm, overflowed = stream.read(frames)
                     if not overflowed and not self._stop.is_set():
+                        raw = bytes(pcm)
+                        if capturing:
+                            if len(utterance) < 750:
+                                utterance.append(raw)
+                        else:
+                            pre_roll.append(raw)
                         if self.reference_provider:
                             active, gate.reference = self.reference_provider()
                             gate.set_playback_active(active)
-                        gate.feed(bytes(pcm))
+                        gate.feed(raw)
         except Exception as error:
             log.warning('Microphone VAD unavailable (%s)', type(error).__name__)
         finally:
