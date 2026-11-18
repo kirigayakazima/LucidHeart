@@ -245,7 +245,7 @@ class InterruptController:
             return
         self._capture_epoch += 1
         epoch = self._capture_epoch
-        turn_id = uuid.uuid4().hex
+        turn_id = uuid4().hex
         try:
             peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
