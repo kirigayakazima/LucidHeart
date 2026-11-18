@@ -26,7 +26,7 @@ from fullawake import __version__
 
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.capabilities.desktop_vision import DesktopVisionCapability
-from fullawake.capabilities.desktop_vision.screen import active_game_window
+from fullawake.capabilities.desktop_vision.screen import REGION_BOXES, active_game_window
 from fullawake.capabilities.desktop_vision.watch import WatchCapability, native_loopback
 from fullawake.capabilities.safe_fs import SafeFSCapability
 from fullawake.core.auth import verify_token
@@ -65,8 +65,8 @@ class FullAwakeMCPGateway:
         self.voice = VoiceCompute()
         self.sing_jobs = SingJobQueue(self._render_sing_job)
         self.watch = WatchCapability()
-        self.interrupts = InterruptController(self.watch, self.voice)
         self.capture_turn = None
+        self.interrupts = InterruptController(self.watch, self.voice, on_call_change=self._clear_capture)
         self.desktop = DesktopVisionCapability()
 
         @asynccontextmanager
@@ -148,6 +148,9 @@ class FullAwakeMCPGateway:
         self.register_capability(self.watch)
         self.register_capability(SafeFSCapability())
 
+    def _clear_capture(self):
+        self.capture_turn = None
+
     def _interrupt_desktop_playback(self, *, revoke_capture=True):
         peer = self.interrupts.peer
         turn = self.capture_turn
@@ -178,6 +181,8 @@ class FullAwakeMCPGateway:
             return {**get_session_status(), 'snapshot_targets': ['auto_game'], 'game_snapshot_modes': ['single', 'burst'],
                     'game_watch_active': game is not None, 'game_process': game[2] if game else None,
                     'game_watch_sessions': bool(self.interrupts.game_watch.profiles and config.breeze_api_key),
+                    'voice_calls': True,
+                    'snapshot_regions': list(REGION_BOXES),
                     'voice': {'enabled': config.voice_enabled, 'mode': 'pc_onnx_offload'}}
 
         @app.post('/v1/voice/asr', dependencies=[Depends(verify_token)])
@@ -195,10 +200,12 @@ class FullAwakeMCPGateway:
                 turn = self.capture_turn
                 capture = request.headers.get('x-fullawake-capture')
                 if capture and (not trusted_capture(request) or not turn or turn[0] != capture or not turn[2] or
+                                turn[1].call_active is False or
                                 request.headers.get('x-fullawake-capture-epoch') != str(turn[3])):
                     raise HTTPException(409, 'CAPTURE_STALE')
                 result = await asyncio.to_thread(self.voice.transcribe, bytes(body))
-                if capture and self.capture_turn is turn and self.interrupts.peer is turn[1] and turn[2] is not None:
+                if (capture and self.capture_turn is turn and self.interrupts.peer is turn[1] and
+                        turn[2] is not None and turn[1].call_active is not False):
                     is_final = request.headers.get('x-fullawake-asr-final') == '1'
                     if is_final:
                         self.capture_turn = (capture, turn[1], None, turn[3])
@@ -225,7 +232,7 @@ class FullAwakeMCPGateway:
                     (turn_id and not re.fullmatch(r'[a-f0-9-]{36}', turn_id))):
                 raise HTTPException(422, 'CAPTURE_INVALID')
             peer = self.interrupts.peer
-            if not peer or not peer.capture_enabled or peer.outbound.full():
+            if not peer or not peer.capture_enabled or peer.call_active is False or peer.outbound.full():
                 raise HTTPException(503, 'CAPTURE_HOST_UNAVAILABLE')
             previous = self.capture_turn
             if previous and previous[0] == capture and previous[1] is peer and previous[3] >= audio_epoch:
@@ -651,6 +658,8 @@ class FullAwakeMCPGateway:
                                     "success": True,
                                     "original_size": result_data.get("original_size"),
                                     "snapshot_size": result_data.get("snapshot_size"),
+                                    **({key: result_data[key] for key in ('region', 'crop_rect', 'estimated_visual_tokens')}
+                                       if result_data.get('region') in REGION_BOXES else {}),
                                     **({"target": "auto_game", "game_process": result_data["game_process"]}
                                        if result_data.get("target") == "auto_game" else {}),
                                     **({key: result_data[key] for key in ('mode', 'frame_count', 'duration_s')}

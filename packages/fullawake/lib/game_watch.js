@@ -1,5 +1,6 @@
 const gameRequest = /(?:看(?:看)?我.{0,8}(?:游戏|这一把|这把|这一波|这波|操作|打到哪)|(?:看|瞧)(?:看|瞧)?.{0,6}(?:游戏|战况|打到哪|这波操作)|我卡.{0,6}(?:看看画面|看一下)|刚才怎么(?:死|输)的)/u
 const burstRequest = /(?:这一波|这波|上一波).{0,7}(?:操作|走位|打得|怎么打|团战)|(?:看看?|瞧瞧?).{0,5}(?:这一波|这波)(?:[，。！？!?\s]|$)|刚才.{0,8}(?:那下|打得|操作|怎么死|怎么输|怎么赢|怎么打|走位|帅不帅|发生了什么)/u
+const zoomRequest = /(?:看|瞧|放大).{0,6}(?:左边|右边|上面|下面|中间|角落|装备|小地图)/u
 const stopRequest = /(?:不要|不用|别|停止|取消|暂不)(?:再|继续|帮我|给我|先|去)?(?:看|截|陪玩)|(?:如果|假如|举例|复述|引用|假装)/u
 const turnBoundary = new Set(['turn/start', 'turn/end', 'session/end-seed'])
 
@@ -36,7 +37,7 @@ export function gameWatchTurn(exec, config) {
   if (!user) return null
   const { text, ...turn } = user
   const burst = burstRequest.test(text)
-  if ((!burst && !gameRequest.test(text)) || stopRequest.test(text)) return null
+  if ((!burst && !gameRequest.test(text) && !zoomRequest.test(text)) || stopRequest.test(text)) return null
   const preference = /(?:静音|别出声|不要出声|别发语音|不要发语音|只(?:回|发)?文字)/u.test(text) ? 'text'
     : /(?:发|回|给我来)(?:我)?(?:一|个|段|条|句)*语音(?:条|消息)?/u.test(text) ? 'qq' : undefined
   return { ...turn, preference, mode: burst ? 'burst' : 'single' }
@@ -95,7 +96,7 @@ export function registerGameCompanion(ctx, config, { bridge, defineTool, output,
       const quota = heart.reserveAutonomousQuota?.('game')
       if (quota?.ok !== true || !quota.reservationId) return
       reservation = quota.reservationId
-      turn = bridge.begin({ signal: current.controller.signal, gameEventId: eventId })
+      turn = bridge.begin({ signal: current.controller.signal, gameEventId: eventId, agentId: current.agentId })
       if (!turn || !await turn.prepared || !fresh()) return
       const instructions = service('rvcWatchVoice')?.gameInstructions?.(line) ?? GAME_VOICE_DIRECTION
       const deadlineMs = Math.floor(expires - performance.now())
@@ -144,7 +145,7 @@ export function registerGameCompanion(ctx, config, { bridge, defineTool, output,
         if (!await readyForWatch()) return { message: '电脑尚未就绪，请检查连接、游戏配置与 BreezeBlue。' }
         const result = await bridge.watchGame('start', { signal })
         if (signal.aborted || result?.status !== 'started') return { message: '当前前台游戏无法开启陪看。' }
-        watch = { id: result.watchId, controller: new AbortController(), busy: false, latest: null }
+        watch = { id: result.watchId, agentId: exec.agent.id, controller: new AbortController(), busy: false, latest: null }
         return { message: '游戏陪看已开启。我会在安全窗口轻声陪你。' }
       } finally { starting = null }
     },

@@ -25,6 +25,22 @@ class RECT(ctypes.Structure):
 
 
 PET_OVERLAY_PROPERTY = 'LucidHeart.GameWatch.PetOverlay.v1'
+REGION_BOXES = {
+    'full': (0, 0, 1, 1),
+    'left': (0, 0, .5, 1), 'right': (.5, 0, 1, 1),
+    'top': (0, 0, 1, .5), 'bottom': (0, .5, 1, 1),
+    'center': (.25, .25, .75, .75),
+    'top_left': (0, 0, .55, .55), 'top_right': (.45, 0, 1, .55),
+    'bottom_left': (0, .45, .55, 1), 'bottom_right': (.45, .45, 1, 1),
+    'minimap': (.45, .45, 1, 1),
+}
+
+
+def crop_region(image, region):
+    x0, y0, x1, y1 = REGION_BOXES[region]
+    box = (int(image.width * x0), int(image.height * y0), int(image.width * x1), int(image.height * y1))
+    left, top, right, bottom = box
+    return image.crop(box), {'left': left, 'top': top, 'width': right - left, 'height': bottom - top}
 
 
 def foreground_game(user32):
@@ -112,11 +128,14 @@ def active_game_window():
         return foreground_game(ctypes.windll.user32)
 
 
-def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, sample: bool = False) -> Dict[str, Any]:
+def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, sample: bool = False,
+                       region: Optional[str] = None) -> Dict[str, Any]:
     """Capture a screenshot of the entire desktop or a specific window by HWND.
 
     Returns a dict with dimensions and base64-encoded JPEG data.
     """
+    if region is not None and (not isinstance(region, str) or region not in REGION_BOXES or sample):
+        return {'error': 'Unsupported screenshot region.', 'code': 'invalid_region'}
     if (is_desktop_locked(strict=True) if auto_game else is_desktop_locked()):
         return {
             "error": "PC session is locked. Screen capture is disabled for security and privacy.",
@@ -189,12 +208,19 @@ def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, s
         return {'game': game, 'image': img}
 
     orig_w, orig_h = img.size
+    metadata = {}
+    if region is not None:
+        img, bounds = crop_region(img, region)
+        metadata = {'region': region, 'crop_rect': bounds, 'estimated_visual_tokens': 384}
 
     # Scale down if exceeds max bounds while preserving aspect ratio
     max_w = config.max_snapshot_width
     max_h = config.max_snapshot_height
+    if region is not None:
+        max_w, max_h = min(768, max_w), min(768, max_h)
     img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
     return encode_snapshot(img, original=(orig_w, orig_h),
+                           **metadata,
                            **({'target': 'auto_game', 'game_process': game[2]} if game is not None else {}))
 
 

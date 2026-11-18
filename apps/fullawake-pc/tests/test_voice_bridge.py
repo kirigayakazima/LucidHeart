@@ -107,6 +107,34 @@ def test_authenticated_capture_relays_draft_and_final_once(bridge, monkeypatch):
         assert client.post(route, params=params, headers=AUTH).status_code == 409
 
 
+def test_explicit_call_control_gates_capture_and_rejects_late_asr(bridge, monkeypatch):
+    client, gateway = bridge
+    monkeypatch.setattr(config, 'voice_clients', ['127.0.0.1'])
+    monkeypatch.setattr(gateway.voice, 'transcribe', lambda _: {'ok': True, 'text': '通话定稿'})
+    capture = 'b7b4d15c-2f40-405c-b47f-eb88a269c335'
+    turn = 'dee387cc-a201-4113-8e0f-aaa4095ad7a1'
+    params = {'capture': capture, 'audio_epoch': 5, 'turn_id': turn}
+    route = '/v1/voice/capture'
+    asr_headers = {**AUTH, 'X-FullAwake-Capture': capture, 'X-FullAwake-Capture-Epoch': '5', 'X-FullAwake-ASR-Final': '1'}
+    with client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        phone.send_json(frame('session.handshake', 1, {
+            'clientVersion': '0.2.10', 'heartVersion': '0.21.4', 'device': 'redmi-note12turbo', 'capture': True,
+        }))
+        assert phone.receive_json()['type'] == 'session.handshake_ack'
+        assert client.post(route, params=params, headers=AUTH).status_code == 503
+        phone.send_json(frame('voice.call', 2, {'requestId': 'start', 'active': True}))
+        assert phone.receive_json()['payload'] == {'requestId': 'start', 'active': True}
+        assert client.post(route, params=params, headers=AUTH).is_success
+        assert phone.receive_json()['type'] == 'audio.capture'
+        phone.send_json(frame('voice.call', 3, {'requestId': 'stop', 'active': False}))
+        assert phone.receive_json()['payload'] == {'requestId': 'stop', 'active': False}
+        assert client.post('/v1/voice/asr', content=b'late', headers=asr_headers).status_code == 409
+        assert client.post(route, params={**params, 'audio_epoch': 6}, headers=AUTH).status_code == 503
+        phone.send_json(frame('voice.call', 4, {'requestId': 'restart', 'active': True}))
+        assert phone.receive_json()['payload'] == {'requestId': 'restart', 'active': True}
+        assert client.post('/v1/voice/asr', content=b'old-call', headers=asr_headers).status_code == 409
+
+
 def test_breezeblue_mp3_plays_through_prepared_game_voice_lease(bridge):
     client, _ = bridge
     mp3 = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=f=523:d=0.5',

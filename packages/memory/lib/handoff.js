@@ -11,6 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 /**
  * 计算会话交接的唯一分区 Key
@@ -143,10 +144,10 @@ export function loadLastHandoff(dataDir, criteria = {}) {
  * @param {string} dataDir 
  * @param {Object} handoffData 
  */
-export function saveLastHandoff(dataDir, handoffData) {
+export function saveLastHandoff(dataDir, handoffData, { strict = false } = {}) {
   if (!dataDir || !handoffData) return;
   const filePath = path.join(dataDir, 'last_handoff.json');
-  const tmpPath = path.join(dataDir, `last_handoff.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`);
+  const tmpPath = path.join(dataDir, `last_handoff.${randomUUID()}.tmp`);
   try {
     let store = { version: 'handoff-v2', scopes: {} };
     if (fs.existsSync(filePath)) {
@@ -183,14 +184,48 @@ export function saveLastHandoff(dataDir, handoffData) {
         user: (handoffData.lastExchange?.user || '').trim().slice(0, 300),
         assistant: (handoffData.lastExchange?.assistant || '').trim().slice(0, 500),
       },
+      ...(handoffData.kind === 'voice_call' && { kind: 'voice_call', callId: handoffData.callId }),
     };
 
     const payload = JSON.stringify(store, null, 2);
-    fs.writeFileSync(tmpPath, payload, 'utf8');
+    fs.mkdirSync(dataDir, { recursive: true });
+    const fd = fs.openSync(tmpPath, 'wx', 0o600);
+    try { fs.writeFileSync(fd, payload, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     fs.renameSync(tmpPath, filePath);
+    return store.scopes[key];
   } catch (err) {
     try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch {}
+    if (strict) throw err;
   }
+}
+
+/** Capture only accepted user turns from this call, followed by their assistant replies. */
+export function saveCallHandoff(dataDir, { agent, startIndex = 0, callId, channel = 'direct', speaker, targetId, scope } = {}) {
+  const session = agent?.session;
+  const events = session?.snapshotEvents?.() ?? session?.events;
+  if (!Array.isArray(events) || !Number.isSafeInteger(startIndex) || startIndex < 0 || !callId) return null;
+  const exchanges = [];
+  let current;
+  for (const event of events.slice(startIndex)) {
+    if (event?.type === 'turn/start') current = null;
+    if (event?.type === 'user/message' && event.data?.source?.kind === 'user') {
+      const user = extractTextFromMessage(event.data).slice(0, 300);
+      if (user) { current = { user, assistant: '' }; exchanges.push(current); }
+    }
+    if (event?.type === 'assistant/message' && current) {
+      const text = extractTextFromMessage(event.data);
+      if (text) current.assistant = [current.assistant, text].filter(Boolean).join('\n').slice(0, 500);
+    }
+    if (event?.type === 'turn/end') current = null;
+  }
+  const recent = exchanges.slice(-3);
+  if (!recent.length) return null;
+  return saveLastHandoff(dataDir, { kind: 'voice_call', callId, channel, speaker, targetId, scope,
+    sessionId: session.id ?? session.header?.id ?? agent.id,
+    updatedAt: new Date().toISOString(), lastExchange: {
+      user: recent.map(item => item.user.slice(0, 90)).join(' / '),
+      assistant: recent.map(item => item.assistant.slice(0, 150)).filter(Boolean).join(' / '),
+    } }, { strict: true });
 }
 
 /**
@@ -219,7 +254,7 @@ export function buildHandoffClue({ lastHandoff, commitment, channel = 'direct', 
     const cleanAssistant = (assistant || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
 
     if (cleanUser || cleanAssistant) {
-      const timePrefix = timeDesc ? `${timeDesc}交流` : '上次交流';
+      const timePrefix = lastHandoff.kind === 'voice_call' ? '刚刚通话里' : timeDesc ? `${timeDesc}交流` : '上次交流';
       let exchangeDesc = '';
       if (cleanUser && cleanAssistant) {
         exchangeDesc = `用户曾说「${cleanUser}」，你回复「${cleanAssistant}」`;

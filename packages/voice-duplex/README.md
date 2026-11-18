@@ -21,6 +21,8 @@ node projects/lucidheart/packages/voice-duplex/lib/server.js --python $pcPython 
 
 ## 连接手机 DSH
 
-在手机 DSH 加载 `@dsh/voice-duplex` 0.1.0，并在 `dsh-fullawake` 配置 `voiceEpochProtocol: true` 和明确的 `duplexTarget`（DSH agent ID）。PC Node 进程设置 `DUPLEX_FORWARD_TO_HOST=1`，同时提供 `DUPLEX_ASR_URL` 与网关配置一致的 `DUPLEX_ASR_TOKEN`。浏览器开启麦克风后，通过本机网关使用当前桌宠播放租约的 PCM 参考并将定稿发往手机。草稿只用于显示，VAD 结束后的定稿最多向指定 agent 提交一次。
+在手机 DSH 加载 `@dsh/voice-duplex` 0.1.1、Memory 0.1.8 和 FullAwake 0.2.10。在 FullAwake 配置 `voiceEpochProtocol: true`、明确的 `duplexTarget`（DSH agent ID）及允许开启通话的本人私聊 `duplexQqSessions`。PC Node 进程设置 `DUPLEX_FORWARD_TO_HOST=1`，同时提供 `DUPLEX_ASR_URL` 与网关配置一致的 `DUPLEX_ASR_TOKEN`。浏览器开启麦克风后，向小满说“开启通话”，由 `voice_call_toggle({enabled:true})` 开启定稿投递。草稿只用于显示，VAD 结束后的定稿最多向指定 agent 提交一次。
+
+通话中说“先挂了”，或调用 `voice_call_toggle({enabled:false})` 结束。手机撤销发声租约并将最近三轮实际对话交给 Memory 原子写入 `last_handoff.json`，QQ 本人私聊下一轮可自然续接。断桥也会结束并保存接力。PC 浏览器的麦克风许可与捕获开关由用户控制，挂断后可在页面关闭麦克风。
 
 FullAwake 的 `/v1/voice/rvc/stream` 接受原 RVC 文本请求及 `audio_epoch`，返回逐句 NDJSON 音频。消费者按当前 epoch 接收，并在中止时关闭响应流。指定会话中的 `pc_duplex_speak` 经同一个分句工作器按桌宠播放回执逐句推进。耳机环境可为 PC 进程设置 `DUPLEX_AUDIO_ROUTE=headphone`，跳过桌宠扬声器参考过滤。

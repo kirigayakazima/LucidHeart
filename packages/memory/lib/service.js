@@ -12,6 +12,7 @@ import { isCandidateProvenance } from './schema.js';
 import { CommitmentLedger } from './commitments.js';
 import { ProjectLedger } from './projects.js';
 import { findContradictions } from './contradictions.js';
+import { AlbumLedger } from './album.js';
 
 export class MemoryService {
   /**
@@ -22,6 +23,7 @@ export class MemoryService {
   constructor({ dataDir, dbPath, retrievalPolicy, onShadowEvaluation } = {}) {
     if (!dataDir) throw new Error('dataDir is required for MemoryService');
     this.dataDir = dataDir;
+    this.album = new AlbumLedger(dataDir);
     this.store = new MemoryStore(dataDir);
     const ensureCurrent = () => this.ensureProjections();
     this.commitments = new CommitmentLedger(this.store, ensureCurrent);

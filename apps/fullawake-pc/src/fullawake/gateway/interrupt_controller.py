@@ -45,7 +45,7 @@ class StrictFrame(BaseModel):
 
 class Frame(StrictFrame):
     protocol: Literal['lucid.voice/1']
-    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch']
+    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch', 'voice.call']
     sessionId: str = Field(min_length=1, max_length=140)
     connectionId: str = Field(min_length=1, max_length=80)
     commandSeq: int = Field(ge=1, le=MAX_EPOCH)
@@ -74,6 +74,11 @@ class Prepare(Utterance):
 class GameWatchControl(StrictFrame):
     requestId: str = Field(min_length=1, max_length=64)
     action: Literal['start', 'stop']
+
+
+class VoiceCallControl(StrictFrame):
+    requestId: str = Field(min_length=1, max_length=64)
+    active: bool
 
 
 class PetText(Utterance):
@@ -149,6 +154,7 @@ class Lease:
     receipt: asyncio.Future | None = None
     worker: asyncio.Task | None = None
     streaming: bool = False
+    elapsed_audio_ms: int = 0
     game: tuple | None = None
     game_session: WatchSession | None = None
     game_event: GameEvent | None = None
@@ -160,6 +166,7 @@ class Peer:
     connection: str
     turn_lifecycle: bool = False
     capture_enabled: bool = False
+    call_active: bool | None = None
     received_seq: int = 1
     sent_seq: int = 0
     highest_epoch: int = INITIAL_EPOCH - 1
@@ -185,9 +192,10 @@ class Peer:
 
 
 class InterruptController:
-    def __init__(self, watch_cap, voice):
+    def __init__(self, watch_cap, voice, *, on_call_change=None):
         self.watch = watch_cap
         self.voice = voice
+        self.on_call_change = on_call_change
         self.breeze = BreezeBlueAdapter()
         try:
             profiles = load_profiles(config.game_watch_profiles)
@@ -271,7 +279,8 @@ class InterruptController:
             try:
                 peer.send('audio.interrupt', abortedEpoch=lease.command.epoch,
                           utteranceId=lease.command.utteranceId, reason='near_end_speech',
-                          localAudioStopped=elapsed is not None, elapsedAudioMs=elapsed or 0)
+                          localAudioStopped=elapsed is not None,
+                          elapsedAudioMs=min(60_000, lease.elapsed_audio_ms + (elapsed or 0)))
             except asyncio.QueueFull:
                 # A phone that cannot drain notices must reconnect before
                 # submitting more work. Local revocation has already happened.
@@ -366,6 +375,7 @@ class InterruptController:
                     await asyncio.wait({receipt}, timeout=.1)
                 if not receipt.done() or receipt.result() != 'played':
                     return 'discarded'
+                lease.elapsed_audio_ms += duration
         return 'played' if previous else 'discarded'
 
     async def _play(self, peer, lease):
@@ -450,6 +460,18 @@ class InterruptController:
             if frame.commandSeq <= peer.received_seq:
                 continue
             peer.received_seq = frame.commandSeq
+            if frame.type == 'voice.call':
+                command = VoiceCallControl.model_validate(frame.payload)
+                if not peer.turn_lifecycle or not peer.capture_enabled:
+                    raise ValueError('Capture-capable peer required')
+                peer.call_active = command.active
+                if self.on_call_change is not None:
+                    self.on_call_change()
+                if not command.active:
+                    self.on_speech_start(peer)
+                    self.on_speech_end(peer)
+                peer.send('voice.call.status', requestId=command.requestId, active=peer.call_active)
+                continue
             if frame.type == 'game.watch':
                 await self._control_game(peer, GameWatchControl.model_validate(frame.payload))
                 continue
@@ -560,6 +582,8 @@ class InterruptController:
                 lifecycle = lifecycle and tuple(map(int, version)) >= (0, 2, 6)
                 peer = self.peer = Peer(first.sessionId, first.connectionId, turn_lifecycle=lifecycle,
                                         capture_enabled=handshake.capture)
+                if lifecycle and tuple(map(int, version)) >= (0, 2, 10):
+                    peer.call_active = False
                 supported = False
                 if config.voice_vad_enabled and not handshake.capture:
                     loop = asyncio.get_running_loop()

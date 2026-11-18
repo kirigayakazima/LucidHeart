@@ -12,6 +12,10 @@ Core 提供 remember/recall/inspect/correct/revoke/reindex/close。recall 默认
 
 ## 已知边界
 
+`memory_album_save` 由模型在共同视觉经历值得纪念时调用，`memory_album_search` 按关键词、标签和时间检索。相册只追加到配置 dataDir 下的 `album.jsonl`，手机生产配置对应 `/root/.dsh/profiles/memory/album.jsonl`。来源哈希使用原媒体或 FullAwake 返回的截图 SHA-256，用户原话由宿主核验，记录包含消息出处。相同媒体和类型重复保存返回既有条目。私聊与主群共用该相册。
+
+`memory.handoff.saveCall` 接收当前宿主会话与通话起始位置，在挂断时保存最近三轮真实对话。交接线索通过下一轮用户消息注入，QQ 原话偏移同步更新。
+
 新摄取记录从 DSH 当前回合与工具调用定位消息，通过 QQ 驱动的偏移提取当前发言。可逐字核对或只需替换主语的第一人称陈述会标记为 `user_statement` 并确认。无法核对的改写、模型推断和缺少出处的记录进入候选。日志只存有界证据片段和消息引用，旧条目在重放时保留原始字段与确认状态。
 
 `correct` 的证据字段取自模型提交的事实陈述。纠错与自动覆盖使用单条 `supersede` Mutation，`replaces`、新条目和校验摘要一起追加，文件刷盘后才更新投影。新版 reader 兼容旧的双行和单行覆盖。坏行、截断或校验失败会关闭读取与写入，等待完整回放。原始 journal 保留作审计；FTS 和 Markdown 仍为派生数据。若刷盘已成功但投影更新失败，错误带 `durable: true` 和 `projection: 'degraded'`，重放可恢复已提交的纠错。

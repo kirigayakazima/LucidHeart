@@ -46,6 +46,10 @@ FullAwake **0.2.9** 与 RVC **0.2.17** 使用同一套手机 Voice Director。PC
 
 ### 游戏陪看 3.0
 
+`pc_snapshot` 可传 `region` 进行局部确认，支持 `left`、`right`、`top`、`bottom`、`center`、四角、`minimap` 和 `full`。四角保留边缘重叠，`minimap` 默认右下角。裁切在原生截图缩放之前完成，区域图输出单张 JPEG，长宽均不超过 768px，估算视觉预算为 384 tokens。全景后可在同轮追加一次局部确认，`burst` 分镜与局部区域分别调用。旧版不带 region 的截图保持原有尺寸配置。
+
+0.2.10 的语音桥支持 `voice.call` 通话开关。挂断后，捕获状态和携带捕获标识的 ASR 结果会被拒绝。配套手机 `voice_call_toggle` 的接入方式见 [Voice Duplex](../../packages/voice-duplex/README.md)。打断回执在分句播放中累计已播放时长，手机将原会话下一轮需要的估计已读/未读文本作为单次线索注入。
+
 手机配置 `gameWatchCompanion: true` 和 `voiceEpochProtocol: true`。本人 QQ 私聊使用 `gameWatchQqSessions`，PC 麦克风使用绑定的 `duplexTarget`。主动短句需要 Heart 的 `agency2PCQuota: true`、PC BreezeBlue 和已连接的桌宠播放器。授权后，说“小满来陪我玩会儿游戏”开启，说“不打了”或“休息”结束。锁屏、桥接断开或目标窗口连续离开前台三分钟也会结束会话。
 
 PC 设置 `FULLAWAKE_GAME_WATCH_PROFILES` 为本地 JSON 文件路径，游戏进程还需在 `FULLAWAKE_GAME_PROCESSES` 中。按当前游戏 HUD、语言和缩放，分别截取死亡界面固定标识、胜利、失败、基地标识和基地状态小地图的模板。所有 ROI 都是相对游戏客户区的 `[左, 上, 右, 下]`，范围 0–1。模板路径相对于 JSON 文件且位于同一目录树。以下坐标仅演示格式：

@@ -36,7 +36,8 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
   const server = createServer(async (request, response) => {
     if (request.url === '/status') return response.end(JSON.stringify({ online: true,
       snapshot_targets: oldGateway ? [] : ['auto_game'], game_snapshot_modes: singleOnly ? ['single'] : ['single', 'burst'],
-      game_watch_active: active, game_process: active ? game : null, game_watch_sessions: companion }))
+      game_watch_active: active, game_process: active ? game : null, game_watch_sessions: companion,
+      snapshot_regions: oldGateway ? [] : ['full', 'left', 'right', 'center', 'minimap'] }))
     if (request.url.startsWith('/v1/pet/mood')) return response.writeHead(204).end()
     if (!['/mcp', '/breeze/voc_myarmcyqm2zv?output_format=mp3'].includes(request.url)) return response.writeHead(404).end()
     const chunks = []
@@ -48,9 +49,11 @@ async function fixture(t, game, { oldGateway = false, missingMetadata = false, s
     }
     calls.push(payload.params)
     const burst = payload.params.arguments.mode === 'burst' ? { mode: 'burst', frame_count: 4, duration_s: 3 } : {}
+    const region = payload.params.arguments.region
     return response.end(JSON.stringify({ jsonrpc: '2.0', id: payload.id, result: { content: [
       { type: 'image', mimeType: 'image/jpeg', data: picture.toString('base64') },
-      { type: 'text', text: JSON.stringify({ success: true, ...(missingMetadata ? {} : { target: 'auto_game', game_process: game, ...burst }) }) },
+      { type: 'text', text: JSON.stringify({ success: true, ...(missingMetadata ? {} : { target: 'auto_game', game_process: game, ...burst,
+        ...(region && { region, snapshot_size: { width: 768, height: 500 } }) }) }) },
     ] } }))
   })
   const sockets = new WebSocketServer({ server, path: '/ws/bridge' })
@@ -207,6 +210,23 @@ test('game companion drops denied and expired events before reserving quota', { 
   gates[1].resolve({ suitable: true })
   await until(() => decisions === 1)
   assert.deepEqual([quotas, f.prepared, f.played], [[], [], []])
+})
+
+test('an authorized game view can zoom once, and a direct spatial request can start with a crop', { timeout: 5000 }, async t => {
+  const f = await fixture(t, fixtures[0].game)
+  const snapshot = f.tools.get('pc_snapshot')
+  const turn = execution('小满看我这一把', 'qq')
+  const first = await snapshot.execute({ target: 'auto_game' }, turn.next('full'))
+  assert.equal(first.images.length, 1)
+  assert.match(first.source_hash, /^[a-f0-9]{64}$/)
+  const zoom = await snapshot.execute({ target: 'auto_game', region: 'left' }, turn.next('zoom'))
+  assert.equal(zoom.images.length, 1)
+  assert.deepEqual(f.calls.at(-1).arguments, { target: 'auto_game', region: 'left' })
+  const repeated = await snapshot.execute({ target: 'auto_game', region: 'right' }, turn.next('again'))
+  assert.deepEqual(repeated.images, [])
+  assert.equal(f.calls.length, 2)
+  const direction = execution('看小地图', 'qq')
+  assert.equal((await snapshot.execute({ target: 'auto_game', region: 'minimap' }, direction.next('map'))).images.length, 1)
 })
 
 for (const { game, request, line, channel } of fixtures) {

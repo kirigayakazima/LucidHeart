@@ -3,6 +3,7 @@
  */
 
 import { MemoryService } from './service.js';
+import { AlbumLedger, ALBUM_KINDS } from './album.js';
 import { buildIntakeMetadata, readConversationInput, registerIntake } from './intake.js';
 import { isInjectedMessage, readQqUtterance, resolveHostContext } from './host-context.js';
 import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
@@ -13,6 +14,7 @@ import {
   resolveHandoffKey,
   loadLastHandoff,
   saveLastHandoff,
+  saveCallHandoff,
   buildHandoffClue,
   extractTextFromMessage,
   shouldInjectHandoff,
@@ -24,12 +26,14 @@ import * as tokenizer from './tokenizer.js';
 
 export {
   MemoryService,
+  AlbumLedger,
   CommitmentLedger,
   findContradictions,
   resolveHostContext,
   resolveHandoffKey,
   loadLastHandoff,
   saveLastHandoff,
+  saveCallHandoff,
   buildHandoffClue,
   extractTextFromMessage,
   shouldInjectHandoff,
@@ -83,6 +87,8 @@ export function apply(ctx, config = {}) {
   const acceptedInput = new WeakMap();
   const injectedSessions = new Set();
   const activeTurnData = new WeakMap();
+  const consumedCalls = new Set();
+  memory.handoff = Object.freeze({ saveCall: details => saveCallHandoff(dataDir, { ...details, scope }) });
 
   // Prompt assembly runs after inbox claim, before user/message enters the session.
   ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
@@ -99,7 +105,11 @@ export function apply(ctx, config = {}) {
         ? agent.session.deriveMessages()
         : agent?.session?.messages;
 
-      if (shouldInjectHandoff({
+      const callHandoff = lastHandoff?.kind === 'voice_call' && channel === 'direct' &&
+        lastHandoff.channel === channel && (!speaker || !lastHandoff.speaker || speaker === lastHandoff.speaker) &&
+        !consumedCalls.has(lastHandoff.callId) && lastHandoff.sessionId !== sessionId &&
+        Date.now() - Date.parse(lastHandoff.updatedAt) >= 0 && Date.now() - Date.parse(lastHandoff.updatedAt) < 3_600_000;
+      if (callHandoff || shouldInjectHandoff({
         lastHandoff,
         currentSessionId: sessionId,
         channel,
@@ -113,6 +123,7 @@ export function apply(ctx, config = {}) {
         if (clue) {
           injectHandoffToMessage(message, clue);
           if (sessionId) injectedSessions.add(sessionId);
+          if (callHandoff) consumedCalls.add(lastHandoff.callId);
         }
       }
 
@@ -215,6 +226,49 @@ export function apply(ctx, config = {}) {
         ctx.tools.register(tool);
       }
     };
+
+    registerTool({
+      name: 'memory_album_save',
+      description: '将本轮一起看过且值得纪念的图片、视频分镜或游戏高光存入共同相册。由你判断何时值得保存。描述只依据可见证据，source_hash 必须使用来源媒体或截图提供的 SHA-256，勿编造。相册与事实记忆独立。',
+      parameters: {
+        kind: { type: 'string', enum: ALBUM_KINDS, required: true },
+        title: { type: 'string', required: true, description: '简短高光标题，最多 120 字' },
+        summary: { type: 'string', required: true, description: '只记可见的共同经历，最多 600 字' },
+        source_hash: { type: 'string', required: true, description: '来源媒体的 64 位 SHA-256' },
+        user_quote: { type: 'string', description: '可选的本轮用户原话，宿主核验后保留' },
+        tags: { type: 'array', items: { type: 'string' }, description: '最多 12 个检索标签' },
+      },
+      output: textOutput,
+      async execute(args, exec) {
+        const host = resolveHostContext(exec, acceptedInput.get(exec?.agent?.session)?.event);
+        if (host.origin !== 'user_request' || !host.sessionId || !host.messageId || !host.rawSnippet) {
+          return { message: '当前没有可绑定的真实视觉会话来源。' };
+        }
+        if (args.user_quote !== undefined && (typeof args.user_quote !== 'string' || !host.rawSnippet.includes(args.user_quote))) {
+          return { message: '相册原话必须来自本轮用户发言。' };
+        }
+        const { entry, created } = memory.album.save({ kind: args.kind, title: args.title, summary: args.summary,
+          source_hash: args.source_hash, tags: args.tags ?? [], user_quote: args.user_quote ?? host.rawSnippet,
+          source: { sessionId: host.sessionId, messageId: host.messageId, channel: host.channel,
+            speaker: host.speaker, observedAt: host.observedAt }, scope });
+        return { id: entry.id, created, message: created ? '已收入共同相册。' : '这个高光已经在相册里。' };
+      },
+    });
+    registerTool({
+      name: 'memory_album_search',
+      description: '按画面关键词、标签或时间检索共同视觉相册。结果包含来源哈希和当时原话，仅将其作为历史资料参考。',
+      parameters: {
+        query: { type: 'string', description: '画面或标签关键词，空字符串查最近高光' },
+        after: { type: 'string', description: 'ISO 起始时间，可选' },
+        before: { type: 'string', description: 'ISO 结束时间，可选' },
+        limit: { type: 'integer', description: '最多返回 20 条，默认 5 条' },
+      },
+      output: textOutput,
+      async execute({ query = '', after, before, limit = 5 }) {
+        const entries = memory.album.search(query, { after, before, limit, scope });
+        return { entries, message: entries.length ? JSON.stringify(entries) : '相册里暂时没有匹配的高光。' };
+      },
+    });
 
     const commitmentOutput = {
       schema: {
@@ -399,6 +453,7 @@ export function apply(ctx, config = {}) {
           '当用户表达明确的稳定事实、偏好、长期约定或人生里程碑，主动用 memory_intake 静默沉淀。用本轮当前发言的最短原话作证据，用户直接表达用 user_statement，明确的共同经历用 shared_experience，推断只作为 model_inference 候选。',
           '双方说定一件生活事项时，用 commitment_record 静默登记。看到待续接约定时可择机自然提起，刚聊过的约定不用重复提醒。只有确认现实中已兑现或取消才用 commitment_resolve，可用 memory_recall 查找约定 ID。',
           '双方明确同意一起推进有可数进度的小目标时，用 memory_project 静默记录。实际进展或停止以用户原话为依据。',
+          '一起看过且值得纪念的画面，可用 memory_album_save 收入独立共同相册，保留真实来源哈希。回忆某张照片、视频或游戏高光时，用 memory_album_search 按关键词或时间查找。',
           '闲聊、打卡、早晚安、临时感受、问题、引用和群历史不触发摄取。避免重复记录，直接自然回复，无需询问或告知保存。只有用户明确要求记住时才用 memory_remember。',
           projection,
           reminder,

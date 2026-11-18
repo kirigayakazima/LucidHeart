@@ -2,6 +2,7 @@ import base64
 import asyncio
 from io import BytesIO
 import time
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -116,6 +117,43 @@ def test_unsafe_or_unusable_frame_never_returns_image(desktop, overrides, expect
 def test_target_and_window_handle_are_exclusive(desktop):
     result = snapshot(hwnd=41)
     assert result['isError'] and 'invalid_target' in result['content'][0]['text']
+    assert not desktop.grabs
+
+
+@pytest.mark.parametrize(('region', 'bounds'), [
+    ('full', (0, 0, 1600, 1000)), ('left', (0, 0, 800, 1000)), ('right', (800, 0, 800, 1000)),
+    ('top', (0, 0, 1600, 500)), ('bottom', (0, 500, 1600, 500)), ('center', (400, 250, 800, 500)),
+    ('top_left', (0, 0, 880, 550)), ('top_right', (720, 0, 880, 550)),
+    ('bottom_left', (0, 450, 880, 550)), ('bottom_right', (720, 450, 880, 550)),
+    ('minimap', (720, 450, 880, 550)),
+])
+def test_region_zooms_before_resizing_and_returns_one_budgeted_image(desktop, region, bounds):
+    desktop.size, desktop.origin = (1600, 1000), (0, 0)
+    result = snapshot(region=region)
+    assert not result['isError'] and len(result['content']) == 2
+    image, text = result['content']
+    metadata = json.loads(text['text'])
+    assert metadata['region'] == region and metadata['estimated_visual_tokens'] == 384
+    assert metadata['crop_rect'] == dict(zip(('left', 'top', 'width', 'height'), bounds))
+    assert metadata['original_size'] == {'width': 1600, 'height': 1000}
+    with Image.open(BytesIO(base64.b64decode(image['data']))) as picture:
+        assert max(picture.size) <= 768
+        assert abs(picture.width / picture.height - bounds[2] / bounds[3]) < .01
+
+
+def test_region_crop_keeps_the_selected_pixels_and_rejects_invalid_requests(desktop):
+    image = Image.new('RGB', (200, 100), 'blue')
+    image.paste(Image.new('RGB', (100, 100), 'red'), (0, 0))
+    left, _ = screen.crop_region(image, 'left')
+    right, _ = screen.crop_region(image, 'right')
+    assert left.getpixel((50, 50)) == (255, 0, 0)
+    assert right.getpixel((50, 50)) == (0, 0, 255)
+    for region in ['unknown', None, [], 5]:
+        assert snapshot(region=region)['isError']
+    assert snapshot(mode='burst', region='left')['isError']
+    assert not desktop.grabs
+    desktop.locked = True
+    assert snapshot(region='left')['isError']
     assert not desktop.grabs
 
 

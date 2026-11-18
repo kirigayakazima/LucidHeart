@@ -101,6 +101,7 @@ function transcribe(client, epoch, complete, isFinal) {
   const update = captureUpdate;
   void Promise.resolve(update?.epoch === epoch && update.request).then(linked => {
     signal.throwIfAborted();
+    if (hostCapture && !linked) throw new Error('Host call is inactive');
     if (linked) Object.assign(headers, { 'X-FullAwake-Capture': client, 'X-FullAwake-Capture-Epoch': String(epoch),
       'X-FullAwake-ASR-Final': isFinal ? '1' : '0' });
     return fetch(asrUrl, { method: 'POST', headers, body: asWav(pcm), signal, redirect: 'error' });

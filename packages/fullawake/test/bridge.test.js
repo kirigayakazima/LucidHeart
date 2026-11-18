@@ -3,6 +3,7 @@ import { on, once } from 'node:events'
 import { test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { FullAwakeBridgeClient } from '../lib/bridge-client.js'
+import pkg from '../package.json' with { type: 'json' }
 
 const TOKEN = 'bridge-test-only'
 const waitEvent = (emitter, name) => once(emitter, name, { signal: AbortSignal.timeout(3000) })
@@ -38,7 +39,7 @@ async function fixture(t, initialEpoch = 100, capture = false) {
     assert.equal(hello.commandSeq, 1)
     assert.match(hello.sessionId, /^watch-session-/)
     assert.match(hello.connectionId, /^conn-[0-9a-f-]{36}$/)
-    assert.deepEqual(hello.payload, { clientVersion: '0.2.9', heartVersion: '0.21.3', device: 'redmi-note12turbo',
+    assert.deepEqual(hello.payload, { clientVersion: pkg.version, heartVersion: '0.21.3', device: 'redmi-note12turbo',
       ...(capture ? { capture: true } : {}) })
     let seq = 0
     const send = (type, payload, overrides) => socket.send(JSON.stringify({ protocol: hello.protocol, type,

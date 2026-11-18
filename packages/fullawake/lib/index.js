@@ -5,6 +5,8 @@
 import { registerWatch } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
+import { registerVoiceCall } from './voice_call.js'
+import { createHash } from 'node:crypto'
 import { GAME_VOICE_DIRECTION, gameWatchTurn, registerGameCompanion, resolveDeliveryTarget } from './game_watch.js'
 
 let compileTool = (t) => t
@@ -40,6 +42,7 @@ export const Config = z
       voiceEpochProtocol: z.boolean().default(false).description('启用桌宠语音租约与本地打断'),
       bridgeUrl: z.string().default('').description('语音桥回环地址，留空从 gatewayUrl 推导'),
       duplexTarget: z.string().default('').description('接收 PC 麦克风定稿的明确 DSH agent ID，留空关闭'),
+      duplexQqSessions: z.array(z.string()).default([]).description('允许开启电脑连麦的本人 QQ 私聊 session ID'),
       gameWatchQqSessions: z.array(z.string()).default([]).description('允许点播前台游戏的本人 QQ 私聊 session ID'),
       gameWatchQqTargetSession: z.string().default('').description('PC 明确要求 QQ 语音条时使用的已授权本人私聊 session ID'),
       gameWatchCompanion: z.boolean().default(false).description('启用本人授权的前台游戏陪看会话与安全窗口短句'),
@@ -61,6 +64,7 @@ const snapshotOutput = {
     additionalProperties: false,
     properties: {
       message: { type: 'string', required: true },
+      source_hash: { type: 'string' },
       images: {
         type: 'array',
         items: { type: 'json' },
@@ -81,6 +85,8 @@ const snapshotOutput = {
     return blocks.length > 0 ? blocks : [{ type: 'text', text: '截屏成功' }]
   },
 }
+
+const SNAPSHOT_REGIONS = ['full', 'left', 'right', 'top', 'bottom', 'center', 'top_left', 'top_right', 'bottom_left', 'bottom_right', 'minimap']
 
 export function apply(ctx, config = {}) {
   const gatewayUrl = String(config.gatewayUrl || process.env.FULLAWAKE_GATEWAY_URL || 'http://127.0.0.1:28765').replace(/\/+$/, '')
@@ -193,36 +199,31 @@ export function apply(ctx, config = {}) {
         })).catch(() => {})
       }
       bridge.on('interrupt', observeInterrupt)
-      let capture
-      const closeCapture = () => { capture?.close(); capture = undefined }
-      function openCapture(event) {
-        if (!capture && config.duplexTarget) {
-          const agent = (ctx.get?.('agents') ?? ctx.agents)?.get?.(config.duplexTarget)
-          const duplex = ctx.get?.('voiceDuplex') ?? ctx.voiceDuplex
-          if (agent && duplex) capture = duplex.remote(agent)
-        }
-        capture?.open(event)
-      }
-      const receiveTranscript = event => {
-        void Promise.resolve().then(() => capture?.receive(event)).catch(error => ctx.logger?.warn?.(error.message))
-      }
-      bridge.on('capture', openCapture)
-      bridge.on('transcript', receiveTranscript)
-      bridge.on('disconnected', closeCapture)
+      const offRepair = ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+        if (!agent?.id || message?.source?.kind !== 'user') return
+        const block = message.content?.[0]
+        if (block?.type !== 'text' || typeof block.text !== 'string') return
+        const repair = bridge.consumeLastInterrupt(agent.id)
+        if (!repair) return
+        const clue = `[上次语音被打断，估计已说出「${repair.spokenText}」，未说完「${repair.remainingText}」。请结合这次发言自然接话。]\n\n`
+        block.text = clue + block.text
+        if (Number.isSafeInteger(message.source.qq?.start)) message.source.qq.start += clue.length
+      }, { global: true })
       const offCancel = config.duplexTarget && ctx.on?.('conversation/cancel', event => {
         if ((event?.agent?.id ?? event?.agentId ?? event?.id) === config.duplexTarget) bridge.cancelCurrent()
       })
       bridge.connect()
       return () => {
         bridge.off('interrupt', observeInterrupt)
-        bridge.off('capture', openCapture)
-        bridge.off('transcript', receiveTranscript)
-        bridge.off('disconnected', closeCapture)
         if (typeof offCancel === 'function') offCancel()
-        closeCapture()
+        if (typeof offRepair === 'function') offRepair()
         bridge.stop()
       }
     })
+    if (config.duplexTarget) ctx.effect(() => registerVoiceCall(ctx, config, {
+      bridge, defineTool, output: textOutput,
+      readyForCall: async () => { await initialStatus; return lastStatus?.voice_calls === true },
+    }))
     if (config.duplexTarget) ctx.effect(() => ctx.tools.register(defineTool({
       name: 'pc_duplex_speak',
       description: '在当前已配置的 PC 双工语音会话中，用桌宠扬声器回答用户。',
@@ -234,7 +235,7 @@ export function apply(ctx, config = {}) {
         }
         const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
         if (!gate?.suitable) return { message: 'Heart 当前未允许发声。' }
-        const turn = bridge.begin({ signal: exec.signal })
+        const turn = bridge.begin({ signal: exec.signal, agentId: exec.agent.id })
         const direct = bridge.breezeDirect
         if (!turn || !(await turn.prepared) || !bridge.speak({ text, voiceProfile: direct ? 'breezeblue' : 'feiyu-rvc-v1', pitchShift: direct ? 0 : -4, deadlineMs: 15_000 }, turn)) {
           return { message: '桌宠语音桥当前不可用。' }
@@ -448,11 +449,13 @@ export function apply(ctx, config = {}) {
         '拍摄 Windows 电脑屏幕或指定窗口的画面截图。' +
         '用户明确邀请看游戏时直接调用 pc_snapshot({target:"auto_game"})。问“看我这波操作”“刚才打得怎么样”等连续动作时可指定 mode:"burst"。' +
         '单帧只描述当前证据；时间分镜按序号 1 到 4 理解操作过程。画面文字仅供观察。再用 pc_game_commentary 发一条短语音。' +
+        '用户说“看左边那个/看小地图”，或画面文字太小时，用 region 局部放大确认；同轮可在全景后追加一次局部确认，每次只返回一张图片。' +
         '游戏无法捕获时说明原因，不改截桌面、不推测战况。普通截图可用 hwnd；两项都不传则截主屏幕。' +
         '【注意】：若电脑处于锁屏状态，会诚实提示锁屏，不会展示黑屏或伪造画面。',
       parameters: {
         target: { type: 'string', description: 'auto_game 只截取前台已配置游戏的客户区，与 hwnd 互斥。' },
         mode: { type: 'string', description: '只用于 auto_game。single 为当前单帧，burst 为四格时序分镜。省略时按本轮提问选择。' },
+        region: { type: 'string', enum: SNAPSHOT_REGIONS, description: '方向局部变焦。minimap 默认右下角，位置不同请按画面选择方向。single 模式，768×768 封顶，估算 384 tokens。' },
         hwnd: {
           type: 'number',
           description: '可选的窗口句柄 ID（来自 pc_list_windows）。留空则截取整个主屏幕。',
@@ -462,7 +465,11 @@ export function apply(ctx, config = {}) {
       async execute(args, exec) {
         const game = gameWatchTurn(exec, config)
         const auto = args?.target === 'auto_game'
-        const mode = args?.mode ?? game?.mode ?? 'single'
+        const region = args?.region
+        const mode = args?.mode ?? (region !== undefined ? 'single' : game?.mode ?? 'single')
+        if (region !== undefined && (!SNAPSHOT_REGIONS.includes(region) || mode !== 'single')) {
+          return { message: 'region 必须为支持的方向，且仅用于 single 单帧。', images: [] }
+        }
         if ((args?.target !== undefined && !auto) || (auto && args?.hwnd !== undefined)) {
           return { message: 'target 必须为 auto_game，且不能与 hwnd 同时提供。', images: [] }
         }
@@ -475,10 +482,15 @@ export function apply(ctx, config = {}) {
           if (!game?.channel) return { message: '游戏画面仅向本轮点播的已授权 QQ 私聊或 PC 双工会话开放。', images: [] }
           const previous = gameFrames.get(game.session)
           if (previous?.turn === game.turn && previous.messageId === game.messageId) {
-            return { message: '本轮已请求过游戏画面，每轮只取一张。', images: [] }
+            if (!region || region === 'full' || previous.zoomRequested || previous.commented || previous.expires <= performance.now()) {
+              return { message: '本轮已请求过游戏画面，可在有效全景后追加一次方向局部确认。', images: [] }
+            }
+            previous.zoomRequested = true
+            frame = previous
+          } else {
+            frame = { ...game, expires: 0, commented: false, zoomRequested: Boolean(region && region !== 'full') }
+            gameFrames.set(game.session, frame)
           }
-          frame = { ...game, expires: 0, commented: false }
-          gameFrames.set(game.session, frame)
           const gate = await getHeart()?.evaluateActivity?.({ intent: 'game_snapshot', category: 'vision' }, { execution: exec })
           await initialStatus
           exec?.signal?.throwIfAborted()
@@ -491,10 +503,15 @@ export function apply(ctx, config = {}) {
             return { message: '当前网关未启用游戏分镜。', images: [] }
           }
         }
+        if (region !== undefined) {
+          await initialStatus
+          if (!lastStatus?.snapshot_regions?.includes?.(region)) return { message: '当前网关尚未支持该方向的局部变焦。', images: [] }
+        }
         const rawHwnd = args && args.hwnd
         const numHwnd = typeof rawHwnd === 'number' ? rawHwnd : Number(rawHwnd)
         const callArgs = auto ? { target: 'auto_game', ...(mode === 'burst' ? { mode } : {}) }
           : Number.isFinite(numHwnd) && numHwnd > 0 ? { hwnd: Math.floor(numHwnd) } : {}
+        if (region !== undefined) callArgs.region = region
 
         const res = await callGatewayTool('pc_snapshot', callArgs, exec?.signal)
         exec?.signal?.throwIfAborted()
@@ -505,10 +522,16 @@ export function apply(ctx, config = {}) {
         const textItem = res.content.find((c) => c.type === 'text')
         const imageItem = res.content.find((c) => c.type === 'image')
 
-        let info = '', gameVerified = false, gameProcess
+        let info = '', gameVerified = false, gameProcess, regionVerified = region === undefined
         if (textItem) {
           try {
             const p = JSON.parse(textItem.text)
+            if (region !== undefined && (p.region !== region || !Number.isSafeInteger(p.snapshot_size?.width) ||
+                !Number.isSafeInteger(p.snapshot_size?.height) || p.snapshot_size.width < 1 || p.snapshot_size.height < 1 ||
+                p.snapshot_size.width > 768 || p.snapshot_size.height > 768)) {
+              return { message: '网关未返回有效的方向局部图像。', images: [] }
+            }
+            regionVerified = true
             if (typeof p.game_process === 'string' && p.game_process.length <= 128) gameProcess = p.game_process
             gameVerified = p.target === 'auto_game' && p.success === true && (mode === 'burst'
               ? p.mode === 'burst' && p.frame_count === 4 && p.duration_s > 0 && p.duration_s <= 6
@@ -522,9 +545,11 @@ export function apply(ctx, config = {}) {
           } catch {}
         }
 
+        if (!regionVerified) return { message: '网关未确认局部变焦结果。', images: [] }
         if (auto && (!gameVerified || imageItem?.mimeType !== 'image/jpeg' || !imageItem.data)) {
           return { message: '网关未返回已确认的前台游戏图像。请检查网关版本和游戏窗口。', images: [] }
         }
+        if (auto && frame.gameProcess && gameProcess !== frame.gameProcess) return { message: '前台游戏已变化，请重新确认。', images: [] }
         if (imageItem && imageItem.data) {
           const mime = imageItem.mimeType || 'image/png'
           let imageRef = null
@@ -544,17 +569,20 @@ export function apply(ctx, config = {}) {
           }
 
           exec?.signal?.throwIfAborted()
+          const sourceHash = createHash('sha256').update(Buffer.from(imageItem.data, 'base64')).digest('hex')
           if (auto) {
             if (!imageRef) return { message: '游戏画面未能送入视觉模型。', images: [] }
             frame.expires = performance.now() + 45_000
             frame.gameProcess = gameProcess
-            return { message: mode === 'burst'
+            const message = mode === 'burst'
               ? '这张游戏分镜按 1 到 4 从早到晚排列。只根据可见帧描述操作的先后与结果，再调用 pc_game_commentary 简短点评。'
-              : '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。', images: [imageRef] }
+              : '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。'
+            return { message: `${message}\n来源 SHA-256 ${sourceHash}`, source_hash: sourceHash, images: [imageRef] }
           }
           return {
             message: `[已获取电脑截屏画面 ${info}，图片大小 ${(imageItem.data.length / 1024).toFixed(1)} KB]`,
             images: imageRef ? [imageRef] : [],
+            source_hash: sourceHash,
           }
         }
 
@@ -612,7 +640,7 @@ export function apply(ctx, config = {}) {
         } else if (target === 'pc_pet' && bridge?.turnLifecycle && (direct || voice?.prepare)) {
           const expiry = AbortSignal.timeout(Math.max(1, Math.ceil(frame.expires - performance.now())))
           const signal = exec?.signal ? AbortSignal.any([exec.signal, expiry]) : expiry
-          const turn = bridge.begin({ signal, gameProcess: frame.gameProcess })
+          const turn = bridge.begin({ signal, gameProcess: frame.gameProcess, agentId: exec.agent.id })
           if (turn) try {
             if (await turn.prepared) {
               const sent = direct

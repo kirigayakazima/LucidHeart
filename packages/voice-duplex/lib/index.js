@@ -1,5 +1,6 @@
 import { AudioLifecycle } from './lifecycle.js'
 import { createTranscriptGate, VadStream, PCM16_BYTES } from './vad_stream.js'
+import { randomUUID } from 'node:crypto'
 
 export const name = '@dsh/voice-duplex'
 
@@ -7,7 +8,32 @@ export function apply(ctx) {
   const sessions = new Map()
   const idOf = agent => agent?.session?.id ?? agent?.id
   const service = {
-    remote(agent, { showDraft } = {}) {
+    startCall(agent, { onEnd, channel = 'direct', speaker, targetId } = {}) {
+      const events = agent?.session?.snapshotEvents?.() ?? agent?.session?.events
+      if (!Array.isArray(events)) throw new TypeError('Call handoff requires a readable host session')
+      const startIndex = events.length
+      const callId = randomUUID()
+      let listener
+      listener = service.remote(agent, {
+        onFinal(message) {
+          const text = message.content[0].text
+          if (/^(?:小满[，,\s]*)?(?:先挂(?:了|啦|了吧)|挂断(?:通话|电话)?|结束通话|哥哥去忙了)[。！!～~\s]*$/u.test(text)) {
+            listener.close('hangup')
+            return
+          }
+          return agent.followup(message)
+        },
+        onClose(reason) {
+          try {
+            const memory = ctx.get?.('memory') ?? ctx.memory
+            if (typeof memory?.handoff?.saveCall !== 'function') throw new Error('Memory call handoff is unavailable')
+            memory.handoff.saveCall({ agent, startIndex, callId, channel, speaker, targetId })
+          } finally { onEnd?.(reason) }
+        },
+      })
+      return listener
+    },
+    remote(agent, { showDraft, onFinal = message => agent.followup(message), onClose } = {}) {
       const id = idOf(agent)
       if (!id || typeof agent.followup !== 'function') throw new TypeError('A configured voice agent is required')
       sessions.get(id)?.close()
@@ -16,15 +42,16 @@ export function apply(ctx) {
       let closed = false
       const gate = createTranscriptGate(life, { onDraft: showDraft, onFinal: (message, { signal }) => {
         signal.throwIfAborted()
-        return agent.followup(message)
+        return onFinal(message)
       } })
       const listener = {
         cancel() { life.advance('conversation cancelled') },
-        close() {
+        close(reason = 'closed') {
           if (closed) return
           closed = true
           sessions.delete(id)
           listener.cancel()
+          onClose?.(reason)
         },
         open(event) {
           if (closed || event.audio_epoch < epoch || (event.audio_epoch === epoch && event.turnId)) return

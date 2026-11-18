@@ -246,7 +246,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
         commit = () => {
           if (reservationId && heart.commitQuota(reservationId)) reservationId = null
         }
-        turn = bridge.begin({ signal, cue })
+        turn = bridge.begin({ signal, cue, agentId: job.execution?.agent?.id })
         if (!turn) return
         signal = turn.signal
         signal.addEventListener('abort', releaseQuota, { once: true })
@@ -323,7 +323,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(remaining), ...(exec.signal ? [exec.signal] : [])])
     const useVoice = args.voice === undefined ? Boolean(bridge || service(ctx, 'rvcWatchVoice')?.prepare) : args.voice === true
     if (!bridge) return deliver(cue, args, useVoice, exec, signal)
-    const turn = bridge.begin({ cue, signal })
+    const turn = bridge.begin({ cue, signal, agentId: exec?.agent?.id })
     if (!turn) return { status: 'discarded' }
     try {
       if (!(await turn.prepared)) return { status: 'discarded' }

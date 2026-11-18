@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from fullawake.capabilities.desktop_vision.game_storyboard import GameStoryboard
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
-from fullawake.capabilities.desktop_vision.screen import capture_screenshot
+from fullawake.capabilities.desktop_vision.screen import REGION_BOXES, capture_screenshot
 from fullawake.capabilities.desktop_vision.uia_backend import list_top_level_windows
 from fullawake.core.session import get_session_status
 
@@ -67,6 +67,8 @@ class DesktopVisionCapability(BaseCapability):
                                    "description": "Capture the foreground allowlisted game client only. Mutually exclusive with hwnd."},
                         "mode": {"type": "string", "enum": ["single", "burst"], "default": "single",
                                  "description": "For auto_game only. Burst returns one chronological contact sheet."},
+                        "region": {"type": "string", "enum": list(REGION_BOXES),
+                                   "description": "Zoom into a direction or minimap to verify small text. One JPEG up to 768x768; single mode only."},
                     },
                 },
                 handler=self.handle_snapshot,
@@ -96,6 +98,9 @@ class DesktopVisionCapability(BaseCapability):
     async def handle_snapshot(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         hwnd = arguments.get("hwnd")
         mode = arguments.get('mode', 'single')
+        region = arguments.get('region')
+        if 'region' in arguments and (not isinstance(region, str) or region not in REGION_BOXES or mode == 'burst'):
+            return {'error': 'region requires single mode and a supported region name.', 'code': 'invalid_region'}
         if mode not in ('single', 'burst') or ('mode' in arguments and arguments.get('target') != 'auto_game'):
             return {'error': 'mode must be single or burst and requires auto_game.', 'code': 'invalid_mode'}
         if "target" in arguments:
@@ -103,7 +108,7 @@ class DesktopVisionCapability(BaseCapability):
                 return {'error': 'target must be auto_game and cannot be combined with hwnd.', 'code': 'invalid_target'}
             if mode == 'burst':
                 return await self.storyboard.snapshot()
-            return capture_screenshot(auto_game=True)
+            return capture_screenshot(auto_game=True, **({'region': region} if region is not None else {}))
         if hwnd is not None:
             hwnd = int(hwnd)
-        return capture_screenshot(hwnd=hwnd)
+        return capture_screenshot(hwnd=hwnd, **({'region': region} if region is not None else {}))
