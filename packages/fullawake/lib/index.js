@@ -185,6 +185,7 @@ export function apply(ctx, config = {}) {
       redirect: 'error', signal: AbortSignal.timeout(4000),
     }).then(response => response.body?.cancel()).catch(() => {})
   }
+  let pcVoiceMuted = false
   let bridge
   if (config.voiceEpochProtocol === true && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
@@ -327,6 +328,33 @@ export function apply(ctx, config = {}) {
         isOnline: () => pcOnline,
         getStatus: () => lastStatus,
         checkNow: checkPCStatus,
+        isVoiceMuted: () => pcVoiceMuted,
+        setVoiceMuted: (muted) => {
+          pcVoiceMuted = Boolean(muted)
+          if (pcVoiceMuted && bridge) bridge.cancelCurrent?.()
+          return pcVoiceMuted
+        },
+        isPetVoiceReady: () => Boolean(pcOnline && !pcVoiceMuted && bridge?.turnLifecycle),
+        async speakOnPet({ text, instructions, voiceProfile = 'breezeblue', pitchShift = 0, signal, agentId, prepareFallback } = {}) {
+          if (pcVoiceMuted) return { played: false, reason: 'muted' }
+          if (!pcOnline || !bridge?.turnLifecycle) return { played: false, reason: 'pet_unavailable' }
+          const direct = bridge.breezeDirect === true && voiceProfile === 'breezeblue'
+          if (!direct && typeof prepareFallback !== 'function') return { played: false, reason: 'fallback_unavailable' }
+          const expiry = AbortSignal.timeout(16_000)
+          const turnSignal = signal ? AbortSignal.any([signal, expiry]) : expiry
+          const turn = bridge.begin({ signal: turnSignal, agentId })
+          if (!turn) return { played: false, reason: 'busy' }
+          try {
+            if (!(await turn.prepared)) return { played: false, reason: 'prepare_failed' }
+            const sent = direct
+              ? bridge.speak({ text, instructions, voiceProfile, pitchShift, deadlineMs: 15_000 }, turn)
+              : bridge.playAudio({ text, audio: await prepareFallback(turn.signal) }, turn)
+            const done = sent ? await turn.done : null
+            return { played: Boolean(sent && done?.status === 'played'), direct, status: done?.status || 'failed' }
+          } finally {
+            turn.controller.abort()
+          }
+        },
         async callPcRvc({ text, audioBase64, voice, signal }) {
           const payload = audioBase64 ? { audioBase64, voice } : { text, voice }
           const response = await fetch(`${gatewayUrl}/v1/voice/rvc`, {
@@ -610,7 +638,7 @@ export function apply(ctx, config = {}) {
       try {
         const heart = getHeart()
         const gate = await heart?.evaluateActivity?.({ intent: 'game_commentary', category: 'voice' }, { execution: exec })
-        const muted = gate?.suitable !== true || heart?.getSnapshot?.()?.presence?.status === 'asleep'
+        const muted = pcVoiceMuted || gate?.suitable !== true || heart?.getSnapshot?.()?.presence?.status === 'asleep'
         let active = false
         if (!muted && game.channel === 'qq' && !game.preference) {
           try {
@@ -660,6 +688,24 @@ export function apply(ctx, config = {}) {
         }
       } catch { exec?.signal?.throwIfAborted() }
       return { message: '游戏点评语音未确认送达，可改为简短文字，无需重发语音。' }
+    },
+  })))
+
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'pc_voice_control',
+    description: '控制电脑桌宠是否允许直接开口说话。当用户说“先不要讲话”、“先别出声”、“闭嘴”、“静音”、“只发文字”时传 muted: true；当用户说“可以说话了”、“打开声音”、“恢复语音”时传 muted: false。',
+    parameters: {
+      muted: { type: 'boolean', required: true, description: 'true 为静音（只发文字），false 为允许桌宠直接说话' },
+    },
+    output: textOutput,
+    async execute({ muted }) {
+      pcVoiceMuted = Boolean(muted)
+      if (pcVoiceMuted && bridge) bridge.cancelCurrent?.()
+      return {
+        message: pcVoiceMuted
+          ? '已开启电脑桌宠静音模式：接下来将保持安静，只用文字陪你。'
+          : '已解除静音：现在只要电脑桌宠在线，小满就可以直接开口陪你说话啦。',
+      }
     },
   })))
 

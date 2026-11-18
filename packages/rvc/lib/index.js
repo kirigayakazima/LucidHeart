@@ -171,10 +171,10 @@ export function apply(ctx, config = {}) {
       name: 'rvc_speak',
       output: defaultOutput,
       description:
-        '用小满自己的声音说话（QQ 语音条）。这是你的自然语音表达能力，可以将想说的话变成原生语音消息发送给对方。' +
+        '用小满自己的声音说话。当电脑桌宠在线且未静音时（默认 target="auto"），优先直接在电脑桌宠开口说话（不再刷 QQ 语音条）；只有桌宠未连接或用户明确要求发 QQ 语音条时才发 QQ 语音条。' +
         '当前优先使用专属 BreezeBlue 真实少女音色，由系统根据情境与心境状态处理自然的演绎与轻微笑意。' +
         '【主动表达原则】：不必等用户明确要求发语音！当你觉得亲口说一句更贴切、更有趣，或者能更好地传达细微情绪（撒娇打趣、晚安耳语、关心安慰、开心笑出声）时，可以主动使用。' +
-        '语音不必很长，有时一句带笑的话就足够了。无需为了表现亲密而每句都发，普通闲聊随手打字更轻松，技术排查用文字更清晰。' +
+        '若用户要求先不要讲话（静音），请勿调用发声或调用 pc_voice_control(muted: true) 后改用文字回复。' +
         '调用成功后，若语音已完整表达内容，无需再用文字机械重复整段话；若发声失败，则自然改用文字回复。',
       parameters: {
         text: {
@@ -198,9 +198,13 @@ export function apply(ctx, config = {}) {
           type: 'string',
           description: '显式情绪覆盖（可选，例如 "joy", "calm", "sleepy", "excited"）',
         },
+        target: {
+          type: 'string',
+          description: '播放出口：auto（默认，PC 桌宠在线时直接由电脑桌宠说话，离线时回退 QQ 语音条）、pc_pet（强制桌宠）或 qq（强制发 QQ 语音条）',
+        },
         send_to_qq: {
           type: 'boolean',
-          description: '是否通过 QQ 直接作为语音条发送（默认为 true）',
+          description: '是否通过 QQ 直接作为语音条发送（默认为 true；当 PC 桌宠在线且未显式要求时自动优先走桌宠）',
         },
       },
       execute: losslessJson(speak),
@@ -259,6 +263,103 @@ export function apply(ctx, config = {}) {
       instructions = requested
         ? `${requested}。夜深了，请放轻声音，轻声细语，体贴温柔。`
         : '轻声细语，体贴温柔。'
+    }
+
+    // B2. PC 桌宠直出优先与静音开关控制
+    if (!game) {
+      const targetMode = String(args.target || 'auto').trim().toLowerCase()
+      const explicitQq = targetMode === 'qq' || args.send_to_qq === true
+      if (!explicitQq && offloadBridge?.isVoiceMuted?.() === true) {
+        return {
+          ok: false,
+          muted: true,
+          sent_to_qq: false,
+          plugin_version: pluginVersion,
+          message: '[PC 静音] 用户当前要求先不要讲话，请仅用简短文字回复。',
+        }
+      }
+      if (!explicitQq && (targetMode === 'pc_pet' || offloadBridge?.isPetVoiceReady?.() === true) && typeof offloadBridge?.speakOnPet === 'function') {
+        try {
+          const petRes = await offloadBridge.speakOnPet({
+            text,
+            instructions,
+            voiceProfile: 'breezeblue',
+            pitchShift: 0,
+            signal: exec?.signal,
+            agentId: exec?.agent?.id,
+            prepareFallback: async (turnSignal) => {
+              const prep = await runSpeak({
+                text,
+                acoustic,
+                instructions,
+                provider: args.provider || config.provider || 'breezeblue',
+                breezeApiKey: config.breezeApiKey,
+                breezeVoiceId: config.breezeVoiceId,
+                breezeEndpoint: config.breezeEndpoint,
+                saveDataset: config.saveDataset,
+                datasetDir: config.datasetDir,
+                mood: snapshot?.mood || latestMood,
+                modelsDir: config.modelsDir,
+                offloadBridge,
+                mock,
+                voiceProfile: config.voiceProfile,
+                profilePython: config.profilePython,
+                signal: turnSignal,
+                artifacts: voiceArtifacts,
+              })
+              try {
+                return await readFile(prep.audioPath, { signal: turnSignal })
+              } finally {
+                try { if (prep.artifactId) voiceArtifacts.remove(prep.audioPath) } finally { prep.releaseArtifact?.() }
+              }
+            },
+          })
+          if (petRes?.played) {
+            let heartObsStatus = 'skipped'
+            if (observe && heart && typeof heart.observe === 'function') {
+              try {
+                const obsRes = await heart.observe({
+                  type: 'audio',
+                  source: 'rvc',
+                  confidence: 1.0,
+                  evidence: {
+                    provider: petRes.direct ? 'breezeblue_pc_direct' : 'rvc_pc_pet',
+                    delivery: 'pc_pet',
+                    textLength: [...text].length,
+                  },
+                  summary: `小满在电脑桌宠直接开口说了一句（${[...text].length} 字）`,
+                  timestamp: new Date().toISOString(),
+                })
+                heartObsStatus = obsRes?.accepted ? 'accepted' : 'rejected'
+              } catch { heartObsStatus = 'error' }
+            }
+            return {
+              ok: true,
+              plugin_version: pluginVersion,
+              provider: petRes.direct ? 'breezeblue_pc_direct' : 'pc_pet',
+              delivered_to: 'pc_pet',
+              sent_to_qq: false,
+              heart_observation: heartObsStatus,
+              message: '已在电脑桌宠直接说出，无需再用文字重复。',
+            }
+          }
+          if (targetMode === 'pc_pet') {
+            return {
+              ok: false,
+              sent_to_qq: false,
+              plugin_version: pluginVersion,
+              message: `电脑桌宠当前未就绪 (${petRes?.reason || 'unavailable'})，请改用文字回复。`,
+            }
+          }
+        } catch (err) {
+          if (exec?.signal?.aborted) {
+            return { ok: false, cancelled: true, sent_to_qq: false, heart_observation: 'cancelled', plugin_version: pluginVersion }
+          }
+          if (targetMode === 'pc_pet') {
+            return { ok: false, sent_to_qq: false, plugin_version: pluginVersion, error: `电脑桌宠播放失败: ${err.message}` }
+          }
+        }
+      }
     }
 
     // C. 执行声音转换 (跨端分流与执行)

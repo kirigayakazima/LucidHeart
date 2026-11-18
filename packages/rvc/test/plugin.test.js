@@ -223,4 +223,44 @@ describe('@dsh/rvc Cordis Plugin & Heart Protocol v1 Integration', () => {
     assert.match(unknown.qq_delivery.error, /actual execution session/)
     assert.equal(ctx._sentVoices.length, 1)
   })
+  test('rvc_speak routes to PC Desktop Pet by default when ready, respects pcVoiceMuted, and allows explicit QQ override', async () => {
+    const ctx = createMockCtx()
+    let muted = false
+    const petCalls = []
+    ctx.pcBridge = {
+      isOnline: () => true,
+      isVoiceMuted: () => muted,
+      isPetVoiceReady: () => !muted,
+      async speakOnPet(payload) {
+        petCalls.push(payload)
+        return { played: true, direct: true }
+      },
+    }
+    apply(ctx, { mock: true })
+    const tool = ctx._getTool('rvc_speak')
+
+    // 1. Auto defaults to PC Desktop Pet when online and unmuted
+    const petRes = await tool.execute({ text: '正在看直播呢，画面好清楚' }, { agent: { id: 'qq-user' } })
+    assert.equal(petRes.ok, true)
+    assert.equal(petRes.delivered_to, 'pc_pet')
+    assert.equal(petRes.sent_to_qq, false)
+    assert.equal(petCalls.length, 1)
+    assert.equal(ctx._sentVoices.length, 0)
+
+    // 2. When muted by user ("先不要讲话"), stays silent and skips synthesis
+    muted = true
+    const mutedRes = await tool.execute({ text: '这句不该出声' }, { agent: { id: 'qq-user' } })
+    assert.equal(mutedRes.ok, false)
+    assert.equal(mutedRes.muted, true)
+    assert.equal(mutedRes.sent_to_qq, false)
+    assert.equal(petCalls.length, 1)
+    assert.equal(ctx._sentVoices.length, 0)
+
+    // 3. Explicit target="qq" still sends QQ voice bar even when PC pet is ready/muted
+    muted = false
+    const qqRes = await tool.execute({ text: '发一条语音条给你', target: 'qq' }, { agent: { id: 'qq-user' } })
+    assert.equal(qqRes.ok, true)
+    assert.equal(qqRes.sent_to_qq, true)
+    assert.equal(ctx._sentVoices.length, 1)
+  })
 })
