@@ -202,7 +202,8 @@ class VoiceVadListener:
                 capturing = False
                 utterance = []
                 self.on_end()
-                if was_capturing and self.on_utterance and len(captured) >= 12:
+                min_frames = 10 if self.ptt_probe is not None else 12
+                if was_capturing and self.on_utterance and len(captured) >= min_frames:
                     buf = BytesIO()
                     with wave.open(buf, 'wb') as out:
                         out.setnchannels(1)
@@ -224,20 +225,23 @@ class VoiceVadListener:
                 while not self._stop.is_set():
                     pcm, overflowed = stream.read(frames)
                     if not overflowed and not self._stop.is_set():
+                        raw = bytes(pcm)
                         if self.ptt_probe is not None:
                             ptt_active = bool(self.ptt_probe())
                             if ptt_active != ptt_was_active:
-                                log.info('PTT %s', 'pressed: mic gate open' if ptt_active else 'released: mic gate closed')
                                 ptt_was_active = ptt_active
-                            if not ptt_active:
-                                if capturing:
-                                    _handle_end()
-                                gate.speaking = False
-                                gate.voiced = 0
-                                gate.quiet = 0
-                                pre_roll.clear()
-                                continue
-                        raw = bytes(pcm)
+                                if ptt_active:
+                                    log.info('PTT pressed: mic gate open')
+                                    if not capturing:
+                                        _handle_start()
+                                else:
+                                    log.info('PTT released: mic gate closed (%d frames)', len(utterance))
+                                    if capturing:
+                                        _handle_end()
+                            if ptt_active and capturing and len(utterance) < 1500:
+                                utterance.append(raw)
+                            pre_roll.clear()
+                            continue
                         if capturing:
                             if len(utterance) < 750:
                                 utterance.append(raw)

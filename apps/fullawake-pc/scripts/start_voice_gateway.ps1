@@ -75,6 +75,9 @@ if (-not $env:FULLAWAKE_VAD_DEVICE_MODE) {
 if (-not $env:FULLAWAKE_PTT_KEY) {
     $env:FULLAWAKE_PTT_KEY = 'rctrl'
 }
+if (-not $env:FULLAWAKE_LOG_FILE) {
+    $env:FULLAWAKE_LOG_FILE = Join-Path $runDir 'gateway.log'
+}
 if ($Background) {
     $stdoutFile = Join-Path $runDir 'gateway.stdout.log'
     $stderrFile = Join-Path $runDir 'gateway.stderr.log'

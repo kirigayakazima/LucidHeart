@@ -255,6 +255,8 @@ class InterruptController:
                 peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
                           text=text[:1500], is_final=True)
+            else:
+                log.info('PC mic transcript empty or call inactive (ignored, ok=%s)', bool(result and result.get('ok')))
         except Exception as error:
             log.warning('PC mic transcription failed: %s', error)
 
@@ -296,6 +298,7 @@ class InterruptController:
                 pass
         if self.peer is peer:
             try:
+                log.info('Sending audio.interrupt epoch=%s elapsed=%s', lease.command.epoch, elapsed)
                 peer.send('audio.interrupt', abortedEpoch=lease.command.epoch,
                           utteranceId=lease.command.utteranceId, reason='near_end_speech',
                           localAudioStopped=elapsed is not None,

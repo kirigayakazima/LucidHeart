@@ -12,6 +12,7 @@ import base64
 import hmac
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -44,6 +45,17 @@ from fullawake.pipeline.stream_worker import stream_sentences
 
 logger = logging.getLogger("fullawake.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+_log_file = os.environ.get("FULLAWAKE_LOG_FILE", "").strip()
+if _log_file:
+    try:
+        from pathlib import Path
+        Path(_log_file).parent.mkdir(parents=True, exist_ok=True)
+        _fh = logging.FileHandler(_log_file, encoding="utf-8")
+        _fh.setLevel(logging.INFO)
+        _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+        logging.getLogger().addHandler(_fh)
+    except OSError:
+        logger.warning("Could not open log file %s", _log_file)
 
 
 class VoiceDownload(FileResponse):
