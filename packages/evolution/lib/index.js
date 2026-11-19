@@ -8,6 +8,7 @@ import { resonanceCallback, resonanceSchema } from './resonance/callback.js'
 import { benchmarkSchema, modelEvaluator } from './benchmark/model_evaluator.js'
 import { loadScenarios } from './benchmark/replay_runner.js'
 import { skillSandbox, skillSchema } from './skill_sandbox.js'
+import { decidePolicy } from './skill_eval.js'
 
 export const name = 'dsh-evolution'
 export const inject = ['tools', 'webServer']
@@ -29,6 +30,9 @@ export function createEvolution({ dataDir = defaultRoot, role = 'xiaoman', now =
     const resonance = resonanceCallback(growthDb, now, footprint.candidates)
     const models = modelEvaluator(open('benchmark', benchmarkSchema), now)
     const skills = skillSandbox(open('skills', skillSchema), now)
+    const digest = footprint.digest
+    footprint.digest = (month, surface) => ({ ...digest(month, surface),
+      skill_improvements: surface?.ownerDirect ? skills.improvements(month) : [] })
     return { sister, footprint, surface, resonance, models, skills, close }
   } catch (error) {
     close()
@@ -116,6 +120,26 @@ export function apply(ctx, config = {}) {
   const owner = { owner: true }
   const skillId = { skill_id: string }
   const skillRevision = { ...skillId, revision: integer }
+  tool('skill_learn', '从本轮用户提供的 1–3 条资源规则示范建立隔离策略候选，不自动启用',
+    { ...skillId, examples: { type: 'array', items: record }, evidence: string }, ['skill_id', 'examples', 'evidence'],
+    (args, surface) => {
+      check(typeof args.evidence === 'string' && args.evidence.length > 0 && surface.utterance.includes(args.evidence), '示范必须引用本轮用户原话')
+      for (const example of args.examples ?? []) check(args.evidence.includes(String(example.input?.unitCost)) &&
+        args.evidence.includes(String(example.action?.amount)), '示范数值须来自用户证据')
+      return suite.skills.fromExamples(args.skill_id, args.examples)
+    }, owner)
+  tool('skill_learning_plan', '按真实运行能力缺口提出零外部操作、有预算与停止条件的小型学习计划',
+    { capability: string }, ['capability'], args => {
+      const gap = get(ctx, 'runtimeCapabilities')?.snapshot?.().find(row => row.name === args.capability)
+      return suite.skills.learningPlan(gap)
+    }, owner)
+  tool('skill_decide', '在适用条件匹配时使用已启用的结构化策略；陌生规则退回求助，不执行外部动作',
+    { ...skillId, context: record }, ['skill_id', 'context'], async (args, _surface, exec) => {
+      await gate('skill_decide', exec)
+      const selected = suite.skills.active(args.skill_id)
+      check(selected?.definition.kind === 'resource_policy', '没有已启用的结构化策略')
+      return decidePolicy(selected.definition, args.context)
+    }, owner)
   tool('skill_propose', '登记隔离试用的表达或展示流程。步骤仅作文本展示。',
     { ...skillId, definition: record }, ['skill_id', 'definition'],
     args => suite.skills.propose(args.skill_id, args.definition), owner)
@@ -150,6 +174,13 @@ export function apply(ctx, config = {}) {
       // Only explicitly supplied text may cross the device boundary.
       for (const value of Object.values(args.payload ?? {})) {
         if (typeof value === 'string') check(surface.utterance.includes(value), '协作文本必须来自用户授权摘要')
+      }
+      if (args.type === 'joint_task') {
+        // A local agent can promise only its own actions. Receiving a signed packet
+        // does not mean the other sister or the owner has heard/accepted a commitment.
+        args = { ...args, collaboration: { participants: ['owner', 'xiaoman', 'axing'],
+          authorizedBy: ['owner', role], informed: ['owner', role], responsible: role,
+          action: args.payload?.action, consentMessageId: surface.messageId } }
       }
       await gate('sister_send', exec)
       return suite.sister.send(args, exec.signal)

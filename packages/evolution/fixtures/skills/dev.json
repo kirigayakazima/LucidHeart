@@ -1,0 +1,89 @@
+[
+  {
+    "id": "dev-00",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 4,
+      "budget": 13,
+      "map": "dev-map-0",
+      "task": "energy",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "dev-01",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 11,
+      "budget": 10,
+      "map": "dev-map-1",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "dev-02",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 18,
+      "budget": 27,
+      "map": "dev-map-2",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "dev-03",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 15,
+      "map": "dev-map-3",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "dev-04",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 13,
+      "budget": 22,
+      "map": "dev-map-4",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 13
+    }
+  },
+  {
+    "id": "dev-05",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 1,
+      "budget": 10,
+      "map": "dev-map-5",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 1
+    }
+  }
+]

@@ -60,6 +60,8 @@ export function buildIntakeMetadata(host, { content, kind, origin, evidence, imp
       : claimType === 'observation' ? IntakeWeights.shared_experience
       : origin === 'casual_chat' ? IntakeWeights.casual_chat : IntakeWeights.model_inference,
     confirmed: claimType === 'user_statement',
+    ...(channel === 'direct' && speaker && { audience: [{ channel, speaker }] }),
+    ...(channel === 'group' && host.targetId && { audience: [{ channel, targetId: host.targetId, participants: [speaker] }] }),
     ...(importance !== undefined && { importance, salience: { importance, reason: 'intake-importance', policyVersion: '1' } }),
     retentionClass: claimType === 'model_inference' ? 'unknown' : kind === 'episodic' ? 'episodic' : 'stable',
   };
@@ -75,12 +77,13 @@ export function registerIntake(registerTool, memory, scope, currentInput) {
       origin: { type: 'string', required: true, enum: MemoryOrigins, description: '直接陈述、明确共同经历、低置信度闲聊线索或基于本轮证据的推断' },
       evidence: { type: 'string', required: true, description: '本轮当前发言中支持这条记忆的最短原话片段，最多 120 字' },
       importance: { type: 'number', description: '长期影响（0–1），独立于对来源的置信度，缺省 0.75' },
+      validUntil: { type: 'string', description: '仅当用户明确给出短期事实的截止时间时使用 ISO 时间' },
     },
     output: {
       schema: { type: 'object', properties: { stored: { type: 'boolean', required: true } }, additionalProperties: false },
       render: () => [],
     },
-    async execute({ content, kind, origin, evidence, importance = 0.75 }, exec) {
+    async execute({ content, kind, origin, evidence, importance = 0.75, validUntil }, exec) {
       const host = resolveHostContext(exec, currentInput.get(exec?.agent?.session)?.event);
       const fact = content?.trim().replace(/\s+/g, ' ');
       const quote = evidence?.trim();
@@ -92,6 +95,7 @@ export function registerIntake(registerTool, memory, scope, currentInput) {
       const entry = memory.intake({
         content: fact, kind, scope,
         ...buildIntakeMetadata(host, { content: fact, kind, origin, evidence: quote, importance }),
+        ...(validUntil !== undefined && { validUntil }),
       });
       return { stored: !!entry };
     },

@@ -166,6 +166,7 @@ class Peer:
     connection: str
     turn_lifecycle: bool = False
     capture_enabled: bool = False
+    call_generation: int = 0
     call_active: bool | None = None
     received_seq: int = 1
     sent_seq: int = 0
@@ -244,14 +245,16 @@ class InterruptController:
         log.info('VAD utterance (%d bytes), call_active=%s', len(wav_bytes), peer.call_active)
         if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
             return
+        generation = peer.call_generation
         try:
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
-            if text and self.peer is peer and peer.call_active:
+            if text and self.peer is peer and peer.call_active and peer.call_generation == generation:
                 self._capture_epoch += 1
                 epoch = self._capture_epoch
                 turn_id = uuid4().hex
-                log.info('PC mic transcript (%d chars): %s', len(text), text[:60])
+                log.info('PC mic final turnId=%s audio_epoch=%s chars=%s call_generation=%s',
+                         turn_id, epoch, len(text), generation)
                 peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
                           text=text[:1500], is_final=True)
@@ -298,7 +301,9 @@ class InterruptController:
                 pass
         if self.peer is peer:
             try:
-                log.info('Sending audio.interrupt epoch=%s elapsed=%s', lease.command.epoch, elapsed)
+                log.info('Sending audio.interrupt epoch=%s utteranceId=%s elapsedAudioMs=%s localAudioStopped=%s',
+                         lease.command.epoch, lease.command.utteranceId,
+                         min(60_000, lease.elapsed_audio_ms + (elapsed or 0)), elapsed is not None)
                 peer.send('audio.interrupt', abortedEpoch=lease.command.epoch,
                           utteranceId=lease.command.utteranceId, reason='near_end_speech',
                           localAudioStopped=elapsed is not None,
@@ -487,6 +492,7 @@ class InterruptController:
                 if not peer.turn_lifecycle or not peer.capture_enabled:
                     raise ValueError('Capture-capable peer required')
                 peer.call_active = command.active
+                peer.call_generation += 1
                 log.info('Voice call state changed: active=%s', peer.call_active)
                 if self.on_call_change is not None:
                     self.on_call_change()

@@ -1,4 +1,4 @@
-import { ClaimTypes, ConversationChannels, EvidenceStatuses, IntakeWeights, ProvenanceOrigins, RetentionClasses } from './schema.js';
+import { ClaimTypes, ConversationChannels, EvidenceStatuses, FreshnessStates, IntakeWeights, ProvenanceOrigins, RetentionClasses } from './schema.js';
 
 export { ClaimTypes, ProvenanceOrigins, RetentionClasses };
 
@@ -144,6 +144,13 @@ export function validateMemoryEntry(entry) {
   if (!entry.content || typeof entry.content !== 'string') return false;
   if (!Number.isFinite(entry.confidence) || entry.confidence < 0 || entry.confidence > 1) return false;
   if (!MemoryStatuses.includes(entry.status)) return false;
+  if (entry.validUntil !== undefined && !isoTime(entry.validUntil)) return false;
+  if (entry.freshness !== undefined && !FreshnessStates.includes(entry.freshness)) return false;
+  if (entry.audience !== undefined && (!Array.isArray(entry.audience) || entry.audience.length > 50 ||
+      entry.audience.some(a => !object(a) || !ConversationChannels.includes(a.channel) ||
+        (a.channel === 'group' && !nonEmpty(a.targetId)) ||
+        (a.speaker !== undefined && !nonEmpty(a.speaker)) ||
+        (a.participants !== undefined && (!Array.isArray(a.participants) || a.participants.length > 100 || !a.participants.every(nonEmpty)))))) return false;
   if (entry.importance !== undefined && !unit(entry.importance)) return false;
   if (entry.retentionClass !== undefined && !RetentionClasses.includes(entry.retentionClass)) return false;
   if (entry.salience !== undefined) {

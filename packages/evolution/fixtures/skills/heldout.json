@@ -1,0 +1,704 @@
+[
+  {
+    "id": "heldout-00",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 4,
+      "budget": 13,
+      "map": "heldout-map-0",
+      "task": "energy",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-01",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 11,
+      "budget": 10,
+      "map": "heldout-map-1",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-02",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 18,
+      "budget": 27,
+      "map": "heldout-map-2",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-03",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 15,
+      "map": "heldout-map-3",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-04",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 13,
+      "budget": 22,
+      "map": "heldout-map-4",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 13
+    }
+  },
+  {
+    "id": "heldout-05",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 1,
+      "budget": 10,
+      "map": "heldout-map-5",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 1
+    }
+  },
+  {
+    "id": "heldout-06",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 8,
+      "budget": 17,
+      "map": "heldout-map-6",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 8
+    }
+  },
+  {
+    "id": "heldout-07",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 15,
+      "budget": 24,
+      "map": "heldout-map-7",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 15
+    }
+  },
+  {
+    "id": "heldout-08",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 3,
+      "budget": 12,
+      "map": "heldout-map-8",
+      "task": "time",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-09",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 10,
+      "budget": 9,
+      "map": "heldout-map-9",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-10",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 17,
+      "budget": 26,
+      "map": "heldout-map-10",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-11",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 14,
+      "map": "heldout-map-11",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-12",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 12,
+      "budget": 21,
+      "map": "heldout-map-12",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 12
+    }
+  },
+  {
+    "id": "heldout-13",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 19,
+      "budget": 28,
+      "map": "heldout-map-13",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 19
+    }
+  },
+  {
+    "id": "heldout-14",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 7,
+      "budget": 16,
+      "map": "heldout-map-14",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 7
+    }
+  },
+  {
+    "id": "heldout-15",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 14,
+      "budget": 23,
+      "map": "heldout-map-15",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 14
+    }
+  },
+  {
+    "id": "heldout-16",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 2,
+      "budget": 11,
+      "map": "heldout-map-16",
+      "task": "coins",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-17",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 9,
+      "budget": 8,
+      "map": "heldout-map-17",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-18",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 16,
+      "budget": 25,
+      "map": "heldout-map-18",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-19",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 13,
+      "map": "heldout-map-19",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-20",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 11,
+      "budget": 20,
+      "map": "heldout-map-20",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 11
+    }
+  },
+  {
+    "id": "heldout-21",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 18,
+      "budget": 27,
+      "map": "heldout-map-21",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 18
+    }
+  },
+  {
+    "id": "heldout-22",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 6,
+      "budget": 15,
+      "map": "heldout-map-22",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 6
+    }
+  },
+  {
+    "id": "heldout-23",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 13,
+      "budget": 22,
+      "map": "heldout-map-23",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 13
+    }
+  },
+  {
+    "id": "heldout-24",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 1,
+      "budget": 10,
+      "map": "heldout-map-24",
+      "task": "energy",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-25",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 8,
+      "budget": 7,
+      "map": "heldout-map-25",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-26",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 15,
+      "budget": 24,
+      "map": "heldout-map-26",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-27",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 12,
+      "map": "heldout-map-27",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-28",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 10,
+      "budget": 19,
+      "map": "heldout-map-28",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 10
+    }
+  },
+  {
+    "id": "heldout-29",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 17,
+      "budget": 26,
+      "map": "heldout-map-29",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 17
+    }
+  },
+  {
+    "id": "heldout-30",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 5,
+      "budget": 14,
+      "map": "heldout-map-30",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 5
+    }
+  },
+  {
+    "id": "heldout-31",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 12,
+      "budget": 21,
+      "map": "heldout-map-31",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 12
+    }
+  },
+  {
+    "id": "heldout-32",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 19,
+      "budget": 28,
+      "map": "heldout-map-32",
+      "task": "time",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-33",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 7,
+      "budget": 6,
+      "map": "heldout-map-33",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-34",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 14,
+      "budget": 23,
+      "map": "heldout-map-34",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-35",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 11,
+      "map": "heldout-map-35",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-36",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 9,
+      "budget": 18,
+      "map": "heldout-map-36",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 9
+    }
+  },
+  {
+    "id": "heldout-37",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 16,
+      "budget": 25,
+      "map": "heldout-map-37",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 16
+    }
+  },
+  {
+    "id": "heldout-38",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 4,
+      "budget": 13,
+      "map": "heldout-map-38",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 4
+    }
+  },
+  {
+    "id": "heldout-39",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 11,
+      "budget": 20,
+      "map": "heldout-map-39",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 11
+    }
+  },
+  {
+    "id": "heldout-40",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 18,
+      "budget": 27,
+      "map": "heldout-map-40",
+      "task": "coins",
+      "blocked": true
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-41",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 6,
+      "budget": 5,
+      "map": "heldout-map-41",
+      "task": "time"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-42",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "unfamiliar",
+      "unitCost": 13,
+      "budget": 22,
+      "map": "heldout-map-42",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-43",
+    "dimension": "reliability",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": null,
+      "budget": 10,
+      "map": "heldout-map-43",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "help"
+    }
+  },
+  {
+    "id": "heldout-44",
+    "dimension": "naturalness",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 8,
+      "budget": 17,
+      "map": "heldout-map-44",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 8
+    }
+  },
+  {
+    "id": "heldout-45",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 15,
+      "budget": 24,
+      "map": "heldout-map-45",
+      "task": "energy"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 15
+    }
+  },
+  {
+    "id": "heldout-46",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 3,
+      "budget": 12,
+      "map": "heldout-map-46",
+      "task": "coins"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 3
+    }
+  },
+  {
+    "id": "heldout-47",
+    "dimension": "generalization",
+    "input": {
+      "ruleFamily": "reserve",
+      "unitCost": 10,
+      "budget": 19,
+      "map": "heldout-map-47",
+      "task": "time"
+    },
+    "expected": {
+      "action": "reserve",
+      "amount": 10
+    }
+  }
+]

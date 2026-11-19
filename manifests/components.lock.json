@@ -9,7 +9,7 @@
       "id": "@dsh/heart",
       "name": "Heart Core",
       "type": "subsystem",
-      "version": "0.21.4",
+      "version": "0.21.5",
       "layer": "Core",
       "source": "packages/heart",
       "description": "Unique self-state machine, Mood 2.0 vector, life rhythm, evaluateActivity gates, and Protocol v1 validator."
@@ -18,7 +18,7 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.11",
+      "version": "0.2.12",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",
@@ -96,7 +96,7 @@
       "id": "@dsh/memory",
       "name": "LucidMemory",
       "type": "package",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "layer": "Memory",
       "source": "packages/memory",
       "description": "Dedicated local-first memory core and DSH adapter; production activation and migration require separate evidence."
@@ -114,7 +114,7 @@
       "id": "dsh-evolution",
       "name": "Evolution",
       "type": "package",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "layer": "Actuator",
       "source": "packages/evolution",
       "description": "Signed sister relay, evidence-based footprints, privacy, resonance and benchmark replay."
@@ -123,7 +123,7 @@
       "id": "dsh-companion",
       "name": "Companion",
       "type": "package",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "layer": "Actuator",
       "source": "packages/companion",
       "description": "Companion activities, games, jukebox, projects, care, controlled growth and task ledger."

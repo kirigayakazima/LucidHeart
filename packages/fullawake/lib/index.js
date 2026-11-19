@@ -155,6 +155,7 @@ export function apply(ctx, config = {}) {
       }
       return { ok: true, content: [] }
     } catch (err) {
+      try { ctx.get?.('runtimeCapabilities')?.failure('pc_bridge', 'gateway_request_failed') } catch {}
       const isAbort = err.name === 'AbortError'
       return {
         ok: false,
@@ -285,6 +286,7 @@ export function apply(ctx, config = {}) {
     const wasOnline = pcOnline
     pcOnline = currentOnline
     lastStatus = statusData
+    try { ctx.get?.('runtimeCapabilities')?.record('pc_bridge', currentOnline ? 'available' : 'offline', 'gateway_status') } catch {}
     if (!wasOnline && currentOnline) syncDesktopMood(getHeart()?.getSnapshot?.())
 
     // 状态变化触发 Heart Protocol v1 观察接入

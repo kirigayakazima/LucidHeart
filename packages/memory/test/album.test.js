@@ -9,6 +9,29 @@ import { AlbumLedger, apply } from '../lib/index.js';
 const entry = { kind: 'video_storyboard', title: '蓝发女仆装眨眼星光', summary: '十秒竖屏视频里出现眨眼和星光闪烁',
   source_hash: createHash('sha256').update('video-fixture').digest('hex'), user_quote: '这个是给你做的视频哦', tags: ['breeze', '视频'] };
 
+test('legacy album folds immutable revisions and rejects missing, stale and corrupt chains', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'album-revise-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const album = new AlbumLedger(root);
+  const original = album.save(entry).entry;
+  const prefix = fs.readFileSync(album.file);
+  album.revise(original.id, { title: '星光' }, { reason: '用户纠正', expectedRevision: 0 });
+  const latest = album.revise(original.id, { summary: '是闭眼，不是眨眼' }, { reason: '再次确认', expectedRevision: 1 });
+  assert.equal(latest.revision, 2);
+  assert.equal(latest.revisions.length, 2);
+  assert.equal(latest.title, '星光');
+  assert.equal(latest.source_hash, original.source_hash);
+  assert.deepEqual(fs.readFileSync(album.file).subarray(0, prefix.length), prefix);
+  assert.deepEqual(new AlbumLedger(root).search()[0], latest);
+  assert.throws(() => album.revise('absent', { title: 'x' }, { reason: 'x' }), /not found/);
+  assert.throws(() => album.revise(original.id, {}, { reason: 'x', expectedRevision: 0 }), /conflict/);
+  assert.throws(() => album.revise(original.id, { source_hash: 'f'.repeat(64) }, { reason: 'x' }), /Invalid/);
+  fs.appendFileSync(album.file, JSON.stringify({ op: 'revise', targetId: original.id, revision: 9 }) + '\n');
+  assert.throws(() => album.search(), /Invalid album revision/);
+  assert.throws(() => album.revise(original.id, {}, { reason: 'x' }), /Invalid album revision/);
+  assert.equal(fs.existsSync(path.join(root, 'journal.jsonl')), false);
+});
+
 test('album appends once, survives reload and retrieves keywords and time without touching facts', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-album-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

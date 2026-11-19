@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { MemoryService } from '../lib/service.js';
+import { freshnessOf, isCommonKnowledge } from '../lib/schema.js';
+
+test('legacy facts remain byte-identical; expiry and audience change projection only', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-context-'));
+  const memory = new MemoryService({ dataDir: root });
+  t.after(() => { memory.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const legacy = Array.from({ length: 5 }, (_, n) => memory.remember({ content: `共同测试事实 ${n}` }));
+  const expired = memory.remember({ content: '共同测试旧故障', validUntil: '2026-01-01T00:00:00Z' });
+  const known = memory.remember({ content: '共同测试公开计划', audience: [{ channel: 'group', targetId: 'core', participants: ['a', 'b'] }] });
+  const bytes = fs.readFileSync(memory.store.journalPath);
+  const options = { now: Date.parse('2026-11-19T00:00:00Z'), limit: 20, maxTokens: 2000 };
+  assert.equal(memory.recall('共同测试', options).count, 6);
+  const history = memory.recall('共同测试', { ...options, includeExpired: true });
+  assert.equal(history.entries.find(row => row.id === expired.id).freshness, 'expired');
+  assert.equal(freshnessOf({ status: 'superseded' }), 'superseded');
+  assert.deepEqual(memory.recall('共同测试', { ...options, context: { channel: 'group', targetId: 'core', participants: ['a', 'b'] } }).entries.map(e => e.id), [known.id]);
+  assert.equal(memory.recall('共同测试', { ...options, context: { channel: 'group', targetId: 'core', participants: ['c'] } }).count, 0);
+  assert.equal(isCommonKnowledge(legacy[0], { channel: 'direct' }), true);
+  memory.replayJournal();
+  for (const row of legacy) assert.deepEqual(memory.inspect(row.id), row);
+  assert.deepEqual(fs.readFileSync(memory.store.journalPath), bytes);
+  assert.throws(() => memory.remember({ content: 'x', validUntil: 'yesterday' }), /Invalid/);
+  assert.throws(() => memory.remember({ content: 'x', audience: [{ channel: 'group' }] }), /Invalid/);
+});

@@ -33,10 +33,48 @@ export class AlbumLedger {
       if (!line) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { throw new Error(`Invalid album record at line ${index + 1}`); }
-      if (!validate(entry) || entries.has(entry.id)) throw new Error(`Invalid album record at line ${index + 1}`);
-      entries.set(entry.id, entry);
+      if (entry.op === 'revise') {
+        const previous = entries.get(entry.targetId);
+        if (!previous || entry.revision !== (previous.revision ?? 0) + 1 || !text(entry.reason, 500) ||
+            !Number.isFinite(Date.parse(entry.timestamp)) || !validate({ ...previous, ...entry, id: previous.id })) {
+          throw new Error(`Invalid album revision at line ${index + 1}`);
+        }
+        const { op, targetId, ...revision } = entry;
+        entries.set(targetId, { ...previous, title: entry.title, summary: entry.summary, tags: entry.tags,
+          user_quote: entry.user_quote, revision: entry.revision,
+          revisions: [...(previous.revisions ?? []), revision] });
+      } else {
+        if ((entry.op !== undefined && entry.op !== 'create') || !validate(entry) || entries.has(entry.id)) {
+          throw new Error(`Invalid album record at line ${index + 1}`);
+        }
+        entries.set(entry.id, entry);
+      }
     }
     return [...entries.values()];
+  }
+
+  revise(targetId, changes, { reason, scope, source, expectedRevision } = {}, now = new Date()) {
+    if (!changes || Object.keys(changes).some(key => !['title', 'summary', 'tags', 'user_quote'].includes(key)) ||
+        !text(reason, 500)) throw new TypeError('Invalid album revision');
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    const lock = this.file + '.lock';
+    const guard = fs.openSync(lock, 'wx', 0o600);
+    try {
+      const previous = this.#read().find(item => item.id === targetId &&
+        (!scope || item.scope === scope || item.scope === 'shared'));
+      if (!previous) throw new Error('Album target not found');
+      if (expectedRevision !== undefined && expectedRevision !== (previous.revision ?? 0)) {
+        throw new Error('Album revision conflict');
+      }
+      const updated = { ...previous, ...changes };
+      if (!validate(updated)) throw new TypeError('Invalid visual album entry');
+      const event = { op: 'revise', targetId, revision: (previous.revision ?? 0) + 1, reason,
+        timestamp: now.toISOString(), title: updated.title, summary: updated.summary,
+        tags: updated.tags, user_quote: updated.user_quote, ...(source && { source }) };
+      const fd = fs.openSync(this.file, 'a', 0o600);
+      try { fs.writeFileSync(fd, JSON.stringify(event) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      return this.#read().find(item => item.id === targetId);
+    } finally { fs.closeSync(guard); fs.unlinkSync(lock); }
   }
 
   save({ media, source_hash, kind, title, summary, user_quote = '', tags = [], source, scope }, now = new Date()) {

@@ -2,6 +2,10 @@
 
 Core 独立于 DSH，适配器提供 `memory_intake`、`memory_remember`、`memory_recall`、`memory_inspect`、`memory_correct`、`memory_forget` 和 memory 服务。手机实际加载证据见[工作区 STATUS](../../../../docs/STATUS.md)。
 
+0.1.9 增加 `memory_album_revise`，以单条带目标 ID、递增 revision、reason 和更新描述的追加事件修订独立 `album.jsonl`，旧无 op 记录作为 create 兼容回放。坏行、跳号和不存在目标安全拒绝，来源哈希不变。修订工具绑定真实用户消息，不改事实 journal。
+
+事实支持可选 `validUntil`、`freshness`、`audience`。到期状态只在检索/投影时计算，当前召回排除过期事实，服务端显式 `includeExpired` 查询会标记为历史。群聊只把匹配 targetId 与已知 participants 的条目用作共同知识；本人私聊仍读同一生活经历库。无新字段的历史事实保持原样，不自动写回元数据。
+
 ## 当前存储和接口
 
 选定dataDir的journal.jsonl是变更回放依据；SQLite/FTS和facts.md为派生投影。MemoryService构造会建目录、回放和可能写派生视图，不是只读调查入口。episodes有写入方法，但当前remember不自动调用，不代表已建生活日记。

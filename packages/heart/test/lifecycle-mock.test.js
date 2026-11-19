@@ -342,7 +342,8 @@ test('验收 6: 保留原有模型工具与协议边界，桌宠意图为显式�
   const toolMatches = Array.from(src.matchAll(/name:\s*['"](heart_[a-z0-9_]+)['"]/g)).map((m) => m[1])
   const uniqueTools = Array.from(new Set(toolMatches))
 
-  assert.equal(uniqueTools.filter(name => name !== 'heart_motion').length, 18)
+  assert.equal(uniqueTools.filter(name => name !== 'heart_motion').length, 19)
+  assert.ok(uniqueTools.includes('heart_capabilities'))
   assert.match(src, /process\.platform === 'win32' && config\.widgetSocket/)
   assert.ok(uniqueTools.includes('heart_mood'))
   assert.ok(uniqueTools.includes('heart_voice_learn'))

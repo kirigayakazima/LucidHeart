@@ -124,6 +124,7 @@ export class MemoryService {
     importance,
     salience,
     retentionClass,
+    validUntil, freshness, audience,
     tags = [],
     entities = [],
   }, autoCorrect = false) {
@@ -148,6 +149,8 @@ export class MemoryService {
       ...(importance !== undefined && { importance }),
       ...(salience !== undefined && { salience }),
       ...(retentionClass !== undefined && { retentionClass }),
+      ...(validUntil !== undefined && { validUntil }), ...(freshness !== undefined && { freshness }),
+      ...(audience !== undefined && { audience }),
       validFrom: validFrom || now,
       validTo: null,
       source: sourced ? source : {
@@ -201,9 +204,9 @@ export class MemoryService {
    * @param {number} [options.maxTokens=250]
    * @returns {{ text: string, entries: Array<any>, count: number, usedTokens: number }}
    */
-  recall(query, { scope = 'all', limit = 5, maxTokens = 250 } = {}) {
+  recall(query, { scope = 'all', limit = 5, maxTokens = 250, now, context, includeExpired = false } = {}) {
     this.ensureProjections();
-    const rawMatches = this.indexer.search(query, { scope, limit });
+    const rawMatches = this.indexer.search(query, { scope, limit, now, context, includeExpired });
     const formatted = formatCompactOutline(rawMatches, { maxTokens });
     return {
       text: formatted.text,
@@ -213,9 +216,9 @@ export class MemoryService {
     };
   }
 
-  project(query, { scope = 'all', label, mood } = {}) {
+  project(query, { scope = 'all', label, mood, now, context } = {}) {
     this.ensureProjections();
-    return projectConversation(this.indexer, query, { scope, label, mood });
+    return projectConversation(this.indexer, query, { scope, label, mood, now, context });
   }
 
   /**
@@ -256,6 +259,8 @@ export class MemoryService {
       source: options.source || target.source,
       tags: options.tags || target.tags,
       entities: options.entities || target.entities,
+      validUntil: options.validUntil ?? target.validUntil,
+      audience: options.audience ?? target.audience,
     });
   }
 

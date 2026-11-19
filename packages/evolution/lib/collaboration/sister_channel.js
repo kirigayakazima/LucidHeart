@@ -36,8 +36,21 @@ function validate(packet, at) {
     if (key === 'delay_minutes') check(Number.isInteger(value) && value >= 0 && value <= 1440, '延迟分钟无效')
     else text(value, key, 500)
   }
+  const collaboration = packet.collaboration
+  if (packet.type === 'joint_task' || collaboration !== undefined) {
+    check(collaboration && Object.keys(collaboration).every(key =>
+      ['participants', 'authorizedBy', 'informed', 'responsible', 'action', 'consentMessageId'].includes(key)), '缺少显式协作审计')
+    check(Array.isArray(collaboration.participants) && collaboration.participants.length === 3 &&
+      ['owner', 'xiaoman', 'axing'].every(id => collaboration.participants.includes(id)), '协作参与者不完整')
+    check(collaboration.responsible === packet.sender && collaboration.action === payload.action &&
+      ['prepare', 'review', 'perform'].includes(collaboration.action), '不能替另一端承诺责任或执行未授权动作')
+    for (const key of ['authorizedBy', 'informed']) check(Array.isArray(collaboration[key]) && collaboration[key].length === 2 &&
+      collaboration[key].includes('owner') && collaboration[key].includes(packet.sender), '对端知情与授权尚未确认')
+    text(collaboration.consentMessageId, '授权消息 ID', 250)
+  }
   return { id: packet.id, sender: packet.sender, receiver: packet.receiver, type: packet.type, summary,
-    payload, urgency: packet.urgency, createdAt: packet.createdAt, expiresAt: packet.expiresAt, handled: false }
+    payload, urgency: packet.urgency, createdAt: packet.createdAt, expiresAt: packet.expiresAt, handled: false,
+    ...(collaboration && { collaboration }) }
 }
 
 export function signature(body, secret) {
@@ -47,15 +60,19 @@ export function signature(body, secret) {
 function decode(row) {
   return { id: row.id, sender: row.sender, receiver: row.receiver, type: row.type, summary: row.summary,
     payload: JSON.parse(row.payload_json), urgency: row.urgency, createdAt: row.created_at, expiresAt: row.expires_at,
-    handled: Boolean(row.handled), ...(row.handled_at !== null && { handledAt: row.handled_at, resultNote: row.result_note }) }
+    handled: Boolean(row.handled), ...(row.collaboration_json && { collaboration: JSON.parse(row.collaboration_json) }),
+    ...(row.handled_at !== null && { handledAt: row.handled_at, resultNote: row.result_note }) }
 }
 
 export function sisterChannel(db, { role, now = Date.now, transport }) {
   check(roles.includes(role), '本端角色无效')
+  if (!db.prepare('PRAGMA table_info(sister_messages)').all().some(row => row.name === 'collaboration_json')) {
+    db.exec('ALTER TABLE sister_messages ADD COLUMN collaboration_json TEXT')
+  }
   const save = (packet, direction) => db.prepare(`INSERT INTO sister_messages
-    (id,sender,receiver,type,summary,payload_json,urgency,created_at,expires_at,direction) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    (id,sender,receiver,type,summary,payload_json,urgency,created_at,expires_at,direction,collaboration_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(packet.id, packet.sender, packet.receiver, packet.type, packet.summary, encode(packet.payload, 4096),
-      packet.urgency, packet.createdAt, packet.expiresAt, direction)
+      packet.urgency, packet.createdAt, packet.expiresAt, direction, packet.collaboration ? encode(packet.collaboration) : null)
   const get = id => db.prepare('SELECT * FROM sister_messages WHERE id=?').get(id)
   let sending
   async function flush(signal) {
@@ -76,10 +93,10 @@ export function sisterChannel(db, { role, now = Date.now, transport }) {
     try { return await sending } finally { sending = null }
   }
   return {
-    async send({ type, summary, payload = {}, urgency = 'normal' }, signal) {
+    async send({ type, summary, payload = {}, urgency = 'normal', collaboration }, signal) {
       const at = now()
       const packet = validate({ id: randomUUID(), sender: role, receiver: role === 'axing' ? 'xiaoman' : 'axing',
-        type, summary, payload, urgency, createdAt: at, expiresAt: at + dayMs }, at)
+        type, summary, payload, urgency, collaboration, createdAt: at, expiresAt: at + dayMs }, at)
       signal?.throwIfAborted()
       save(packet, 'out')
       try { await flush(signal) } catch { /* Durable outbox remains available for explicit retry. */ }

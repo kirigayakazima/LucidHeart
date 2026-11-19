@@ -5,6 +5,61 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { HEART_CORE_VERSION } from '../contracts/types.js'
 
+export const CAPABILITIES = Object.freeze(['pc_bridge', 'pc_voice_pet', 'breezeblue_tts', 'local_rvc',
+  'video_storyboard', 'xhs_scroll', 'bili_scroll', 'voice_duplex'])
+const states = ['available', 'degraded', 'offline', 'unknown']
+
+/** Evidence expires. A loaded plugin alone never proves its provider is usable. */
+export function capabilityProfile({ now = Date.now, ttlMs = 60_000 } = {}) {
+  const evidence = new Map()
+  return {
+    record(name, status, reason = 'probe') {
+      if (!CAPABILITIES.includes(name) || !states.includes(status)) throw new TypeError('Invalid capability state')
+      const row = { name, status, checkedAt: new Date(now()).toISOString(), reason: String(reason).slice(0, 200) }
+      evidence.set(name, row)
+      return { ...row }
+    },
+    failure(name, reason = 'tool_failed') { return this.record(name, 'degraded', reason) },
+    snapshot() {
+      return CAPABILITIES.map(name => {
+        const row = evidence.get(name)
+        const fresh = row && now() >= Date.parse(row.checkedAt) && now() - Date.parse(row.checkedAt) < ttlMs
+        const status = fresh ? row.status : 'unknown'
+        return { name, status, checkedAt: row?.checkedAt ?? null,
+          known: fresh ? [`最近核验状态为 ${status}`, row.reason] : [],
+          inferred: [], unknown: fresh ? ['当前任务是否能成功仍需执行确认'] : ['当前可用性尚未核验'],
+          nextStep: status === 'available' ? '先执行一次最小请求并核对回执' : '请检查连接或配置，再做一次只读探测' }
+      })
+    },
+  }
+}
+
+export async function refreshCapabilities(ctx, profile) {
+  const get = key => { try { return typeof ctx.get === 'function' ? ctx.get(key) : ctx[key] } catch { return null } }
+  const bridge = get('pcBridge')
+  if (!bridge) {
+    profile.record('pc_bridge', 'offline', 'pcBridge service absent')
+    profile.record('pc_voice_pet', 'offline', 'pcBridge service absent')
+  } else {
+    try {
+      const checked = await bridge.checkNow?.()
+      const online = checked?.online ?? bridge.isOnline?.()
+      profile.record('pc_bridge', online === true ? 'available' : online === false ? 'offline' : 'unknown')
+      profile.record('pc_voice_pet', online === false ? 'offline' : bridge.isPetVoiceReady?.() === true ? 'available' : 'degraded')
+    } catch { profile.failure('pc_bridge', 'probe_failed'); profile.failure('pc_voice_pet', 'probe_failed') }
+  }
+  for (const [name, key] of [['breezeblue_tts', 'breezeblue'], ['local_rvc', 'rvc'],
+    ['video_storyboard', 'videoStoryboard'], ['xhs_scroll', 'xhsScroll'], ['bili_scroll', 'biliScroll'], ['voice_duplex', 'voiceDuplex']]) {
+    const provider = get(key)
+    if (typeof provider?.diagnostics !== 'function') continue
+    try {
+      const row = await provider.diagnostics()
+      profile.record(name, states.includes(row?.status) ? row.status : 'unknown', row?.reason ?? 'provider_probe')
+    } catch { profile.failure(name, 'probe_failed') }
+  }
+  return profile.snapshot()
+}
+
 function append(file, entry, maxBytes, archives = 2) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })

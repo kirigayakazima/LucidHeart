@@ -58,6 +58,64 @@ def long_audio():
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def test_ptt_interrupt_empty_release_and_correlated_final_are_diagnosable(bridge, monkeypatch, caplog):
+    client, gateway = bridge
+    caplog.set_level('INFO', logger='fullawake.gateway.interrupt_controller')
+
+    async def synth(_request, disconnected):
+        return {'audioBase64': long_audio()}
+
+    monkeypatch.setattr(gateway.voice, 'synthesize', synth)
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True)
+        peer = gateway.interrupts.peer
+        peer.call_active = True
+        speak(phone, 2, 105, 'ptt-playback')
+        utterance = pet.receive_json()['utteranceId']
+        pet.receive_json()
+        # VoiceVadListener invokes these on press / release; no ASR event precedes release.
+        client.portal.call(gateway.interrupts.on_speech_start, peer)
+        interrupt = pet.receive_json()
+        pet.send_json({'event': 'interrupt_ack', 'utteranceId': utterance,
+                       'interruptId': interrupt['interruptId'], 'elapsedAudioMs': 960})
+        notice = phone.receive_json()
+        assert notice['type'] == 'audio.interrupt'
+        assert notice['payload']['elapsedAudioMs'] == 960
+        client.portal.call(gateway.interrupts.on_speech_end, peer)
+        monkeypatch.setattr(gateway.voice, 'transcribe', lambda _: {'ok': True, 'text': '   '})
+        client.portal.call(gateway.interrupts._transcribe_utterance, peer, b'empty release')
+        monkeypatch.setattr(gateway.voice, 'transcribe', lambda _: {'ok': True, 'text': '等一下'})
+        client.portal.call(gateway.interrupts._transcribe_utterance, peer, b'voiced release')
+        capture, final = phone.receive_json(), phone.receive_json()
+        assert capture['type'] == 'audio.capture'
+        assert final['type'] == 'audio.transcript' and final['payload']['is_final'] is True
+        assert capture['payload']['turnId'] == final['payload']['turnId']
+        assert 'elapsedAudioMs=960' in caplog.text and 'localAudioStopped=True' in caplog.text
+        assert 'PC mic final turnId=' in caplog.text and 'empty or call inactive' in caplog.text
+
+
+def test_local_asr_result_from_previous_call_is_dropped_after_reopen(bridge, monkeypatch):
+    client, gateway = bridge
+    started, finish = Event(), Event()
+
+    def transcribe(_):
+        started.set()
+        assert finish.wait(3)
+        return {'ok': True, 'text': '旧通话迟到结果'}
+
+    monkeypatch.setattr(gateway.voice, 'transcribe', transcribe)
+    with client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True)
+        peer = gateway.interrupts.peer
+        peer.call_active = True
+        future = client.portal.start_task_soon(gateway.interrupts._transcribe_utterance, peer, b'old call')
+        assert started.wait(3)
+        peer.call_generation += 2  # stop + restart before Whisper returns
+        finish.set()
+        future.result(timeout=3)
+        assert gateway.interrupts._capture_epoch == 0
+
+
 @pytest.fixture
 def bridge(monkeypatch, tmp_path):
     profile = tmp_path / 'voice.json'

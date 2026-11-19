@@ -54,7 +54,7 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
     const at = new Date(item.validFrom || item.createdAt || '');
     const date = Number.isFinite(at.getTime()) ? shanghaiDay(at) : '';
     const scopeTag = item.scope === 'shared' ? '[共享]' : '';
-    const line = `- [${item.id}] ${date} ${scopeTag} [${item.kind}] ${item.content}`;
+    const line = `- [${item.id}] ${date} ${scopeTag} [${item.kind}] ${item.freshness === 'expired' ? '[已过期，仅作历史] ' : ''}${item.content}`;
     const nextTokens = estimateTokens([...lines, line].join('\n'));
     if (nextTokens > maxTokens) break;
 

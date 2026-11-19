@@ -255,6 +255,26 @@ export function apply(ctx, config = {}) {
       },
     });
     registerTool({
+      name: 'memory_album_revise',
+      description: '用户自然纠正相册描述时追加不可变修订，保留来源与历史。不会覆写原图或事实记忆。',
+      parameters: {
+        id: { type: 'string', required: true }, reason: { type: 'string', required: true },
+        title: { type: 'string' }, summary: { type: 'string' }, user_quote: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' } }, expectedRevision: { type: 'integer' },
+      }, output: textOutput,
+      async execute({ id, reason, expectedRevision, ...changes }, exec) {
+        const host = resolveHostContext(exec, acceptedInput.get(exec?.agent?.session)?.event);
+        if (host.origin !== 'user_request' || !host.messageId || !host.rawSnippet) {
+          return { message: '修订需要本轮真实用户纠正来源。' };
+        }
+        if (changes.user_quote !== undefined && !host.rawSnippet.includes(changes.user_quote)) {
+          return { message: '相册原话必须来自本轮用户发言。' };
+        }
+        const entry = memory.album.revise(id, changes, { reason, scope, expectedRevision, source: host });
+        return { entry, message: '已追加相册修订，历史仍保留。' };
+      },
+    });
+    registerTool({
       name: 'memory_album_search',
       description: '按画面关键词、标签或时间检索共同视觉相册。结果包含来源哈希和当时原话，仅将其作为历史资料参考。',
       parameters: {
@@ -328,6 +348,7 @@ export function apply(ctx, config = {}) {
           scope,
           limit: Number(args.limit) || 3,
           maxTokens: config.recallMaxTokens || 250,
+          context: resolveHostContext(exec, acceptedInput.get(exec?.agent?.session)?.event),
         });
         const commitments = !exec?.signal?.aborted && acceptedInput.has(exec?.agent?.session)
           ? memory.commitments.find(query).map(({ id, title, targetTime, status }) =>
@@ -420,6 +441,7 @@ export function apply(ctx, config = {}) {
         const label = scope === 'axing_private' ? '阿醒的回忆' : '小满的回忆';
         const active = turn && !context.signal?.aborted;
         const projection = active && turn.query ? memory.project(turn.query, { scope, label,
+          context: { channel: turn.message?.source?.qq?.channel, targetId: turn.message?.source?.qq?.targetId ?? turn.message?.source?.qq?.groupId },
           mood: () => ctx.get?.('heart')?.getSnapshot?.()?.mood?.state }) : '';
         let reminder = '';
         if (active && turn.origin === 'user_request') {
@@ -453,7 +475,7 @@ export function apply(ctx, config = {}) {
           '当用户表达明确的稳定事实、偏好、长期约定或人生里程碑，主动用 memory_intake 静默沉淀。用本轮当前发言的最短原话作证据，用户直接表达用 user_statement，明确的共同经历用 shared_experience，推断只作为 model_inference 候选。',
           '双方说定一件生活事项时，用 commitment_record 静默登记。看到待续接约定时可择机自然提起，刚聊过的约定不用重复提醒。只有确认现实中已兑现或取消才用 commitment_resolve，可用 memory_recall 查找约定 ID。',
           '双方明确同意一起推进有可数进度的小目标时，用 memory_project 静默记录。实际进展或停止以用户原话为依据。',
-          '一起看过且值得纪念的画面，可用 memory_album_save 收入独立共同相册，保留真实来源哈希。回忆某张照片、视频或游戏高光时，用 memory_album_search 按关键词或时间查找。',
+          '一起看过且值得纪念的画面，可用 memory_album_save 收入独立共同相册，保留真实来源哈希。回忆某张照片、视频或游戏高光时，用 memory_album_search 按关键词或时间查找。用户纠正描述时用 memory_album_revise 追加修订。',
           '闲聊、打卡、早晚安、临时感受、问题、引用和群历史不触发摄取。避免重复记录，直接自然回复，无需询问或告知保存。只有用户明确要求记住时才用 memory_remember。',
           projection,
           reminder,

@@ -1,5 +1,5 @@
 import { check, encode, text, transaction } from './db.js'
-import { evaluateSkill, normalizeSkill, previewSkill } from './skill_eval.js'
+import { compareFrozenSkills, evaluateSkill, learnPolicy, learningPlan, loadEvaluationSplit, normalizeSkill, previewSkill } from './skill_eval.js'
 
 export const skillSchema = `
 CREATE TABLE IF NOT EXISTS skill_revisions (
@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS skill_heads (
 `
 
 export function skillSandbox(db, now = Date.now) {
+  if (!db.prepare('PRAGMA table_info(skill_revisions)').all().some(row => row.name === 'committed_at')) {
+    db.exec('ALTER TABLE skill_revisions ADD COLUMN committed_at INTEGER')
+  }
   const parseId = value => text(value, '技能 ID', 80)
   const read = (id, revision) => db.prepare('SELECT * FROM skill_revisions WHERE skill_id=? AND revision=?').get(id, revision)
   const pending = id => db.prepare("SELECT * FROM skill_revisions WHERE skill_id=? AND status IN ('candidate','evaluating')").get(id)
@@ -27,13 +30,15 @@ export function skillSandbox(db, now = Date.now) {
     definition: JSON.parse(row.definition), assessment: JSON.parse(row.assessment) } : null
 
   return {
+    fromExamples(id, examples) { return this.propose(id, learnPolicy(examples)) },
+    learningPlan,
     propose(id, value) {
       id = parseId(id)
       const config = encode(normalizeSkill(value))
       return transaction(db, () => {
         check(!pending(id), '该技能已有候选版本')
         const { revision } = db.prepare('SELECT coalesce(max(revision),0)+1 AS revision FROM skill_revisions WHERE skill_id=?').get(id)
-        db.prepare("INSERT INTO skill_revisions VALUES (?,?,?,'candidate',?,NULL,?)").run(id, revision, head(id), config, now())
+        db.prepare("INSERT INTO skill_revisions (skill_id,revision,parent,status,definition,assessment,created_at) VALUES (?,?,?,'candidate',?,NULL,?)").run(id, revision, head(id), config, now())
         return decode(read(id, revision))
       })
     },
@@ -49,6 +54,14 @@ export function skillSandbox(db, now = Date.now) {
       const report = await evaluateSkill(snapshot)
       signal?.throwIfAborted()
       const result = { total: report.total, passed: report.passed, failed: report.results.filter(row => !row.passed).map(row => row.id) }
+      if (snapshot.kind === 'resource_policy') {
+        const baseline = this.active(id)?.definition ?? { ...snapshot, parameters: { multiplier: 1, fixedCost: 1 } }
+        const comparison = compareFrozenSkills(baseline, snapshot)
+        Object.assign(result, { fixtureHash: report.fixtureHash, scores: report.scores,
+          baselineScores: comparison.baseline.scores, regressions: comparison.regressions,
+          improved: comparison.improved, improvementType: 'strategy_parameters',
+          naturalnessEvidence: report.naturalnessEvidence })
+      }
       return transaction(db, () => {
         check(read(id, revision)?.status === 'evaluating', '回测期间候选版本已结束')
         db.prepare('UPDATE skill_revisions SET assessment=? WHERE skill_id=? AND revision=?').run(encode(result), id, revision)
@@ -61,7 +74,9 @@ export function skillSandbox(db, now = Date.now) {
         const row = read(id, revision), assessment = JSON.parse(row?.assessment ?? 'null')
         check(row?.status === 'evaluating' && assessment?.total >= 40 && assessment.passed === assessment.total &&
           row.parent === head(id), '需通过完整回测且基线未变更')
-        db.prepare("UPDATE skill_revisions SET status='committed' WHERE skill_id=? AND revision=?").run(id, revision)
+        check(!assessment.regressions?.length, '保留集存在回归')
+        if (assessment.fixtureHash) check(assessment.fixtureHash === loadEvaluationSplit('heldout').hash, '评测集已变化，需重新回测')
+        db.prepare("UPDATE skill_revisions SET status='committed',committed_at=? WHERE skill_id=? AND revision=?").run(now(), id, revision)
         setHead(id, revision)
         return decode(read(id, revision))
       })
@@ -83,6 +98,16 @@ export function skillSandbox(db, now = Date.now) {
       return revision === null ? null : decode(read(id, revision))
     },
     trial(id) { return decode(pending(parseId(id))) },
+    improvements(month) {
+      check(/^\d{4}-\d{2}$/.test(month), '月份无效')
+      return db.prepare(`SELECT r.* FROM skill_revisions r JOIN skill_heads h ON
+        r.skill_id=h.skill_id AND r.revision=h.revision WHERE r.status='committed'`).all()
+        .filter(row => row.committed_at && new Date(row.committed_at + 8 * 3600_000).toISOString().startsWith(month))
+        .map(decode).filter(row => row.assessment?.improved && row.assessment.regressions.length === 0)
+        .map(row => ({ skillId: row.skillId, revision: row.revision, fixtureHash: row.assessment.fixtureHash,
+          before: row.assessment.baselineScores, after: row.assessment.scores,
+          improvementType: row.assessment.improvementType, naturalnessEvidence: row.assessment.naturalnessEvidence }))
+    },
     preview(id, context, { trial = false } = {}) {
       const selected = trial ? this.trial(id) : this.active(id)
       return selected ? previewSkill(selected.definition, context) : null

@@ -93,5 +93,8 @@ export function resolveHostContext(exec, acceptedEvent) {
     observedAt: observedAt && Number.isFinite(observedAt.getTime()) ? observedAt.toISOString() : null,
     rawSnippet: boundedSnippet(qq?.text ?? plain),
     origin,
+    ...(identifier(message?.source?.qq?.targetId ?? message?.source?.qq?.groupId) && {
+      targetId: identifier(message.source.qq.targetId ?? message.source.qq.groupId),
+    }),
   };
 }

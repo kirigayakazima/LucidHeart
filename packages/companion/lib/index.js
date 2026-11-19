@@ -11,6 +11,8 @@ import { idleCare, idleSchema } from './care/idle_care.js'
 import { interestSchema, recordInterest } from './care/interest.js'
 import { growth, growthSchema } from './care/growth.js'
 import { taskLedger, taskSchema } from './tasks/ledger.js'
+import { strategyLoop, strategySchema } from './strategy_loop.js'
+import { coCreation, creationSchema } from './co_creation.js'
 
 export const name = 'dsh-companion'
 export const inject = ['tools']
@@ -31,8 +33,10 @@ export function createCompanion({ dataDir = defaultDataDir, now = Date.now, disp
     const care = idleCare(careDb, now)
     const experience = growth(careDb, now)
     const music = jukebox(open('jukebox', jukeboxSchema), tasks, now, dispatch)
+    const strategies = strategyLoop(open('strategies', strategySchema))
+    const creations = coCreation(open('creations', creationSchema), now)
     tasks.recoverStale()
-    return { activities, projects, tasks, care, experience, music, close,
+    return { activities, projects, tasks, care, experience, music, strategies, creations, close,
       recordInterest: (scope, args, evidence) => recordInterest(careDb, now, scope, args, evidence) }
   } catch (error) {
     close()
@@ -103,7 +107,7 @@ export function apply(ctx, config = {}) {
   }
 
   tool('activity_start', '开始活动或开一局游戏。二十问可通过 target_hash 和 salt 预先承诺题目。',
-    { type: string, title: string, initial_state: record }, ['type', 'title'], async (scope, args, exec) => {
+    { type: string, title: string, initial_state: record, budget: record }, ['type', 'title'], async (scope, args, exec) => {
       const decision = await gate('companion_activity', exec)
       requireThat(decision?.suitable, 'Heart 未批准活动：' + (decision?.reason ?? 'unknown'))
       exec?.signal?.throwIfAborted()
@@ -118,13 +122,15 @@ export function apply(ctx, config = {}) {
       return activity
     })
   for (const [action, description, fields] of [
-    ['step', '记录一次活动步骤', { delta_state: record, action_summary: string }],
+    ['step', '记录一次活动步骤', { delta_state: record, action_summary: string, completeSubgoal: { type: 'boolean' }, observedCondition: string }],
     ['pause', '暂停当前活动', { reason: string }],
     ['resume', '恢复已暂停活动', {}],
     ['finish', '结算当前活动', { summary: string, outcome: string }],
     ['abort', '放弃当前或已暂停活动', { reason: string }],
+    ['stop', '用户叫停时锁定活动，不再自动推进', {}],
   ]) {
     tool('activity_' + action, description, { id: string, ...fields }, ['id'], async (scope, args, exec) => {
+      if (action === 'stop') requireThat(userEvidence(exec), '停止需要当前真实用户请求')
       if (action === 'resume') {
         requireThat((await gate('companion_activity', exec))?.suitable, 'Heart 未批准恢复活动')
         exec?.signal?.throwIfAborted()
@@ -156,9 +162,38 @@ export function apply(ctx, config = {}) {
   })
   tool('jukebox_history', '查找本会话已合成歌曲', { limit: integer }, [], (scope, args) => music.history(scope, args.limit))
   tool('project_create', '建立跨日小项目',
-    { name: string, goal: string, milestones: { type: 'array', items: string } }, ['name', 'goal', 'milestones'], projects.create)
+    { name: string, goal: string, milestones: { type: 'array', items: string }, budget: record }, ['name', 'goal', 'milestones'], projects.create)
+  tool('project_stop', '用户叫停时锁定项目', { project_id: string }, ['project_id'], (scope, args, exec) => {
+    requireThat(userEvidence(exec), '停止需要当前真实用户请求')
+    return projects.stop(scope, args.project_id)
+  })
+  tool('project_replan', '为进行中的项目重新安排有序子目标，保留已用预算',
+    { project_id: string, subgoals: { type: 'array', items: string } }, ['project_id', 'subgoals'],
+    (scope, args) => projects.replan(scope, args.project_id, args.subgoals))
+  tool('strategy_start', '开始最多 50 回合的离线资源策略实验', { estimatedCost: integer }, [],
+    (scope, args) => companion.strategies.start(scope, args))
+  tool('strategy_step', '由确定性资源环境结算并按真实反馈修订策略参数，不执行外部操作',
+    { id: string, stock: integer, cost: integer }, ['id', 'stock', 'cost'],
+    (scope, args) => companion.strategies.step(scope, args.id, { stock: args.stock, cost: args.cost }))
+  tool('creation_draft', '建立共同创作的故事或节目草稿，独立保存版本', { content: string }, ['content'],
+    (scope, args) => companion.creations.draft(scope, args))
+  tool('creation_revise', '追加共创修订或定稿，须提供当前版本，旧版本永久保留',
+    { id: string, expectedVersion: integer, content: string, finalized: { type: 'boolean' } }, ['id', 'expectedVersion', 'content'],
+    (scope, args) => companion.creations.revise(scope, args))
+  tool('creation_read', '读取共创产物完整版本链', { id: string }, ['id'], (scope, args) => companion.creations.get(scope, args.id))
+  tool('program_prepare', '将已定稿节目登记为准备完成，同一产物只获得一次邀请机会', { artifact_id: string }, ['artifact_id'],
+    (scope, args) => companion.creations.prepare(scope, args.artifact_id))
+  tool('program_invite', '经 Heart 自主节律门控后使用一次节目邀请机会，仅邀请，不自动执行', { id: string }, ['id'],
+    async (scope, args, exec) => {
+      requireThat((await gate('companion_program_invite', exec, false))?.suitable, 'Heart 未批准节目邀请')
+      exec?.signal?.throwIfAborted()
+      return companion.creations.offer(scope, args.id)
+    })
+  tool('program_respond', '依据用户本轮自然回应接受或婉拒邀请，婉拒后持续冷却', { id: string }, ['id'],
+    (scope, args, exec) => companion.creations.respond(scope, args.id, userEvidence(exec)))
   tool('project_checkin', '追加打卡并可选完成一个里程碑',
-    { project_id: string, note: string, milestone_index_done: integer }, ['project_id', 'note'], projects.checkin)
+    { project_id: string, note: string, milestone_index_done: integer, observedCondition: string }, ['project_id', 'note'],
+    (scope, args) => projects.checkin(scope, args))
   tool('project_status', '查看项目进度', { project_id: string }, ['project_id'], (scope, args) => projects.status(scope, args.project_id))
 
   tool('care_evaluate', '按可信互动记录与约定评估关怀，仅返回建议',
@@ -171,7 +206,13 @@ export function apply(ctx, config = {}) {
       // Memory is a shared reference. Companion only imports it when this turn
       // mentions the same commitment; it never resolves the Memory entry.
       const due = entry?.status === 'expired' && evidence?.text.includes(entry.title) ? entry : null
-      return care.evaluate(scope, evidence?.id, due)
+      const pending = projects.active(scope)[0]
+      const result = care.evaluate(scope, evidence?.id, due, pending && {
+        id: pending.id, title: pending.milestones.find(item => !item.done)?.text })
+      if (result.should_care && result.reason === 'active_subgoal' && !projects.nudge(scope, pending.id)) {
+        return { should_care: false, reason: 'goal_stopped' }
+      }
+      return result
     })
   tool('care_commitment_add', '记录用户已说定的约定与截止时间',
     { title: string, due_at: integer }, ['title', 'due_at'], (scope, args, exec) => care.addCommitment(scope, args, userEvidence(exec)))

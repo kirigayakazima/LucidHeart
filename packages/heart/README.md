@@ -1,6 +1,8 @@
 # @dsh/heart
 
-本地源码0.21.1，Heart Protocol1.0.0。DSH负责模型/会话/工具，Heart负责Mood（valence/arousal/energy三个维度）、presence、自我原则、表达偏好与节律；执行器和记忆核心保持独立。
+本地源码0.21.5，Heart Protocol1.0.0。DSH负责模型/会话/工具，Heart负责Mood（valence/arousal/energy三个维度）、presence、自我原则、表达偏好与节律；执行器和记忆核心保持独立。
+
+`heart_capabilities` 按需返回八类能力的 available/degraded/offline/unknown 状态、最后核验时间与已知/推测/未知边界，不动态修改 System Prompt。`runtimeCapabilities` 服务允许执行器回报真实探测或工具失败；证据 60 秒后失效。尚未提供探针的提供者保持 unknown，插件加载本身不证明云端服务、模型或设备可用。
 
 ## 现有接口
 

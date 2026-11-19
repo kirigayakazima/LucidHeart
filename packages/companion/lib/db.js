@@ -29,6 +29,12 @@ export function transaction(db, work) {
   }
 }
 
+export function addColumn(db, table, name, definition) {
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some(column => column.name === name)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
+  }
+}
+
 export class InputError extends Error {}
 
 export function requireThat(condition, message) {

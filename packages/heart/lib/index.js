@@ -64,7 +64,7 @@ import {
 import { log } from './logger.js'
 import { HeartService } from './service.js'
 import { activityOrigin } from './activity-origin.js'
-import { installRuntimeDiagnostics } from './runtime-diagnostics.js'
+import { installRuntimeDiagnostics, capabilityProfile, refreshCapabilities } from './runtime-diagnostics.js'
 import { buildExpressionPolicy } from './expression.js'
 import { connectMotion, motionIntents } from './motion.js'
 
@@ -220,6 +220,13 @@ export function apply(ctx, config) {
     }
   })
   ctx.effect(() => ctx.provide?.('agency', service.agency))
+  const capabilities = capabilityProfile()
+  ctx.effect(() => ctx.provide?.('runtimeCapabilities', capabilities))
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'heart_capabilities', description: '按需核验当前能力边界，区分已知、推测与未知。unknown 不代表可用，失败后不可宣称成功。',
+    parameters: {}, output: textOutput,
+    async execute() { return { message: JSON.stringify(await refreshCapabilities(ctx, capabilities)) } },
+  })))
 
   ctx.effect(() =>
     ctx.tools.register(

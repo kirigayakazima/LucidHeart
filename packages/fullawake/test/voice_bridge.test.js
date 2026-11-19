@@ -152,10 +152,19 @@ test('FullAwake call control carries real bridge ASR finals into the host and fl
     { type: 'tool/call', data: { turn: 0, callId: 'call' } })
   const reply = await tools.get('voice_call_toggle').execute({ enabled: true }, { agent, callId: 'call' })
   assert.match(reply.message, /已开启/)
+  const speaking = tools.get('pc_duplex_speak').execute({ text: '一二三四五六' },
+    { agent, signal: new AbortController().signal })
+  const spoken = await control.speech
+  control.send('audio.interrupt', { abortedEpoch: spoken.epoch, utteranceId: spoken.utteranceId,
+    reason: 'near_end_speech', localAudioStopped: true, elapsedAudioMs: 480 })
+  assert.match((await speaking).message, /interrupted/)
   control.send('audio.capture', { turnId: 'first', audio_epoch: 7 })
   control.send('audio.transcript', { turnId: 'first', audio_epoch: 7, text: '一起看电影', is_final: false })
   control.send('audio.transcript', { turnId: 'first', audio_epoch: 7, text: '一起看电影', is_final: true })
   assert.equal((await accepted.promise).source.kind, 'user')
+  const next = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '一起看电影' }] }
+  emit('agent/inbox/claimed', { agent, message: next })
+  assert.match(next.content[0].text, /已说出「一二」.*未说完「三四五六」/u)
   control.send('audio.capture', { turnId: 'end', audio_epoch: 8 })
   control.send('audio.transcript', { turnId: 'end', audio_epoch: 8, text: '先挂了', is_final: true })
   for (let i = 0; i < 50 && control.calls.length < 2; i++) await delay(10)

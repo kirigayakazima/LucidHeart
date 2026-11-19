@@ -48,7 +48,7 @@ export function idleCare(db, now) {
         return { id, completed: true, source: item.source }
       })
     },
-    evaluate(scope, messageId, external) {
+    evaluate(scope, messageId, external, goal) {
       return transaction(db, () => {
         const at = now()
         const day = shanghaiDay(at)
@@ -63,8 +63,8 @@ export function idleCare(db, now) {
           }
         }
         const returning = messageId && interaction?.message_id === messageId && interaction.gap_ms >= fourHours
-        if (!due && !returning) return { should_care: false, reason: 'not_due' }
-        const trigger = due ? `due:${due.id}:${day}` : `return:${messageId}`
+        if (!due && !returning && !goal) return { should_care: false, reason: 'not_due' }
+        const trigger = due ? `due:${due.id}:${day}` : goal ? `goal:${goal.id}:${day}` : `return:${messageId}`
         if (db.prepare('SELECT 1 FROM care_reminders WHERE scope=? AND trigger_id=?').get(scope, trigger)) {
           return { should_care: false, reason: 'already_suggested' }
         }
@@ -78,6 +78,7 @@ export function idleCare(db, now) {
         db.prepare('INSERT INTO care_reminders VALUES (?, ?, ?, ?)').run(scope, day, trigger, at)
         return due
           ? { should_care: true, reason: 'commitment_due', commitment_id: due.id, suggestion: `还记得我们约好的「${due.title}」，现在进展怎么样？` }
+          : goal ? { should_care: true, reason: 'active_subgoal', project_id: goal.id, suggestion: `「${goal.title}」需要一起继续吗？` }
           : { should_care: true, reason: 'user_returned', suggestion: '你回来啦。刚忙完的话，先歇一会儿也好。' }
       })
     },

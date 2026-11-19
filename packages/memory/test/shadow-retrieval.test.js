@@ -75,12 +75,12 @@ test('shadow audits a real reorder after returning identical FTS results and kee
 test('host prompt section produces byte-identical output in FTS and shadow modes', async t => {
   const { dataDir, open } = fixture(t);
   const seed = open();
-  seed.remember({ content: '小舟喜欢乌龙茶' });
+  seed.remember({ content: '小舟喜欢乌龙茶', audience: [{ channel: 'group', targetId: 'core', participants: ['小舟'] }] });
   seed.close();
   const text = '最近想喝乌龙茶';
   const agent = { id: 'watch-session', session: {} };
   const message = { role: 'user', content: [{ type: 'text', text }], source: {
-    kind: 'user', qq: { channel: 'group', speaker: '小舟', start: 0, length: text.length },
+    kind: 'user', qq: { channel: 'group', targetId: 'core', speaker: '小舟', start: 0, length: text.length },
   } };
   function prompt(retrievalPolicy) {
     const listeners = new Map();

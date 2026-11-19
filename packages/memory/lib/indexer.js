@@ -11,6 +11,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { tokenizeForFTS, buildFtsQuery, buildProjectionQuery } from './tokenizer.js';
 import { compareRankings, rankShadow } from './retrieval_bench.js';
+import { freshnessOf, isCommonKnowledge } from './schema.js';
 
 const SHADOW_POOL = 24;
 const MAX_SHADOW_JOBS = 8;
@@ -157,7 +158,8 @@ export class MemoryIndexer {
    * @param {boolean} [options.exactScope=false]
    * @returns {Array<any>}
    */
-  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false, shadow = true, mood } = {}) {
+  search(query, { scope = 'all', kind, limit = 5, projection = false, exactScope = false, shadow = true, mood,
+    now = Date.now(), context, includeExpired = false } = {}) {
     this.#assertReady();
     const ftsQuery = projection ? buildProjectionQuery(query) : buildFtsQuery(query);
     if (!ftsQuery) return [];
@@ -188,6 +190,16 @@ export class MemoryIndexer {
       params.push(...kinds);
     }
 
+    sql += ` AND (? OR (coalesce(json_extract(m.raw_json, '$.freshness'),'active') = 'active'
+      AND (json_extract(m.raw_json, '$.validUntil') IS NULL OR julianday(json_extract(m.raw_json, '$.validUntil')) > julianday(?))))`;
+    params.push(Number(includeExpired), new Date(now).toISOString());
+    if (context?.channel === 'group') {
+      sql += ` AND EXISTS (SELECT 1 FROM json_each(m.raw_json, '$.audience') a
+        WHERE json_extract(a.value, '$.channel') = 'group' AND json_extract(a.value, '$.targetId') = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(?) p WHERE NOT EXISTS
+          (SELECT 1 FROM json_each(a.value, '$.participants') heard WHERE heard.value = p.value)))`;
+      params.push(context.targetId ?? '', JSON.stringify(context.participants ?? []));
+    }
     sql += ` ORDER BY f.rank ASC, m.confidence DESC, m.created_at DESC LIMIT ?;`;
     params.push(limit);
 
@@ -195,6 +207,8 @@ export class MemoryIndexer {
     try {
       const rows = this.db.prepare(sql).all(...params);
       entries = rows.map((r) => JSON.parse(r.raw_json));
+      entries = entries.filter(entry => isCommonKnowledge(entry, context));
+      if (includeExpired) entries = entries.map(entry => ({ ...entry, freshness: freshnessOf(entry, now) }));
     } catch {
       return [];
     }

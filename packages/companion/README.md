@@ -1,4 +1,4 @@
-# dsh-companion 0.1.0
+# dsh-companion 0.2.0
 
 独立 Cordis 插件。安装包通过 `cordis.patch.yml` 注册，宿主需要提供 `tools`。手机默认使用 `/root/.dsh/companion/`，测试可通过 `dataDir` 指向独立目录。Node.js 24 原生 `DatabaseSync` 持久化活动、曲库、项目、关怀与成长、任务五个数据库。
 
@@ -17,3 +17,11 @@
 关怀以真实消息和本地记录为准。Memory 现有约定经公开服务只读参考，完成确认保存在 Companion。成长配置可由 `growth_list` 查询，核心 Notebook 与 Memory 保持原有权威。点歌历史返回本会话的成曲路径，可用于现有 QQ 附件投递。
 
 在 Monorepo 中运行 `pnpm --filter dsh-companion test`。
+
+## 目标、实验与共同创作
+
+`project_create` 和 `activity_start` 接受 `budget`，包含 `maxSteps`（默认 100）、`maxAutonomousNudges`（默认 2）、Unix 毫秒 `deadlineAt`、`stopCondition` 与有序 `subgoals`。项目里程碑作为子目标。`project_replan` 保留已使用预算；`project_stop` / `activity_stop` 锁定终态。`observedCondition` 命中约定停止条件也会停止。叫停、超时或预算耗尽后，关怀工具不再选取该目标。旧 SQLite 自动迁移，历史日志保留。
+
+`strategy_start/step` 运行最多 50 回合的确定性资源实验，环境根据真实传入的资源和成本结算，记录 expectation/action/observation/mismatch/revision。成本改变后修订数值参数，实验不调用模型、不执行外部动作，也不训练模型权重。
+
+`creation_draft/revise/read` 保存故事或节目 `draft → revision → finalized` 的独立版本链，修订须携带 `expectedVersion`，定稿不可覆写。`program_prepare/invite/respond` 为定稿节目提供一次邀请机会。邀请受 Heart 自主节律门控，只返回邀请建议。自然婉拒后该节目不再邀请，同会话其他节目冷却 24 小时；接受后仍由用户参与推进。
