@@ -1,22 +1,31 @@
 # LucidHeart / HeartAwake Suite
 
-自研核心源码monorepo：packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake}，PC节点apps/fullawake-pc，只读工具tools/memory-shape。当前Suite0.3.2是组合源码/发行版本，不是DSH宿主或手机loaded证明。
+自研核心源码 Monorepo：`packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake,companion,evolution,voice-duplex,heart-wake,xhs-scroll}`，PC 节点 `apps/fullawake-pc`，只读工具 `tools/memory-shape`，预设与锁清单 `manifests/`。当前组合源码版本对应 **Suite 0.11.0 + `suite-full-20261118`**（清单不是手机实时加载探针，真实运行事实见工作区 `docs/STATUS.md`）。
 
 | 模块 | 当前源码 | 职责 |
 |---|---|---|
-| Heart | 0.21.1 | 状态/节律/门控/原则/表达策略，Protocol1.0.0 |
-| Memory | 0.1.1 | journal、FTS与薄适配；来源/提交可靠性仍需下一阶段 |
-| QQ Plus | 0.3.0 | 双角色、完整回复语义气泡、按目标取消 |
-| RVC | 0.2.4 | Feiyu语音、停顿分段长句、QQ自动投递与同声库回退 |
-| FullAwake手机/PC | 0.2.1 | 受控PC感官/语音计算与音频回传；非通用远控 |
-| Sticker Look | 0.2.3 | 动图抽帧、接触表和按需细节 |
+| `@dsh/heart` | `0.21.4` | 状态机、Mood 2.0、作息/23:00–07:00 安静时段（用户主动请求豁免）、Protocol v1 门控与 AgencyArbiter |
+| `@dsh/memory` | `0.1.8` | 不可变 `journal.jsonl` 记忆真源、FTS5、出处溯源、跨会话首轮接力 `handoff.js`、独立视觉相册 `album.jsonl` |
+| `@dsh/qq-plus` | `0.3.1` | 双角色（小满/阿醒）唤醒门控、情绪断句节奏、多目标隔离路由与方案 D 轻量能力路由 |
+| `@dsh/rvc` | `0.2.19` | BreezeBlue 云端拟人少女音、自主发声心智、Feiyu RVC ONNX 本地回退、PC 桌宠默认直出与 GPU 异步点歌 |
+| `dsh-fullawake` / `fullawake-pc` | `0.2.11` | PC 感官桥、游戏点播与被动守望、`region` 局部变焦、桌宠播放租约、`faster-whisper` 中文 ASR 与 `RCtrl` 按住说话（PTT） |
+| `@dsh/voice-duplex` | `0.1.1` | 显式连麦通话开关、Epoch 物理打断、草稿/定稿分离与挂断三轮话题接力 |
+| `dsh-sticker-look` | `0.2.4` | 零依赖 GIF 抽帧、384-token 接触表分镜与按需局部细节 |
+| `dsh-heart-wake` | `0.1.0` | 防自激自唤醒工具（单轮锁、安静时段闸、SQLite 滚动配额） |
+| `dsh-companion` | `0.1.0` | 活动骨架、20 问/成语接龙、点歌台、持续小项目、空闲/返回关怀与 SQLite 任务账本 |
+| `dsh-evolution` | `0.1.0` | 姐妹签名协作信道、月度真实成长手账、40 场景防变笨回放、模型对照、技能沙箱与微调脱敏导出 |
+| `@dsh/xhs-scroll` | `0.1.0` | 小红书单条图文点读、384-token 宫格接触表与分享卡片降级 |
 
-小满主脑/私有记忆在手机，阿醒独立。Memory不是PC算力桥的人格副本。模型资产、环境、凭据和私人local不打进npm包或提交公开仓库。真实唱歌、GPU常驻、实时音视频、完整ContextPolicy及数字生活协调尚未完成。
+小满主脑与私有记忆在手机，阿醒独立；`Memory` 不是 PC 算力桥的人格副本。模型资产、环境、凭据和私人 `local/` 不打进 npm 包或提交公开仓库。
 
-当前事实、加载状态、测试边界与手机安装步骤统一维护在研发工作区docs/STATUS.md和docs/handoff/CURRENT.md；该工作区不是本仓库的父级公开内容。可独立阅读各package README/协议与manifests/components.lock.json，不能把manifest当实时探针。
+研发工作区状态、手机实装记录与后续路线图统一维护在工作区 `docs/STATUS.md`、`docs/handoff/CURRENT.md` 与 `docs/roadmap/`。PC 开发使用 `pnpm` 与项目 `uv` 环境（清华源）；手机端一律走 PC 打包、SHA-256 校验与 Proot 原生事务安装，禁止公网 `git`/`npm` 和手工 `node_modules` 软链。
 
-PC开发用pnpm和项目uv环境（安装用清华源）；手机只接受PC闭包发行、SHA校验和Build190原生事务安装，禁止公网git/npm和手工node_modules链接。新增工具实际SDK输出校验必跑。不要为语音测试改自主6/6。
-
-本轮237项检查/CPU长语音证据及上一轮表达验证是已跑快照，不是泛化性能/自然度分数；文档整理未重跑生产测试。代码更改后按影响范围重新测，真实手机/用户听感另验。旧发行件和其校验单不随README整理重写。
-
-[Memory Shape工具](tools/memory-shape/README.md)、[Heart协议](packages/heart/contracts/protocol.md)、[Memory当前契约](packages/memory/README.md)、[RVC实现](packages/rvc/README.md)、[FullAwake PC](apps/fullawake-pc/README.md)。
+- [组件锁清单](manifests/components.lock.json)
+- [Memory Shape 工具](tools/memory-shape/README.md)
+- [Heart 协议](packages/heart/contracts/protocol.md)
+- [Memory 当前契约](packages/memory/README.md)
+- [RVC 实现](packages/rvc/README.md)
+- [FullAwake PC](apps/fullawake-pc/README.md)
+- [Voice Duplex](packages/voice-duplex/README.md)
+- [Companion](packages/companion/README.md)
+- [Evolution](packages/evolution/README.md)

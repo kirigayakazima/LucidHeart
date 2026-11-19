@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "name": "lucidheart-suite-manifest",
   "description": "Lockfile of canonical sovereign components, upstream forks, and external tools comprising the LucidHeart (HeartAwake) companion ecosystem.",
-  "updatedAt": "2026-11-13",
+  "updatedAt": "2026-11-19",
   "components": {
     "heart": {
       "id": "@dsh/heart",
@@ -136,6 +136,15 @@
       "layer": "Actuator",
       "source": "packages/heart-wake",
       "description": "Autonomous turn initiation tool guarded by anti-self-excitation single-turn lock, Asia/Shanghai quiet hours, and SQLite quota ledger."
+    },
+    "xhs-scroll": {
+      "id": "@dsh/xhs-scroll",
+      "name": "XHS Scroll",
+      "type": "package",
+      "version": "0.1.0",
+      "layer": "Sensory",
+      "source": "packages/xhs-scroll",
+      "description": "Xiaohongshu note reader with 768x768 contact-sheet grid synthesis (<=384 tokens), Cookie probe, and share-card fallback."
     }
   },
   "externalTools": {
