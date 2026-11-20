@@ -147,13 +147,10 @@ test('watch self-decision records silent summary, syncs spoken turn to real DSH 
 
   assert.deepEqual(spoken, ['哈哈他居然把生肉塞花瓶里了'])
   assert.match(watchContext.formatPrompt(), /哈哈他居然把生肉塞花瓶里了/)
-  const msgs = session.deriveMessages()
-  assert.equal(msgs.length, 2)
-  assert.equal(msgs[0].role, 'user')
-  assert.match(msgs[0].content[0].text, /陪看画面 · 憨豆先生 \| ref:cue-\d+/)
-  assert.match(msgs[0].content[0].text, /憨豆把生牛肉偷偷塞进花瓶里/)
-  assert.equal(msgs[1].role, 'assistant')
-  assert.equal(msgs[1].content[0].text, '哈哈他居然把生肉塞花瓶里了')
+  assert.match(watchContext.formatPrompt(), /\[ref:cue-\d+\]/)
+  assert.match(watchContext.formatPrompt(), /憨豆把生牛肉偷偷塞进花瓶里/)
+  // Never directly mutate durable DSH session log (prevents format v4 source validation errors).
+  assert.equal(session.deriveMessages().length, 0)
 })
 
 test('FullAwakeBridgeClient user priority preempts active watch lease, while watch never preempts user', async t => {

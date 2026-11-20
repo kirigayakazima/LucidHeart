@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto'
-
 const INTENTS = ['nod', 'smile', 'wave', 'shock']
 const REACTION_MS = 25_000
 const MAX_AUDIO = 1024 * 1024
@@ -100,33 +98,6 @@ export function parseWatchDecision(rawAnswer) {
   const intent = INTENTS.includes(parsed.intent) ? parsed.intent : 'nod'
   const speak = parsed.speak === false ? false : Boolean(text)
   return { summary, speak, text, intent }
-}
-
-function recordWatchTurnToSession(agent, cue, summary, text) {
-  const session = agent?.session
-  if (!session || typeof session.append !== 'function' || agent.status === 'running') return false
-  const title = typeof cue?.title === 'string' && cue.title.trim() ? cue.title.trim().slice(0, 40) : '共享画面'
-  const ref = cue?.cueId ? ` | ref:${cue.cueId}` : ''
-  const sceneNote = summary || '画面出现明显变化'
-  try {
-    session.append('user/message', {
-      id: `watch-ctx-${randomUUID()}`,
-      role: 'user',
-      content: [{ type: 'text', text: `[陪看画面 · ${title}${ref}] ${sceneNote}` }],
-      source: { kind: 'plugin', plugin: 'dsh-fullawake', watch: { cueId: cue?.cueId ?? null, title, summary: sceneNote } },
-    }, { surfaceOp: 'append' })
-    session.append('assistant/message', {
-      turn: -1,
-      message: {
-        id: `watch-say-${randomUUID()}`,
-        role: 'assistant',
-        content: [{ type: 'text', text }],
-      },
-    }, { surfaceOp: 'append' })
-    return true
-  } catch {
-    return false
-  }
 }
 const output = {
   schema: { type: 'object', additionalProperties: true, properties: {} },
@@ -427,7 +398,6 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
             title: data.title, cueId: data.cueId, timecode: data.sceneAtSec,
             summary: decision.summary, spokenText: decision.text,
           })
-          recordWatchTurnToSession(job.execution?.agent, data, decision.summary, decision.text)
         }
       }
     } catch {
