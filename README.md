@@ -2,15 +2,15 @@
 
 FullAwake 0.2.14 配套 Windows 桌面工作台，支持 USB 状态、选屏选窗和一键连麦与陪看。[桌面工作台启动与配置](apps/fullawake-desktop/README.md)
 
-自研核心源码 Monorepo：`packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake,companion,evolution,voice-duplex,heart-wake,xhs-scroll}`，PC 节点 `apps/fullawake-pc`，只读工具 `tools/memory-shape`，预设与锁清单 `manifests/`。当前源码包含 **Suite 0.11.0 基线与 Track 0–3 实现**（手机端 `suite-full-20261118` 与 `track0-3-20261119` 均已完成原生事务安装，真实运行与现场验收状态见工作区 `docs/STATUS.md`）。
+自研核心源码 Monorepo：`packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake,companion,evolution,voice-duplex,heart-wake,xhs-scroll}`，PC 节点 `apps/fullawake-pc` 与 Windows 桌面工作台 `apps/fullawake-desktop`，只读工具 `tools/memory-shape`，预设与锁清单 `manifests/`。当前源码已覆盖 **Suite 0.11.0、Track 0–3、全双工两段式打断与动态反馈陪看架构**（最新运行态与真机验收记录见工作区 `docs/STATUS.md`）。
 
 | 模块 | 当前源码 | 职责 |
 |---|---|---|
-| `@dsh/heart` | `0.21.5` | 状态机、Mood 2.0、作息/23:00–07:00 安静时段（用户主动请求豁免）、Protocol v1 门控与 AgencyArbiter |
-| `@dsh/memory` | `0.1.9` | 不可变 `journal.jsonl` 记忆真源、FTS5、出处溯源、跨会话首轮接力 `handoff.js`、独立视觉相册 `album.jsonl` |
+| `@dsh/heart` | `0.21.5` | 状态机、Mood 2.0、作息/23:00–07:00 安静时段（用户主动请求豁免）、Protocol v1 门控、手机端「同步电脑会话」面板与 AgencyArbiter |
+| `@dsh/memory` | `0.1.9` | 不可变 `journal.jsonl` 记忆真源、FTS5、出处溯源、28K 历史旧图/回执折叠（`ContextHygiene`）、42K L1 工作记忆自动压缩（`ContextBudgetGuard`）、跨会话接力与视觉相册 `album.jsonl` |
 | `@dsh/qq-plus` | `0.3.1` | 双角色（小满/阿醒）唤醒门控、情绪断句节奏、多目标隔离路由与方案 D 轻量能力路由 |
-| `@dsh/rvc` | `0.2.19` | BreezeBlue 云端拟人少女音、自主发声心智、Feiyu RVC ONNX 本地回退、PC 桌宠默认直出与 GPU 异步点歌 |
-| `dsh-fullawake` / `fullawake-pc` | `0.2.14` | PC 感官桥、游戏点播与被动守望、`region` 局部变焦、桌宠播放租约、`faster-whisper` 中文 ASR 与 `RCtrl` 按住说话（PTT） |
+| `@dsh/rvc` | `0.2.19` | 全局默认 BreezeBlue 云端拟人少女音（默认关闭本地 ONNX 回退与 `dataset` 自动归档）、PC 桌宠默认直出与 GPU 异步点歌 |
+| `dsh-fullawake` / `fullawake-pc` / `fullawake-desktop` | `0.2.14` / `0.1.0` | PC 感官桥与 WebView2 桌面工作台、动态反馈陪看与 ref+摘要上下文打通、用户最高优先级语音抢占、SenseVoiceSmall 中文 ASR、4 层音频前端（Silero VAD + CoreAudio 外放压制 + GTCRN 降噪 + 3D-Speaker 严格声纹门控）与两段式 Duck-Confirm-Cut 打断 |
 | `@dsh/voice-duplex` | `0.1.1` | 显式连麦通话开关、Epoch 物理打断、草稿/定稿分离与挂断三轮话题接力 |
 | `dsh-sticker-look` | `0.2.4` | 零依赖 GIF 抽帧、384-token 接触表分镜与按需局部细节 |
 | `dsh-heart-wake` | `0.1.0` | 防自激自唤醒工具（单轮锁、安静时段闸、SQLite 滚动配额） |
