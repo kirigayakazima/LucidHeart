@@ -297,8 +297,7 @@ class InterruptController:
             if not text:
                 if was_candidate and hasattr(self.watch, 'duck_output'):
                     self.watch.duck_output(1.0)
-                return
-            if was_candidate:
+            elif was_candidate:
                 if re.match(r'^(?:嗯+|哦+|噢+|好(?:的|呀|吧|嘞)?|对+|是(?:的|啊)?|行|哈哈+|呵呵+|原来如此|这样啊)[。！!？?，,\s]*$', text):
                     log.info('Backchannel acknowledged during playback without interrupting: %r', text)
                     if hasattr(self.watch, 'duck_output'):
