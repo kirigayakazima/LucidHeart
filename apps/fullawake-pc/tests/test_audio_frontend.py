@@ -72,3 +72,71 @@ def test_audio_frontend_rejects_keyboard_noise_and_gates_foreign_voiceprint(tmp_
     owner_speech = np.ones(20000, dtype=np.float32) * 0.08
     cleaned, reason = proc.process(owner_speech, 16000, ptt=False, speaker_active=True)
     assert cleaned is not None and reason == ''
+
+
+def test_voiceprint_locks_at_five_samples_and_verify_barge_in_chunk(tmp_path):
+    vp_file = tmp_path / 'owner-vp.json'
+    proc = AudioFrontEndProcessor(models_dir=tmp_path / 'no-models', voiceprint_file=vp_file)
+    proc._denoiser = lambda arr, sr: SimpleNamespace(samples=arr)
+    owner_vec = np.array([1.0] + [0.0] * 191, dtype=np.float32)
+    other_vec = np.array([0.0, 1.0] + [0.0] * 190, dtype=np.float32)
+    proc.compute_embedding = lambda samples, sr=16000: owner_vec
+
+    speech = np.ones(20000, dtype=np.float32) * 0.08
+    for _ in range(5):
+        assert proc.enroll_from_ptt(speech, 16000) is True
+    assert proc._owner_count == 5
+
+    # 6th enrollment attempt is rejected by default lock so production voiceprint cannot be polluted
+    proc.compute_embedding = lambda samples, sr=16000: other_vec
+    assert proc.enroll_from_ptt(speech, 16000) is False
+    assert np.allclose(proc._owner_embedding, owner_vec)
+
+    # 640ms chunk verification rejects foreign speaker and accepts owner
+    pcm_640ms = (np.ones(10240, dtype=np.int16) * 2000).tobytes()
+    assert proc.verify_barge_in_chunk(pcm_640ms, 16000) is False
+    proc.compute_embedding = lambda samples, sr=16000: owner_vec
+    assert proc.verify_barge_in_chunk(pcm_640ms, 16000) is True
+
+
+def test_barge_candidate_backchannel_restores_volume_while_directive_cuts():
+    import asyncio
+    from fullawake.capabilities.desktop_vision.watch import WatchCapability
+    from fullawake.gateway.interrupt_controller import InterruptController
+
+    watch = WatchCapability(token='x' * 32)
+    q = asyncio.Queue()
+    watch.subscribers.add(q)
+    watch.player = q
+    watch.bridge_output = 'utt-123'
+
+    assert watch.duck_output(0.18) is True
+    ev = q.get_nowait()
+    assert ev == {'event': 'playback_duck', 'utteranceId': 'utt-123', 'volume': 0.18}
+
+    sent = []
+    cuts = []
+    voice = SimpleNamespace(transcribe=lambda wav, **kw: {'ok': True, 'text': '嗯嗯。'})
+    ctrl = InterruptController(watch, voice)
+    peer = SimpleNamespace(
+        call_active=True, capture_enabled=True, call_generation=1, trace=None,
+        send=lambda kind, **payload: sent.append((kind, payload)),
+    )
+    ctrl.peer = peer
+    ctrl.vad = SimpleNamespace(
+        last_utterance_barge_candidate=True, last_utterance_ptt=False, last_utterance_speaker_active=True
+    )
+    ctrl.on_speech_start = lambda p: cuts.append(p)
+
+    # 1. Backchannel ("嗯嗯。") restores volume to 1.0 without cutting or sending transcript
+    asyncio.run(ctrl._transcribe_utterance(peer, b'wav'))
+    assert cuts == []
+    assert sent == []
+    assert q.get_nowait() == {'event': 'playback_duck', 'utteranceId': 'utt-123', 'volume': 1.0}
+
+    # 2. Directive interruption ("等一下") cuts playback and sends transcript to phone
+    voice.transcribe = lambda wav, **kw: {'ok': True, 'text': '等一下'}
+    ctrl.vad.last_utterance_barge_candidate = True
+    asyncio.run(ctrl._transcribe_utterance(peer, b'wav'))
+    assert len(cuts) == 1
+    assert any(kind == 'audio.transcript' for kind, _ in sent)

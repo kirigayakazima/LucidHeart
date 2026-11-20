@@ -245,7 +245,9 @@ class AudioFrontEndProcessor:
             return None
 
     def enroll_from_ptt(self, samples: np.ndarray, sample_rate: int = 16000) -> bool:
-        """Automatically update owner voiceprint centroid from clean PTT utterances >= 1.2s."""
+        """Automatically update owner voiceprint centroid from clean PTT utterances >= 1.2s (locked once count >= 5)."""
+        if self._owner_count >= 5 and os.environ.get('FULLAWAKE_VOICEPRINT_UNLOCK', '') != '1':
+            return False
         if len(samples) < int(sample_rate * 1.2):
             return False
         emb = self.compute_embedding(samples, sample_rate)
@@ -265,6 +267,16 @@ class AudioFrontEndProcessor:
             self._save_voiceprint(self._owner_embedding, self._owner_count)
         log.info('Updated owner voiceprint from PTT (samples=%d)', self._owner_count)
         return True
+
+    def verify_barge_in_chunk(self, pcm_bytes: bytes, sample_rate: int = 16000) -> bool:
+        """Verify a ~640ms candidate PCM16 chunk during active playback for early hard-cut promotion."""
+        if not pcm_bytes:
+            return False
+        samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        if len(samples) < int(sample_rate * 0.55):
+            return False
+        cleaned, reject = self.process(samples, sample_rate, ptt=False, speaker_active=True)
+        return cleaned is not None and not reject
 
     def process(self, samples: np.ndarray, sample_rate: int = 16000, *,
                 ptt: bool = False, speaker_active: bool = False) -> tuple[np.ndarray | None, str]:

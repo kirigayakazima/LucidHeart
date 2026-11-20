@@ -117,8 +117,13 @@ class WatchPet(QWidget):
                 self.buffer = QBuffer(self)
                 self.buffer.setData(QByteArray(data))
                 self.buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+                self.audio.setVolume(1.0)
                 self.player.setSourceDevice(self.buffer, QUrl('memory.wav'))
                 self.player.play()
+            elif event['event'] == 'playback_duck' and self.utterance in ('', event.get('utteranceId', '')):
+                vol = event.get('volume', 1.0)
+                if isinstance(vol, (int, float)):
+                    self.audio.setVolume(max(0.0, min(1.0, float(vol))))
             elif event['event'] == 'playback_clock' and event['mode'] == 'idle':
                 self.stop_audio()
                 self.bubble.hide()

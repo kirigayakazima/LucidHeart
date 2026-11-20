@@ -343,6 +343,14 @@ class WatchCapability(BaseCapability):
                 queue.get_nowait()
             queue.put_nowait(event)
 
+    def duck_output(self, volume: float = 0.18, *, utterance: str | None = None) -> bool:
+        target = utterance or self.bridge_output or (self.active[0] if self.active else None) or self.song_output
+        if not target or not self.player:
+            return False
+        vol = max(0.0, min(1.0, float(volume)))
+        self.publish({'event': 'playback_duck', 'utteranceId': target, 'volume': vol}, player_only=True)
+        return True
+
     def cancel_output(self, *, bridge_utterance=None, interrupt_id=None, release=True):
         if bridge_utterance is not None:
             return self._stop_bridge(bridge_utterance, interrupt_id)

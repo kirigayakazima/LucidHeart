@@ -257,12 +257,27 @@ class InterruptController:
         if self.peer is peer:
             peer.speaking = False
 
+    def on_barge_candidate(self, peer, active: bool):
+        if self.peer is not peer:
+            return
+        if hasattr(self.watch, 'duck_output'):
+            self.watch.duck_output(0.18 if active else 1.0)
+
+    def _verify_barge_chunk(self, pcm_bytes: bytes) -> bool:
+        fe = getattr(self.voice, 'audio_frontend', None)
+        if fe is not None and hasattr(fe, 'verify_barge_in_chunk'):
+            return bool(fe.verify_barge_in_chunk(pcm_bytes, 16000))
+        return True
+
     async def _transcribe_utterance(self, peer, wav_bytes: bytes):
         log.info('VAD utterance (%d bytes), call_active=%s', len(wav_bytes), peer.call_active)
         if self.peer is not peer or not peer.call_active or not peer.capture_enabled or self.mic_muted:
             return
         generation = peer.call_generation
         released = time.monotonic()
+        was_candidate = bool(getattr(self.vad, 'last_utterance_barge_candidate', False))
+        if self.vad is not None and hasattr(self.vad, 'last_utterance_barge_candidate'):
+            self.vad.last_utterance_barge_candidate = False
         try:
             is_ptt = bool(getattr(self.vad, 'last_utterance_ptt', False))
             spk_active = bool(getattr(self.vad, 'last_utterance_speaker_active', False))
@@ -276,7 +291,21 @@ class InterruptController:
             cleaned_words = re.sub(r'[\s\W_]+', '', text)
             if text and (not cleaned_words or (not is_ptt and cleaned_words.isascii() and len(cleaned_words) <= 4)):
                 log.info('Ignored punctuation/short-ASCII ASR noise: %r', text)
+                if was_candidate and hasattr(self.watch, 'duck_output'):
+                    self.watch.duck_output(1.0)
                 return
+            if not text:
+                if was_candidate and hasattr(self.watch, 'duck_output'):
+                    self.watch.duck_output(1.0)
+                return
+            if was_candidate:
+                if re.match(r'^(?:嗯+|哦+|噢+|好(?:的|呀|吧|嘞)?|对+|是(?:的|啊)?|行|哈哈+|呵呵+|原来如此|这样啊)[。！!？?，,\s]*$', text):
+                    log.info('Backchannel acknowledged during playback without interrupting: %r', text)
+                    if hasattr(self.watch, 'duck_output'):
+                        self.watch.duck_output(1.0)
+                    return
+                log.info('Short barge-in confirmed (%r); cutting active playback', text)
+                self.on_speech_start(peer)
             if text and self.peer is peer and peer.call_active and not self.mic_muted and peer.call_generation == generation:
                 self._capture_epoch += 1
                 epoch = self._capture_epoch
@@ -736,6 +765,12 @@ class InterruptController:
                             vad_kwargs['on_utterance'] = lambda wav: loop.call_soon_threadsafe(
                                 self._spawn, peer, self._transcribe_utterance(peer, wav)
                             )
+                        if 'on_barge_candidate' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                            vad_kwargs['on_barge_candidate'] = lambda active: loop.call_soon_threadsafe(
+                                self.on_barge_candidate, peer, active
+                            )
+                        if 'verify_candidate' in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+                            vad_kwargs['verify_candidate'] = self._verify_barge_chunk
                     except (ValueError, TypeError):
                         pass
                     vad = VoiceVadListener(lambda: loop.call_soon_threadsafe(self.on_speech_start, peer),

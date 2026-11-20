@@ -2,6 +2,7 @@
 
 import logging
 import math
+import os
 from io import BytesIO
 import time
 import wave
@@ -140,10 +141,13 @@ class SpeechGate:
 
 class VoiceVadListener:
     def __init__(self, on_speech_start, on_speech_end=None, sample_rate=16000, *, device=None,
-                 device_mode="headphone", on_utterance=None, ptt_key=None, ptt_probe=None):
+                 device_mode="headphone", on_utterance=None, ptt_key=None, ptt_probe=None,
+                 on_barge_candidate=None, verify_candidate=None):
         self.on_start = on_speech_start
         self.on_end = on_speech_end or (lambda: None)
         self.on_utterance = on_utterance
+        self.on_barge_candidate = on_barge_candidate
+        self.verify_candidate = verify_candidate
         self.sample_rate = sample_rate
         self.device = device
         self.device_mode = device_mode
@@ -161,6 +165,7 @@ class VoiceVadListener:
         self.ptt_active = False
         self.last_utterance_ptt = False
         self.last_utterance_speaker_active = False
+        self.last_utterance_barge_candidate = False
 
     def configure(self, key, muted):
         self._settings = (key, muted, build_ptt_probe(key))
@@ -200,29 +205,46 @@ class VoiceVadListener:
             pre_roll = deque(maxlen=15)
             utterance = []
             capturing = False
+            barge_candidate = False
             utterance_had_speaker = False
             speaker_meter = SystemSpeakerMeter()
+            barge_mode = os.environ.get('FULLAWAKE_BARGE_IN_MODE', 'two_stage').strip().lower()
 
-            def _handle_start():
-                nonlocal capturing, utterance, utterance_had_speaker
+            def _handle_start(force_cut=False):
+                nonlocal capturing, utterance, utterance_had_speaker, barge_candidate
                 capturing = True
-                utterance = list(pre_roll)
                 utterance_had_speaker = bool(gate.playback_active or gate.system_speaker_peak >= 0.025)
-                self.on_start()
+                if (not force_cut and self.ptt_probe is None and self.device_mode == "speaker"
+                        and gate.playback_active and barge_mode != "shield" and self.on_barge_candidate is not None):
+                    barge_candidate = True
+                    utterance = []  # Exclude pre-duck full-volume speaker frames
+                    self.on_barge_candidate(True)
+                else:
+                    barge_candidate = False
+                    utterance = list(pre_roll)
+                    self.on_start()
 
             def _handle_end():
-                nonlocal capturing, utterance, utterance_had_speaker
+                nonlocal capturing, utterance, utterance_had_speaker, barge_candidate
                 was_capturing = capturing
+                was_candidate = barge_candidate
                 captured = utterance
                 had_speaker = utterance_had_speaker
                 capturing = False
+                barge_candidate = False
                 utterance = []
                 utterance_had_speaker = False
-                self.on_end()
+                if was_candidate and len(captured) < 16:
+                    if self.on_barge_candidate is not None:
+                        self.on_barge_candidate(False)
+                    return
+                if not was_candidate:
+                    self.on_end()
                 min_frames = 10 if self.ptt_probe is not None else 12
                 if was_capturing and self.on_utterance and len(captured) >= min_frames:
                     self.last_utterance_ptt = self.ptt_probe is not None
                     self.last_utterance_speaker_active = had_speaker
+                    self.last_utterance_barge_candidate = was_candidate
                     buf = BytesIO()
                     with wave.open(buf, 'wb') as out:
                         out.setnchannels(1)
@@ -291,20 +313,44 @@ class VoiceVadListener:
                         if capturing:
                             if len(utterance) < 750:
                                 utterance.append(raw)
+                            if barge_candidate and len(utterance) == 32:
+                                verified = True if self.verify_candidate is None else bool(self.verify_candidate(b''.join(utterance)))
+                                if verified:
+                                    log.info('Barge-in confirmed at 640ms; promoting Duck to hard Cut')
+                                    barge_candidate = False
+                                    self.on_start()
+                                else:
+                                    log.info('Barge-in candidate rejected at 640ms; restoring playback volume')
+                                    barge_candidate = False
+                                    capturing = False
+                                    utterance.clear()
+                                    pre_roll.clear()
+                                    gate.voiced = gate.quiet = 0
+                                    gate.speaking = False
+                                    if self.on_barge_candidate is not None:
+                                        self.on_barge_candidate(False)
+                                    continue
                         else:
                             pre_roll.append(raw)
+                        was_playing = gate.playback_active
                         if self.reference_provider:
                             active, gate.reference = self.reference_provider()
                             gate.set_playback_active(active)
                         now_mono = time.monotonic()
                         if gate.playback_active:
-                            playback_cooldown_until = now_mono + 0.65
-                        # In Auto-VAD speaker mode, shield the mic while Xiao Man herself is speaking (+650ms tail)
-                        # so her own voice never interrupts herself or feeds back into ASR. Holding RCtrl still barges in.
-                        if self.device_mode == "speaker" and now_mono < playback_cooldown_until:
+                            playback_cooldown_until = now_mono + (0.65 if barge_mode == "shield" else 0.22)
+                        elif was_playing:
+                            playback_cooldown_until = now_mono + 0.25
+                        # Always allow RCtrl instant barge-in even when Auto-VAD is active
+                        if self.device_mode == "speaker" and (gate.playback_active or now_mono < playback_cooldown_until):
                             if barge_in_probe is not None and barge_in_probe():
                                 playback_cooldown_until = 0.0
-                            else:
+                                if not capturing:
+                                    _handle_start(force_cut=True)
+                                elif barge_candidate:
+                                    barge_candidate = False
+                                    self.on_start()
+                            elif barge_mode == "shield" or (not gate.playback_active and now_mono < playback_cooldown_until):
                                 if not capturing:
                                     pre_roll.clear()
                                     gate.voiced = gate.quiet = 0
