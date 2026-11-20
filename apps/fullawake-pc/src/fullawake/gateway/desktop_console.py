@@ -257,6 +257,11 @@ class DesktopConsole:
                 await peer.close_socket(code=1001)
             return {'reconnecting': True}
 
+        @app.post('/v1/desktop/sync', dependencies=auth)
+        async def sync_session():
+            reply = await self.bridge.request_desktop('sync', source='pc_desktop_app')
+            return {'accepted': bool(reply and reply.accepted), 'synced': bool(reply and reply.accepted), **self.state()}
+
         @app.websocket('/ws/desktop')
         async def events(socket: WebSocket):
             if not allowed(socket):

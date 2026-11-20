@@ -22,7 +22,7 @@ def test_gateway_uses_base_python_and_closes_only_owned_children(tmp_path, monke
     (tmp_path / 'pyvenv.cfg').write_text(f'home = {tmp_path}\n')
     assert base_python(tmp_path) == Path(tmp_path / 'python.exe')
     monkeypatch.setenv('FULLAWAKE_AUTH_TOKEN', 'fixture-phone-token-only-987654321')
-    supervisor = Supervisor()
+    supervisor = Supervisor(config={})
     monkeypatch.setattr('fullawake_desktop.supervisor.socket.create_connection', Mock(side_effect=OSError))
     gateway = Mock()
     renderer = Mock()
@@ -42,7 +42,7 @@ def test_gateway_uses_base_python_and_closes_only_owned_children(tmp_path, monke
 def test_existing_gateway_is_never_adopted_or_killed(monkeypatch):
     monkeypatch.setenv('FULLAWAKE_AUTH_TOKEN', 'fixture-phone-token-only-987654321')
     monkeypatch.setattr('fullawake_desktop.supervisor.socket.create_connection', Mock(return_value=MagicConnection()))
-    supervisor = Supervisor()
+    supervisor = Supervisor(config={})
     supervisor._launch = Mock()
     supervisor.start_gateway()
     assert '8765' in supervisor.gateway_error

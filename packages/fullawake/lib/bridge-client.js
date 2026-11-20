@@ -216,6 +216,11 @@ export class FullAwakeBridgeClient extends EventEmitter {
       this.emit('pc-watch-request', payload)
       return
     }
+    if (frame.type === 'pc.sync_request' && shape(payload, ['requestId', 'source']) &&
+        text(payload.requestId, 64) && payload.source === 'pc_desktop_app') {
+      this.emit('pc-sync-request', payload)
+      return
+    }
     if (this.capture && frame.type === 'audio.capture' && shape(payload, ['turnId', 'audio_epoch']) &&
         integer(payload.audio_epoch, 1) && (payload.turnId === null || text(payload.turnId, 80))) {
       this.emit('capture', payload)

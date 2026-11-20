@@ -48,7 +48,7 @@ class StrictFrame(BaseModel):
 
 class Frame(StrictFrame):
     protocol: Literal['lucid.voice/1']
-    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch', 'voice.call', 'call.state', 'watch.state']
+    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch', 'voice.call', 'call.state', 'watch.state', 'sync.state']
     sessionId: str = Field(min_length=1, max_length=140)
     connectionId: str = Field(min_length=1, max_length=80)
     commandSeq: int = Field(ge=1, le=MAX_EPOCH)
@@ -553,7 +553,7 @@ class InterruptController:
             if frame.commandSeq <= peer.received_seq:
                 continue
             peer.received_seq = frame.commandSeq
-            if frame.type in ('call.state', 'watch.state'):
+            if frame.type in ('call.state', 'watch.state', 'sync.state'):
                 reply = DesktopReply.model_validate(frame.payload)
                 waiter = peer.desktop_pending.get((frame.type, reply.requestId))
                 if waiter is not None and not waiter.done():

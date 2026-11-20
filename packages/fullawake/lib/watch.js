@@ -40,7 +40,7 @@ function decodeSummary(content) {
   } catch { return { status: 'invalid' } }
 }
 
-export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge }) {
+export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge, resolveTarget }) {
   const watchProvider = config.watchProvider || 'deepseek-official'
   const watchModel = config.watchModel || 'deepseek-flash'
   const mode = config.watchDecisionMode ?? 'legacy'
@@ -283,7 +283,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           return
         }
         const target = config.duplexTarget
-        const agent = target && service(ctx, 'agents')?.get?.(target)
+        const agent = (typeof resolveTarget === 'function' ? resolveTarget() : null) ?? (target && service(ctx, 'agents')?.get?.(target))
         const gate = shadow || (await service(ctx, 'heart')?.evaluateActivity?.({ intent: 'pc_watch', category: 'voice' }))?.suitable === true
         const result = agent && gate ? await setAuto({ enabled: true, pcInitiated: true },
           { agent, signal: AbortSignal.timeout(1750) }) : null

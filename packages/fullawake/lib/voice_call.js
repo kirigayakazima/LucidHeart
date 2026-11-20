@@ -25,7 +25,7 @@ function callCommand(exec, config) {
 }
 
 export function registerVoiceCall(ctx, config, {
-  bridge, defineTool, output, readyForCall, speak, canSpeak = () => false, replyRoute = {},
+  bridge, defineTool, output, readyForCall, speak, canSpeak = () => false, replyRoute = {}, resolveTarget,
 }) {
   const service = name => ctx.get?.(name) ?? ctx[name]
   let capture = null
@@ -115,7 +115,7 @@ export function registerVoiceCall(ctx, config, {
   const onDesktopCall = ({ requestId, enabled }) => {
     void (async () => {
       const target = config.duplexTarget
-      const agent = target && service('agents')?.get?.(target)
+      const agent = (typeof resolveTarget === 'function' ? resolveTarget() : null) ?? (target && service('agents')?.get?.(target))
       if (enabled && !agent) {
         bridge.replyDesktop('call', requestId, Boolean(capture), false)
         return

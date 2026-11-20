@@ -6,6 +6,7 @@ import { registerWatch } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
 import { registerVoiceCall } from './voice_call.js'
+import { ActiveTargetStore } from './active_target.js'
 import { createHash } from 'node:crypto'
 import { GAME_VOICE_DIRECTION, gameWatchTurn, registerGameCompanion, resolveDeliveryTarget } from './game_watch.js'
 
@@ -206,7 +207,12 @@ export function apply(ctx, config = {}) {
       return await turn.done
     } finally { turn.controller.abort() }
   }
+  let resolveDesktopTarget = null
   if (config.voiceEpochProtocol !== false && config.watchDecisionMode !== 'shadow') {
+    const activeTarget = new ActiveTargetStore(config, {
+      ...(config.activeTargetFile !== undefined ? { stateFile: config.activeTargetFile } : {}),
+    })
+    resolveDesktopTarget = () => activeTarget.resolve(ctx)
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
       heartVersion: () => getHeart()?.version,
       capture: true,
@@ -223,8 +229,14 @@ export function apply(ctx, config = {}) {
           evidence: { interrupted: true, elapsedAudioMs }, summary: '用户开口打断语音',
         })).catch(() => {})
       }
+      const onSyncTarget = ({ requestId }) => {
+        const { agentId } = activeTarget.sync(ctx)
+        bridge.replyDesktop('sync', requestId, Boolean(agentId), Boolean(agentId))
+      }
       bridge.on('interrupt', observeInterrupt)
+      bridge.on('pc-sync-request', onSyncTarget)
       const offRepair = ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+        activeTarget.observe(agent, message)
         if (!agent?.id || message?.source?.kind !== 'user') return
         const block = message.content?.[0]
         if (block?.type !== 'text' || typeof block.text !== 'string') return
@@ -254,6 +266,7 @@ export function apply(ctx, config = {}) {
       bridge.connect()
       return () => {
         bridge.off('interrupt', observeInterrupt)
+        bridge.off('pc-sync-request', onSyncTarget)
         if (typeof offCancel === 'function') offCancel()
         if (typeof offRepair === 'function') offRepair()
         if (typeof offRepairStep === 'function') offRepairStep()
@@ -263,6 +276,7 @@ export function apply(ctx, config = {}) {
     ctx.effect(() => registerVoiceCall(ctx, config, {
       bridge, defineTool, output: textOutput, speak: speakDuplex,
       canSpeak: () => !pcVoiceMuted && Boolean(bridge.turnLifecycle),
+      resolveTarget: resolveDesktopTarget,
       replyRoute: callReplyRoute,
       readyForCall: async () => {
         if (lastStatus?.voice_calls !== true) await checkPCStatus()
@@ -285,7 +299,7 @@ export function apply(ctx, config = {}) {
       },
     })))
   }
-  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge })
+  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge, resolveTarget: resolveDesktopTarget })
   if (bridge && (config.gameWatchQqSessions?.length || config.duplexTarget)) ctx.effect(() => registerGameCompanion(ctx, config, {
     bridge, defineTool, output: textOutput,
     readyForWatch: async () => { await initialStatus; return lastStatus?.game_watch_sessions === true },

@@ -81,6 +81,9 @@ class ConsoleApi:
         self._supervisor.refresh_usb()
         return self._request('POST', 'reconnect')
 
+    def sync_session(self):
+        return self._request('POST', 'sync')
+
     def restart_gateway(self):
         self._supervisor.restart()
         return {'error': self._supervisor.gateway_error} if self._supervisor.gateway_error else {}

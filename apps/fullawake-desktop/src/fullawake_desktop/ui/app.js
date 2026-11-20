@@ -27,7 +27,7 @@ function renderState(next) {
   lamp('usb', next.usb, 'USB 隧道 · ' + (next.usb ? '已建立' : '等待'));
   lamp('phone', next.bridge_connected, '手机小满 · ' + (next.bridge_connected ? '已连接' : '等待握手'));
   lamp('gateway', next.gateway_online, 'PC 网关 · ' + (next.gateway_online ? '运行中' : '离线'));
-  byId('call').disabled = byId('watch').disabled = actionPending || !next.desktop_control;
+  byId('call').disabled = byId('watch').disabled = byId('sync').disabled = actionPending || !next.desktop_control;
   byId('call').classList.toggle('active', Boolean(next.call_active));
   byId('call').lastElementChild.textContent = next.call_active ? '挂断连麦' : '开启连麦';
   byId('watch').classList.toggle('active', Boolean(next.watch_active));
@@ -137,6 +137,10 @@ async function repeat(callback, delay) {
 
 window.addEventListener('pywebviewready', () => {
   api = window.pywebview.api;
+  byId('sync').onclick = async () => {
+    const res = await run(() => api.sync_session(), true);
+    if (res?.accepted) { notified = '已同步手机当前活跃私聊会话。'; renderState(state); }
+  };
   byId('reconnect').onclick = () => run(() => api.reconnect());
   byId('restart').onclick = () => run(() => api.restart_gateway());
   byId('call').onclick = () => run(() => api.call(!state.call_active), true);
