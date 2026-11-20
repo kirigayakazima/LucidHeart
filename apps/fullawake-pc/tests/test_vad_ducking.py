@@ -85,16 +85,13 @@ def test_speech_gate_speaker_mode_allows_loud_interrupt_during_playback():
 
     gate.set_playback_active(True)
 
-    # User speaks loudly near the microphone (RMS 350 >= 220)
-    # Speaker mode requires 4 consecutive frames (80ms)
-    gate.feed(make_pcm(350))
-    assert len(starts) == 0
-    gate.feed(make_pcm(350))
-    assert len(starts) == 0
-    gate.feed(make_pcm(350))
-    assert len(starts) == 0
-    gate.feed(make_pcm(350))
-    # 4th frame triggers deliberate interrupt!
+    # User speaks loudly near the microphone (RMS 900 >= 650)
+    # Speaker mode during active playback requires 6 consecutive frames (120ms)
+    for _ in range(5):
+        gate.feed(make_pcm(900))
+        assert len(starts) == 0
+    gate.feed(make_pcm(900))
+    # 6th frame triggers deliberate interrupt!
     assert len(starts) == 1
     assert gate.speaking is True
 

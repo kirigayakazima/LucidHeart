@@ -115,7 +115,11 @@ class SpeechGate:
             offset = position * 16 + round((time.monotonic() - at) * 16000) - len(samples)
             echo = correlated_echo(samples, waveform, offset)
         voiced = not echo and self.detector.is_speech(pcm, self.sample_rate)
-        if is_ducked:
+        if self.playback_active and self.device_mode == "speaker":
+            # Tighter floor while the pet itself is speaking so speaker echo does not pump duck/restore.
+            min_rms = max(650.0, self.noise * 6.0, self.system_speaker_peak * 1400.0)
+            required_voiced = 6
+        elif is_ducked:
             min_rms = max(220.0, self.noise * 4.5, self.system_speaker_peak * 420.0)
             required_voiced = 4
         else:
