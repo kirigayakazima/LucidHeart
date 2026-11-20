@@ -151,7 +151,7 @@ test('desktop control start and stop coordinate PC control with phone polling', 
   assert.equal(watch.calls.reserve, 0)
 })
 
-test('heart mode runs live speech only for SPEAK with a 2PC reservation', async t => {
+test('heart mode runs live speech for SPEAK without consuming Heart autonomous quota', async t => {
   const watch = fixture(t, 'heart', { widgetOnline: true })
   assert.equal((await watch.tool('pc_watch_auto', { enabled: true })).status, 'started')
   watch.clock.latestCandidateDiff = 0.25
@@ -163,23 +163,26 @@ test('heart mode runs live speech only for SPEAK with a 2PC reservation', async 
   watch.clock.latestCandidateSec++
   watch.clock.latestCandidateDiff = 0.8
   await watch.tick()
-  for (let i = 0; i < 20 && !watch.calls.commit; i++) await nextTurn()
+  for (let i = 0; i < 20 && !watch.calls.speak; i++) await nextTurn()
   assert.equal(watch.decisions().at(-1).detail.action, 'SPEAK')
   assert.equal(watch.calls.infer, 1)
   assert.equal(watch.calls.speak, 1)
-  assert.equal(watch.calls.commit, 1)
-  assert.equal(readTrigger(watch.root).idleCount, 1)
+  assert.equal(watch.calls.reserve, 0)
+  assert.equal(watch.calls.commit, 0)
+  assert.equal(readTrigger(watch.root).idleCount, 0)
 })
 
-test('heart mode stops at a missing 2PC reservation even after SPEAK', async t => {
-  const watch = fixture(t, 'heart', { widgetOnline: true, agency2PCQuota: false })
+test('watch mode still speaks when Heart autonomous daily quota is exhausted', async t => {
+  const watch = fixture(t, 'legacy', { widgetOnline: true, agency2PCQuota: false })
+  writeTrigger(watch.root, { idleDate: dateOf(), idleCount: 99 })
   assert.equal((await watch.tool('pc_watch_auto', { enabled: true })).status, 'started')
   await watch.tick()
-  assert.equal(watch.decisions().at(-1).detail.action, 'SPEAK')
-  assert.equal(watch.calls.reserve, 1)
-  assert.equal(watch.calls.begin, 0)
-  assert.equal(watch.calls.infer, 0)
-  assert.equal(readTrigger(watch.root).idleCount, 0)
+  for (let i = 0; i < 20 && !watch.calls.speak; i++) await nextTurn()
+  assert.equal(watch.calls.reserve, 0)
+  assert.equal(watch.calls.begin, 1)
+  assert.equal(watch.calls.infer, 1)
+  assert.equal(watch.calls.speak, 1)
+  assert.equal(readTrigger(watch.root).idleCount, 99)
 })
 
 test('legacy remains the schema default and accepts existing settings', () => {

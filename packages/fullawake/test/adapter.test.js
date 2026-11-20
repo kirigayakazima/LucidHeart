@@ -568,8 +568,8 @@ for (const mode of ['interrupt', 'played', 'text_delivered']) {
         assert.equal(frame.type, mode === 'played' ? 'audio.speak' : 'pet.text')
         finish()
         await observed.promise
-        assert.equal(readTrigger(root).idleCount, 1)
-        assert.equal(readTrigger(root).idleCategoryCounts.bilibili, 1)
+        assert.equal(readTrigger(root).idleCount, 0)
+        assert.deepEqual(fs.readFileSync(path.join(root, 'trigger.json')), before)
       }
       assert.deepEqual(watch.dispatched, [])
     } finally {

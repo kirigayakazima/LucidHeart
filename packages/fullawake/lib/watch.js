@@ -68,7 +68,10 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     if (!heart?.evaluateActivity || (presence?.status ?? presence) === 'asleep') return false
     const result = await heart.evaluateActivity(voice ? { intent: 'voice_speak', category: 'voice' }
       : { intent: 'companion_react', category: 'chat' }, { execution })
-    return result?.suitable === true
+    // User-initiated PC companion watch mode does not consume Heart autonomous daily quota
+    // and is not blocked by autonomous daily/category caps or quiet-hours.
+    if (result?.suitable === true) return true
+    return ['daily-cap', 'category-cap', 'quiet-hours'].includes(result?.reason)
   }
 
   async function fresh(cue, signal) {
@@ -185,7 +188,7 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
   async function tick(job) {
     if (job.busy || job.controller.signal.aborted) return
     job.busy = true
-    let cue, turn, releaseQuota, reservationId
+    let cue, turn
     try {
       const { data: clock } = await summary({ clockOnly: true }, job.controller.signal)
       if (auto !== job) return
@@ -234,36 +237,21 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           (mode === 'heart' ? data.sceneAtSec !== sceneAtSec : data.sceneAtSec <= job.scene)) return
       job.lastAttempt = performance.now()
       cue = data
-      let commit
       if (bridge) {
         if (job.voice && !(await gate(execution, true))) return
         signal.throwIfAborted()
-        const heart = service(ctx, 'heart')
-        const quota = heart?.reserveAutonomousQuota?.('bilibili')
-        if (!quota?.ok || (mode === 'heart' && !quota.reservationId)) return
-        reservationId = quota.reservationId
-        releaseQuota = () => {
-          if (reservationId) heart.rollbackQuota(reservationId)
-          reservationId = null
-        }
-        commit = () => {
-          if (reservationId && heart.commitQuota(reservationId)) reservationId = null
-        }
         turn = bridge.begin({ signal, cue, agentId: job.execution?.agent?.id })
         if (!turn) return
         signal = turn.signal
-        signal.addEventListener('abort', releaseQuota, { once: true })
         if (!(await turn.prepared)) return
       }
       job.scene = data.sceneAtSec
       const reaction = await infer(data, png, signal)
-      if (reaction) await deliver(data, reaction, job.voice, execution, signal, turn, commit)
+      if (reaction) await deliver(data, reaction, job.voice, execution, signal, turn)
     } catch {
       if (cue) await observe('discarded', cue, 'inference')
     } finally {
-      if (turn && releaseQuota) turn.signal.removeEventListener('abort', releaseQuota)
       turn?.controller.abort('watch_turn_closed')
-      releaseQuota?.()
       job.busy = false
     }
   }
