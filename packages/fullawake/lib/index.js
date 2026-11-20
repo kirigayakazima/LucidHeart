@@ -34,7 +34,7 @@ export const inject = ['tools']
 export const Config = z
   ? z.object({
       gatewayUrl: z.string().default('http://127.0.0.1:28765').description('FullAwake PC Gateway URL'),
-      authToken: z.string().default('').description('Bearer Token，留空时读取 FULLAWAKE_AUTH_TOKEN 或内置默认值'),
+      authToken: z.string().default('').description('Bearer Token，留空时读取 FULLAWAKE_AUTH_TOKEN '),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
       watchProvider: z.string().default('').description('自动陪看的 DSH 视觉模型提供者'),
       watchModel: z.string().default('').description('自动陪看的 DSH 视觉模型'),
@@ -90,7 +90,7 @@ const SNAPSHOT_REGIONS = ['full', 'left', 'right', 'top', 'bottom', 'center', 't
 
 export function apply(ctx, config = {}) {
   const gatewayUrl = String(config.gatewayUrl || process.env.FULLAWAKE_GATEWAY_URL || 'http://127.0.0.1:28765').replace(/\/+$/, '')
-  const authToken = String(config.authToken || process.env.FULLAWAKE_AUTH_TOKEN || 'xiaoman-pc-bridge-secret-2026').trim()
+  const authToken = String(config.authToken || process.env.FULLAWAKE_AUTH_TOKEN || '').trim()
   const pollIntervalSeconds = Math.max(10, Number(config.pollIntervalSeconds) || 30)
 
   let pcOnline = false
@@ -225,11 +225,14 @@ export function apply(ctx, config = {}) {
     })
     ctx.effect(() => registerVoiceCall(ctx, config, {
       bridge, defineTool, output: textOutput,
-      readyForCall: async () => { await initialStatus; return lastStatus?.voice_calls === true },
+      readyForCall: async () => {
+        if (lastStatus?.voice_calls !== true) await checkPCStatus()
+        return lastStatus?.voice_calls === true
+      },
     }))
     ctx.effect(() => ctx.tools.register(defineTool({
       name: 'pc_duplex_speak',
-      description: '在当前 PC 双工语音通话中，用桌宠扬声器回答用户。',
+      description: '当 PC 双工语音通话中的用户消息以 [Voice message] 开头时，用本工具通过桌宠扬声器回答。播放成功后无需重复发送同一句文字。',
       parameters: { text: { type: 'string', required: true } },
       output: textOutput,
       async execute({ text }, exec) {

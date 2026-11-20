@@ -17,6 +17,7 @@ PTT_VIRTUAL_KEYS = {
     'f8': 0x77,
     'f9': 0x78,
     'f10': 0x79,
+    'capslock': 0x14,
 }
 
 
@@ -153,6 +154,12 @@ class VoiceVadListener:
         self._ready = Event()
         self._available = False
         self._thread = Thread(target=self._run, name='fullawake-vad', daemon=True)
+        self._settings = None
+        self.rms = 0.0
+        self.ptt_active = False
+
+    def configure(self, key, muted):
+        self._settings = (key, muted, build_ptt_probe(key))
 
     def set_playback_active(self, active: bool):
         self._playback_active = bool(active)
@@ -216,6 +223,8 @@ class VoiceVadListener:
             gate.set_playback_active(self._playback_active)
             self._gate = gate
             ptt_was_active = False
+            applied = None
+            muted = False
             if self.ptt_probe is not None:
                 log.info('Push-to-talk enabled (key=%s): hold key to speak', self.ptt_key or 'custom')
             with sounddevice.RawInputStream(device=self.device, samplerate=self.sample_rate,
@@ -227,8 +236,24 @@ class VoiceVadListener:
                     pcm, overflowed = stream.read(frames)
                     if not self._stop.is_set():
                         raw = bytes(pcm)
+                        settings = self._settings
+                        if settings is not applied and settings is not None:
+                            applied = settings
+                            self.ptt_key, muted, self.ptt_probe = settings
+                            self.ptt_active = ptt_was_active = False
+                            capturing = False
+                            utterance.clear()
+                            pre_roll.clear()
+                            gate.voiced = gate.quiet = 0
+                            gate.speaking = False
+                            self.on_end()
+                        samples = memoryview(raw).cast('h')
+                        self.rms = math.sqrt(sum(value * value for value in samples) / max(1, len(samples))) / 32768 if not muted else 0
+                        if muted:
+                            continue
                         if self.ptt_probe is not None:
                             ptt_active = bool(self.ptt_probe())
+                            self.ptt_active = ptt_active
                             if ptt_active != ptt_was_active:
                                 ptt_was_active = ptt_active
                                 if ptt_active:

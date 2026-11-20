@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from contextlib import aclosing
+from collections import deque
 from dataclasses import dataclass, field
 import hmac
 import inspect
@@ -47,7 +48,7 @@ class StrictFrame(BaseModel):
 
 class Frame(StrictFrame):
     protocol: Literal['lucid.voice/1']
-    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch', 'voice.call']
+    type: Literal['session.handshake', 'audio.prepare', 'audio.speak', 'audio.play', 'audio.cancel', 'audio.interrupt_ack', 'pet.text', 'game.watch', 'voice.call', 'call.state', 'watch.state']
     sessionId: str = Field(min_length=1, max_length=140)
     connectionId: str = Field(min_length=1, max_length=80)
     commandSeq: int = Field(ge=1, le=MAX_EPOCH)
@@ -81,6 +82,10 @@ class GameWatchControl(StrictFrame):
 class VoiceCallControl(StrictFrame):
     requestId: str = Field(min_length=1, max_length=64)
     active: bool
+
+
+class DesktopReply(VoiceCallControl):
+    accepted: bool
 
 
 class PetText(Utterance):
@@ -184,6 +189,9 @@ class Peer:
     trace: dict | None = None
     jobs: set = field(default_factory=set)
     outbound: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=16))
+    desktop_control: bool = False
+    desktop_pending: dict = field(default_factory=dict)
+    close_socket: object = None
 
     def send(self, kind, /, **payload):
         self.sent_seq += 1
@@ -202,6 +210,9 @@ class InterruptController:
         self.voice = voice
         self.on_call_change = on_call_change
         self._capture_epoch = 0
+        self.recent_turns = deque(maxlen=10)
+        self.mic_muted = False
+        self.on_disconnect = None
         self.breeze = BreezeBlueAdapter()
         try:
             profiles = load_profiles(config.game_watch_profiles)
@@ -247,19 +258,20 @@ class InterruptController:
 
     async def _transcribe_utterance(self, peer, wav_bytes: bytes):
         log.info('VAD utterance (%d bytes), call_active=%s', len(wav_bytes), peer.call_active)
-        if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
+        if self.peer is not peer or not peer.call_active or not peer.capture_enabled or self.mic_muted:
             return
         generation = peer.call_generation
         released = time.monotonic()
         try:
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
-            if text and self.peer is peer and peer.call_active and peer.call_generation == generation:
+            if text and self.peer is peer and peer.call_active and not self.mic_muted and peer.call_generation == generation:
                 self._capture_epoch += 1
                 epoch = self._capture_epoch
                 turn_id = uuid4().hex
                 asr_done = time.monotonic()
-                peer.trace = {'turnId': turn_id, 'released': released, 'asr_done': asr_done}
+                peer.trace = {'turnId': turn_id, 'released': released, 'asr_done': asr_done, 'asr': text[:1500]}
+                self.recent_turns.append(peer.trace)
                 log.info('PC mic final turnId=%s audio_epoch=%s chars=%s call_generation=%s text=%s',
                          turn_id, epoch, len(text), generation, text[:60])
                 log.info('LATENCY turnId=%s stage=asr asr_ms=%.0f', turn_id, (asr_done - released) * 1000)
@@ -430,6 +442,8 @@ class InterruptController:
     async def _play(self, peer, lease):
         command = lease.command
         outcome = 'discarded'
+        if peer.trace and isinstance(command, (Speak, PlayAudio)):
+            peer.trace['reply'] = command.text
         try:
             async def cancelled():
                 return not self._can_render(peer, lease)
@@ -539,6 +553,12 @@ class InterruptController:
             if frame.commandSeq <= peer.received_seq:
                 continue
             peer.received_seq = frame.commandSeq
+            if frame.type in ('call.state', 'watch.state'):
+                reply = DesktopReply.model_validate(frame.payload)
+                waiter = peer.desktop_pending.get((frame.type, reply.requestId))
+                if waiter is not None and not waiter.done():
+                    waiter.set_result(reply)
+                continue
             if frame.type == 'voice.call':
                 command = VoiceCallControl.model_validate(frame.payload)
                 if not peer.turn_lifecycle or not peer.capture_enabled:
@@ -646,6 +666,23 @@ class InterruptController:
             raise ValueError('Invalid voice control frame size')
         return frame
 
+    async def request_desktop(self, kind, **payload):
+        peer = self.peer
+        if peer is None or not peer.desktop_control:
+            return None
+        request_id = uuid4().hex
+        key = (f'{kind}.state', request_id)
+        waiter = asyncio.get_running_loop().create_future()
+        peer.desktop_pending[key] = waiter
+        try:
+            peer.send(f'pc.{kind}_request', requestId=request_id, **payload)
+            reply = await asyncio.wait_for(waiter, 2)
+            return reply if self.peer is peer else None
+        except (asyncio.TimeoutError, asyncio.QueueFull):
+            return None
+        finally:
+            peer.desktop_pending.pop(key, None)
+
     def mount(self, app):
         @app.websocket('/ws/bridge')
         async def bridge(socket: WebSocket):
@@ -669,6 +706,7 @@ class InterruptController:
                 lifecycle = lifecycle and tuple(map(int, version)) >= (0, 2, 6)
                 peer = self.peer = Peer(first.sessionId, first.connectionId, turn_lifecycle=lifecycle,
                                         capture_enabled=handshake.capture)
+                peer.close_socket = socket.close
                 if lifecycle and tuple(map(int, version)) >= (0, 2, 10):
                     peer.call_active = False
                 supported = False
@@ -693,11 +731,14 @@ class InterruptController:
                                            **vad_kwargs)
                     if hasattr(vad, 'reference_provider'):
                         vad.reference_provider = self.watch.microphone_reference
+                    if hasattr(vad, 'configure'):
+                        vad.configure(getattr(config, 'ptt_key', ''), self.mic_muted)
                     supported = await asyncio.to_thread(vad.start)
                     self.vad = vad
                 peer.send('session.handshake_ack', status='ready', gatewayVersion=__version__,
                           initialEpoch=INITIAL_EPOCH, vadSupported=supported, **({'turnLifecycle': True} if lifecycle else {}),
                           **({'gameVoice': bool(config.breeze_api_key)} if lifecycle and tuple(map(int, version)) >= (0, 2, 9) else {}))
+                peer.desktop_control = lifecycle and tuple(map(int, version)) >= (0, 2, 14)
 
                 async def send():
                     while True:
@@ -718,6 +759,9 @@ class InterruptController:
                     for task in readers:
                         task.cancel()
                     if peer is not None:
+                        for waiter in peer.desktop_pending.values():
+                            if not waiter.done():
+                                waiter.set_result(None)
                         self.game_watch.stop(peer)
                         lease, peer.lease = peer.lease, None
                         if lease is not None:
@@ -735,3 +779,5 @@ class InterruptController:
                         self.vad = None
                         if peer is not None:
                             self.peer = None
+                            if self.on_disconnect:
+                                await self.on_disconnect(peer)

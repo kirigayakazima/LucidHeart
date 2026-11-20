@@ -42,9 +42,9 @@ export class FullAwakeBridgeClient extends EventEmitter {
     this.url = url.href
     this.authToken = authToken
     this.heartVersion = heartVersion
-    this.retryMs = retryMs
+    this.retryMs = Math.min(retryMs, 5000)
     this.capture = capture
-    this.#backoff = retryMs
+    this.#backoff = this.retryMs
     this.sessionId = `watch-session-${Date.now()}-${randomUUID()}`
   }
 
@@ -74,6 +74,10 @@ export class FullAwakeBridgeClient extends EventEmitter {
   }
 
   cancelCurrent() { this.#task?.controller.abort('conversation_cancelled') }
+
+  replyDesktop(kind, requestId, active, accepted) {
+    return this.ready && this.#send(this.#connection, `${kind}.state`, { requestId, active, accepted })
+  }
 
   consumeLastInterrupt(agentId) {
     const repair = this.#lastInterrupt
@@ -115,7 +119,7 @@ export class FullAwakeBridgeClient extends EventEmitter {
     if (!this.#running) return
     this.#retry = setTimeout(() => this.#open(), this.#backoff)
     this.#retry.unref?.()
-    this.#backoff = Math.min(this.#backoff * 2, 15_000)
+    this.#backoff = Math.min(this.#backoff * 2, 5_000)
   }
 
   #drop(connection) {
@@ -201,6 +205,17 @@ export class FullAwakeBridgeClient extends EventEmitter {
       return
     }
     const task = this.#task
+    if (frame.type === 'pc.call_request' && shape(payload, ['requestId', 'enabled', 'source']) &&
+        text(payload.requestId, 64) && typeof payload.enabled === 'boolean' && payload.source === 'pc_desktop_app') {
+      this.emit('pc-call-request', payload)
+      return
+    }
+    if (frame.type === 'pc.watch_request' && shape(payload, ['requestId', 'action', 'mode', 'targetLabel']) &&
+        text(payload.requestId, 64) && ['start', 'stop'].includes(payload.action) &&
+        payload.mode === 'desktop' && text(payload.targetLabel, 240)) {
+      this.emit('pc-watch-request', payload)
+      return
+    }
     if (this.capture && frame.type === 'audio.capture' && shape(payload, ['turnId', 'audio_epoch']) &&
         integer(payload.audio_epoch, 1) && (payload.turnId === null || text(payload.turnId, 80))) {
       this.emit('capture', payload)

@@ -1,0 +1,21 @@
+[project]
+name = "fullawake-desktop"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "pywebview==4.4.1", "pystray>=0.19,<1", "pillow>=10", "httpx>=0.28,<1", "websockets>=15,<18",
+  "pythonnet==3.0.5; sys_platform == 'win32'",
+  "clr-loader==0.2.10; sys_platform == 'win32'",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

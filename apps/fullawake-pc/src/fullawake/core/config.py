@@ -49,7 +49,7 @@ class FullAwakeConfig(BaseModel):
     voice_work_dir: str = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_WORK_DIR', str(Path.home() / '.fullawake' / 'voice-work')))
     voice_clients: List[str] = Field(default_factory=lambda: os.environ.get('FULLAWAKE_VOICE_CLIENTS', '127.0.0.1,::1').split(','))
     auth_token: str = Field(
-        default_factory=lambda: os.environ.get("FULLAWAKE_AUTH_TOKEN", "xiaoman-pc-bridge-secret-2026"),
+        default_factory=lambda: os.environ.get("FULLAWAKE_AUTH_TOKEN", ""),
         description="Bearer token required for phone DSH MCP client authentication",
     )
 

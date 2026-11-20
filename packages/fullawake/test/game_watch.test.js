@@ -166,6 +166,7 @@ for (const playback of ['played', 'discarded', null]) {
     assert.equal(f.played[0].voiceProfile, 'breezeblue')
     assert.equal(f.played[0].text, '这把辛苦啦，我还在呢。')
     assert.ok(f.played[0].deadlineMs <= 2500)
+    if (playback !== null) await until(() => quota.length === 2)
     await tool.execute({ action: 'stop' }, execution('小满，不打了', 'pc', { id: 'pc-game' }).next('watch-stop'))
     await until(() => quota.length === 2)
     if (playback === null) await until(() => f.cancelled.length === 1)

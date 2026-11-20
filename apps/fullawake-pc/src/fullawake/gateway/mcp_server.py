@@ -40,6 +40,7 @@ from fullawake.capabilities.voice_sing_provider import (
     CUDA, ResidentSingProvider, SingJobQueue, SingQueueFull, SingQueueUnavailable,
 )
 from fullawake.gateway.interrupt_controller import InterruptController
+from fullawake.gateway.desktop_console import DesktopConsole
 from fullawake.capabilities.resident_cuda import ResidentCuda
 from fullawake.pipeline.stream_worker import stream_sentences
 
@@ -80,9 +81,13 @@ class FullAwakeMCPGateway:
         self.capture_turn = None
         self.interrupts = InterruptController(self.watch, self.voice, on_call_change=self._clear_capture)
         self.desktop = DesktopVisionCapability()
+        self.console = DesktopConsole(self)
+        self.interrupts.on_disconnect = self.console.disconnect
 
         @asynccontextmanager
         async def lifespan(_app):
+            gateway_log = logging.getLogger('fullawake')
+            gateway_log.addHandler(self.console.log)
             background = [asyncio.create_task(self.desktop.storyboard.run())]
             if self.interrupts.game_watch.profiles:
                 background.append(asyncio.create_task(self.interrupts.game_watch.run(
@@ -107,6 +112,7 @@ class FullAwakeMCPGateway:
             try:
                 yield
             finally:
+                gateway_log.removeHandler(self.console.log)
                 await self.watch.stop_desktop()
                 for task in background:
                     task.cancel()
@@ -181,6 +187,7 @@ class FullAwakeMCPGateway:
         app = self.app
         self.watch.mount(app, self._interrupt_desktop_playback)
         self.interrupts.mount(app)
+        self.console.mount(app)
 
         @app.get("/health")
         async def health():
@@ -727,7 +734,7 @@ def run_server():
     print(f"[*] Starting FullAwake Gateway on {config.host}:{config.port}...")
     print("[*] Bearer authentication enabled (token hidden)")
     print(f"[*] Allowed Workspace Roots: {config.allowed_roots}")
-    uvicorn.run(app, host=config.host, port=config.port, log_level="info",
+    uvicorn.run(app, host=config.host, port=config.port, log_level="info", proxy_headers=False,
                 ws="wsproto" if gateway.watch.enabled else "auto")
 
 

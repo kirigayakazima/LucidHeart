@@ -6,6 +6,7 @@ import base64
 import ctypes
 from ctypes import wintypes
 import io
+from threading import Lock
 from typing import Any, Dict, Optional
 import mss
 from PIL import Image, ImageDraw
@@ -80,6 +81,61 @@ REGION_BOXES = {
     'bottom_left': (0, .45, .55, 1), 'bottom_right': (.45, .45, 1, 1),
     'minimap': (.45, .45, 1, 1),
 }
+
+BLANK_WARNING = '检测到画面全黑。请尝试关闭浏览器硬件加速，或使用本地播放器及非 DRM 播放源。'
+_dxgi_lock = Lock()
+
+
+def _contains(display, area):
+    return (display['left'] <= area['left'] and display['top'] <= area['top'] and
+            display['left'] + display['width'] >= area['left'] + area['width'] and
+            display['top'] + display['height'] >= area['top'] + area['height'])
+
+
+def _grab_dxgi(area):
+    # DXcam 0.3 has no public output geometry API. Match the native DXGI
+    # coordinates, never infer adapter/output IDs from MSS enumeration order.
+    import dxcam
+    with _dxgi_lock:
+        for device_idx, outputs in enumerate(dxcam.__factory.outputs):
+            for output_idx, output in enumerate(outputs):
+                output.update_desc()
+                rect = output.desc.DesktopCoordinates
+                display = dict(left=rect.left, top=rect.top, width=rect.right - rect.left, height=rect.bottom - rect.top)
+                if not output.attached_to_desktop or not _contains(display, area):
+                    continue
+                left, top = area['left'] - rect.left, area['top'] - rect.top
+                with dxcam.create(device_idx=device_idx, output_idx=output_idx, output_color='RGB',
+                                  processor_backend='numpy') as camera:
+                    frame = camera.grab(region=(left, top, left + area['width'], top + area['height']))
+                    return Image.fromarray(frame) if frame is not None else None
+    return None
+
+
+def is_blank(image):
+    return all(high <= 4 for _, high in image.resize((32, 18), Image.Resampling.BOX).getextrema())
+
+
+def grab_area(sct, area, *, dxgi=True):
+    blank = None
+    if dxgi:
+        try:
+            image = _grab_dxgi(area)
+            if image is not None:
+                if not is_blank(image):
+                    return image, 'dxcam', False
+                blank = image
+        except Exception:
+            # Optional backend may fail on a driver, session or topology change.
+            pass
+    try:
+        pixels = sct.grab(area)
+        image = Image.frombytes('RGB', pixels.size, pixels.bgra, 'raw', 'BGRX')
+        return image, 'mss', is_blank(image)
+    except Exception:
+        if blank is not None:
+            return blank, 'dxcam', True
+        raise
 
 
 def crop_region(image, region):
@@ -175,7 +231,8 @@ def active_game_window():
 
 
 def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, sample: bool = False,
-                       region: Optional[str] = None) -> Dict[str, Any]:
+                       region: Optional[str] = None, monitor_id: int | None = None,
+                       console_target: bool = False) -> Dict[str, Any]:
     """Capture a screenshot of the entire desktop or a specific window by HWND.
 
     Returns a dict with dimensions and base64-encoded JPEG data.
@@ -205,6 +262,10 @@ def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, s
                 return {'error': '游戏窗口未完整显示在同一台显示器内。', 'code': 'game_outside_display'}
             if _covered(user32, game_hwnd, monitor, masks):
                 return {'error': '游戏窗口被覆盖，请关闭浮层后再看。', 'code': 'game_occluded'}
+        elif monitor_id is not None:
+            if type(monitor_id) is not int or not 1 <= monitor_id < len(sct.monitors):
+                return {'error': '显示器已断开或不存在。', 'code': 'invalid_monitor'}
+            monitor = sct.monitors[monitor_id]
         elif hwnd is not None and hwnd > 0:
             if not user32.IsWindow(hwnd):
                 return {"error": f"Invalid window handle: {hwnd}"}
@@ -229,34 +290,49 @@ def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, s
                 "width": width,
                 "height": height,
             }
+            if console_target:
+                title = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(hwnd, title, len(title))
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if (not pid.value or is_window_sensitive(title.value, get_process_name(pid.value))
+                        or _covered(user32, hwnd, monitor, masks)):
+                    return {'error': '窗口被覆盖或不可共享。', 'code': 'window_unavailable'}
         else:
             monitor = _select_monitor(sct, user32)
 
         try:
-            sct_img = sct.grab(monitor)
-            # Convert MSS screenshot to PIL Image (RGB mode)
-            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img, backend, blank = grab_area(sct, monitor)
         except Exception as e:
             return {"error": f"Failed to grab screen: {e}"}
+        if is_desktop_locked():
+            return {'error': 'Screen capture is disabled while locked.', 'locked': True}
+        if console_target and hwnd and monitor_id is None:
+            current = RECT()
+            if (not user32.IsWindow(hwnd) or user32.IsIconic(hwnd) or not user32.GetWindowRect(hwnd, ctypes.byref(current))
+                    or (current.left, current.top, current.right, current.bottom) != (left, top, right, bottom)
+                    or _covered(user32, hwnd, monitor, masks)):
+                return {'error': '窗口在截图时移动或被覆盖。', 'code': 'window_changed'}
         if game is not None:
             if is_desktop_locked(strict=True) or game != foreground_game(user32) or _covered(user32, game[0], monitor, masks):
                 return {'error': '截图时前台游戏已变化，请切回游戏后再试。', 'code': 'game_changed'}
-            if all(high <= 4 for _, high in img.resize((32, 18), Image.Resampling.BOX).getextrema()):
+            if blank:
                 return {'error': '游戏画面是黑屏，无法判断当前战况。', 'code': 'game_blank'}
-            if masks:
-                draw = ImageDraw.Draw(img)
-                for mask in masks:
-                    draw.rectangle(mask, fill=(20, 20, 24))
+        if masks:
+            draw = ImageDraw.Draw(img)
+            for mask in masks:
+                draw.rectangle(mask, fill=(20, 20, 24))
 
     if sample:
         img.thumbnail((384, 384), Image.Resampling.LANCZOS)
         return {'game': game, 'image': img}
 
     orig_w, orig_h = img.size
-    metadata = {}
+    metadata = {'capture_backend': backend, 'is_blank': blank, 'blank_warning': blank,
+                **({'warning': BLANK_WARNING} if blank else {})}
     if region is not None:
         img, bounds = crop_region(img, region)
-        metadata = {'region': region, 'crop_rect': bounds, 'estimated_visual_tokens': 384}
+        metadata.update(region=region, crop_rect=bounds, estimated_visual_tokens=384)
 
     # Scale down if exceeds max bounds while preserving aspect ratio
     max_w = config.max_snapshot_width

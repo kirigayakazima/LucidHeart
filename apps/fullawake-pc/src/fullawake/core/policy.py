@@ -59,6 +59,10 @@ def validate_path(target_path_str: str) -> Path:
                 raise SecurityViolationError(
                     f"Access denied: Path contains protected keyword '{kw}'."
                 )
+    if {'desktop-config.json', 'desktop-gateway.log', 'gateway.log', 'gateway.stdout.log', 'gateway.stderr.log', 'run_gateway.bat'} & {
+        part.casefold() for part in resolved.parts
+    }:
+        raise SecurityViolationError('Access denied: private gateway runtime file.')
 
     # 2. Allowed roots check
     is_allowed = False

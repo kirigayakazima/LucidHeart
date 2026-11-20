@@ -271,6 +271,31 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     return () => { clearInterval(timer); stopAuto(); manualCues.clear(); lifetime.abort() }
   })
 
+  if (bridge?.on) ctx.effect(() => {
+    const onWatch = ({ action, requestId }) => {
+      void (async () => {
+        if (action === 'stop') {
+          stopAuto()
+          bridge.replyDesktop('watch', requestId, false, true)
+          return
+        }
+        const target = config.duplexTarget
+        const agent = target && service(ctx, 'agents')?.get?.(target)
+        const gate = shadow || (await service(ctx, 'heart')?.evaluateActivity?.({ intent: 'pc_watch', category: 'voice' }))?.suitable === true
+        const result = agent && gate ? await setAuto({ enabled: true, pcInitiated: true },
+          { agent, signal: AbortSignal.timeout(1750) }) : null
+        bridge.replyDesktop('watch', requestId, Boolean(auto), ['started', 'already_started'].includes(result?.status))
+      })().catch(() => bridge.replyDesktop('watch', requestId, Boolean(auto), false))
+    }
+    const disconnected = () => { if (auto?.pcInitiated) stopAuto() }
+    bridge.on('pc-watch-request', onWatch)
+    bridge.on('disconnected', disconnected)
+    return () => {
+      bridge.off('pc-watch-request', onWatch)
+      bridge.off('disconnected', disconnected)
+    }
+  })
+
   function tool(name, description, parameters, execute) {
     ctx.effect(() => ctx.tools.register(defineTool({ name, description, parameters, output, execute })))
   }
@@ -357,16 +382,17 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           (args.voice === true && !bridge && !rvc?.prepare)) return { status: 'unconfigured' }
       if ((bridge && !bridge.turnLifecycle) || (mode === 'heart' && !bridge)) return { status: 'offline' }
     }
-    await callGatewayTool('pc_watch_control', { action: 'start', ...(args.mode && { mode: args.mode }),
+    if (!args.pcInitiated) await callGatewayTool('pc_watch_control', { action: 'start', ...(args.mode && { mode: args.mode }),
       ...(args.hwnd !== undefined && { hwnd: args.hwnd }) }, exec.signal)
     const { data } = await summary({ clockOnly: true }, exec.signal)
     if (!data?.watchSessionId || (!shadow && !data.widgetOnline) || exec.signal?.aborted || lifetime.signal.aborted) {
-      await callGatewayTool('pc_watch_control', { action: 'stop' })
+      if (!args.pcInitiated) await callGatewayTool('pc_watch_control', { action: 'stop' })
       return { status: 'inactive' }
     }
     if (auto) return { status: 'already_started' }
     auto = { owner, session: data.watchSessionId, controller: new AbortController(), voice: useVoice,
-      execution: { agent: exec.agent }, timeline: data.timelineId, scene: -Infinity, lastAttempt: -Infinity, busy: false }
+      execution: { agent: exec.agent }, pcInitiated: args.pcInitiated === true,
+      timeline: data.timelineId, scene: -Infinity, lastAttempt: -Infinity, busy: false }
     return { status: 'started', watchSessionId: auto.session, voice: useVoice }
   }
 }

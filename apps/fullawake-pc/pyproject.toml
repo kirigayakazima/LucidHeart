@@ -1,6 +1,6 @@
 [project]
 name = "fullawake"
-version = "0.2.13"
+version = "0.2.14"
 description = "Sensory and embodiment gateway connecting phone Xiaoman (DSHA) to PC desktop capabilities"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 asr = ["sherpa-onnx==2.0.2"]
+capture = ["dxcam==0.3.0; sys_platform == 'win32'"]
 widget = ["wsproto>=1.2.0", "PySide6-Addons>=6.8,<6.12; sys_platform == 'win32'"]
 vad = ["sounddevice>=0.5.6,<0.6", "webrtcvad-wheels>=2.0.14,<3"]
 dev = [
@@ -33,6 +34,7 @@ build-backend = "hatchling.build"
 packages = ["src/fullawake"]
 
 [tool.uv.sources]
+dxcam = { index = "tsinghua" }
 sherpa-onnx = { index = "tsinghua" }
 wsproto = { index = "tsinghua" }
 pyside6-addons = { index = "tsinghua" }

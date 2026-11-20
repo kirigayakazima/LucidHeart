@@ -18,7 +18,7 @@
       "id": "dsh-fullawake",
       "name": "FullAwake",
       "type": "subsystem",
-      "version": "0.2.13",
+      "version": "0.2.14",
       "layer": "Bridge",
       "source": "packages/fullawake",
       "app": "apps/fullawake-pc",

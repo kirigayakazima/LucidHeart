@@ -13,21 +13,34 @@ import { apply as applyDuplex } from '../../voice-duplex/lib/index.js'
 import { apply as applyMemory, loadLastHandoff } from '../../memory/lib/index.js'
 
 async function gateway(t) {
-  const server = createServer((_request, response) => response.end('{"online":true,"voice_calls":true}'))
+  let checks = 0
+  const server = createServer(async (request, response) => {
+    if (request.url !== '/mcp') {
+      response.end(JSON.stringify({ online: true, voice_calls: ++checks >= 2 }))
+      return
+    }
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks))
+    const summary = { status: 'playing', widgetOnline: true, watchSessionId: 'desktop-12345678', timelineId: 'desktop-fixture',
+      playbackPositionSec: 1, watchedInterval: [0, 1], frameCount: 0, timecodes: [], tokenCost: 0, subtitles: [] }
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { content: [{ type: 'text', text: JSON.stringify(summary) }] } }))
+  })
   const sockets = new WebSocketServer({ server, path: '/ws/bridge' })
   const connected = Promise.withResolvers()
   sockets.on('connection', socket => {
     let send, seq = 0
-    const speech = Promise.withResolvers(), calls = []
+    const speech = Promise.withResolvers(), calls = [], replies = []
     socket.on('message', raw => {
       const { type, payload, ...identity } = JSON.parse(raw)
       send = (type, payload) => socket.send(JSON.stringify({ ...identity, type, commandSeq: ++seq, payload }))
       if (type === 'session.handshake') {
         send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: false, turnLifecycle: true })
-        connected.resolve({ speech: speech.promise, calls, send: (type, payload) => send(type, payload) })
+        connected.resolve({ speech: speech.promise, calls, replies, send: (type, payload) => send(type, payload) })
       }
       if (type === 'audio.prepare') send('audio.prepared', { epoch: payload.epoch, utteranceId: payload.utteranceId })
       if (type === 'audio.speak') speech.resolve(payload)
+      if (['call.state', 'watch.state'].includes(type)) replies.push([type, payload])
       if (type === 'voice.call') {
         calls.push(payload.active)
         send('voice.call.status', { requestId: payload.requestId, active: payload.active })
@@ -111,7 +124,7 @@ test('the next claimed user turn receives the repair clue with the QQ quotation 
   assert.equal(next.source.qq.start, 0)
 })
 
-test('FullAwake call control carries real bridge ASR finals into the host and flushes on hangup', { timeout: 5000 }, async t => {
+for (const initiator of ['qq', 'desktop']) test(`FullAwake ${initiator} call carries ASR finals and flushes on hangup`, { timeout: 5000 }, async t => {
   const pc = await gateway(t)
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fullawake-call-'))
   const services = new Map(), tools = new Map(), handlers = new Map(), disposers = []
@@ -140,6 +153,8 @@ test('FullAwake call control carries real bridge ASR finals into the host and fl
   } }
   services.set('agents', { get: () => agent })
   services.set('heart', { evaluateActivity: () => ({ suitable: true }), observe() {} })
+  services.set('llm', { async *stream() {} })
+  services.set('attachments', { saveImage() {} })
   apply(ctx, { gatewayUrl: pc.url, voiceEpochProtocol: true, duplexTarget: 'pc' })
   t.after(() => {
     for (const dispose of disposers.reverse()) if (typeof dispose === 'function') dispose()
@@ -147,11 +162,23 @@ test('FullAwake call control carries real bridge ASR finals into the host and fl
   })
   const control = await pc.connected
   await delay(20)
-  session.events.push({ type: 'turn/start', data: { turn: 0 } },
-    { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '开启通话' }], source: { kind: 'user' } } },
-    { type: 'tool/call', data: { turn: 0, callId: 'call' } })
-  const reply = await tools.get('voice_call_toggle').execute({ enabled: true }, { agent, callId: 'call' })
-  assert.match(reply.message, /已开启/)
+  if (initiator === 'desktop') {
+    control.send('pc.call_request', { requestId: 'call-start', enabled: true, source: 'pc_desktop_app' })
+    for (let i = 0; i < 100 && !control.replies.length; i++) await delay(10)
+    assert.deepEqual(control.replies[0], ['call.state', { requestId: 'call-start', active: true, accepted: true }])
+    control.send('pc.watch_request', { requestId: 'watch-start', action: 'start', mode: 'desktop', targetLabel: '外接屏' })
+    for (let i = 0; i < 100 && control.replies.length < 2; i++) await delay(10)
+    assert.deepEqual(control.replies[1], ['watch.state', { requestId: 'watch-start', active: true, accepted: true }])
+    control.send('pc.watch_request', { requestId: 'watch-stop', action: 'stop', mode: 'desktop', targetLabel: '外接屏' })
+    for (let i = 0; i < 100 && control.replies.length < 3; i++) await delay(10)
+    assert.deepEqual(control.replies[2], ['watch.state', { requestId: 'watch-stop', active: false, accepted: true }])
+  } else {
+    session.events.push({ type: 'turn/start', data: { turn: 0 } },
+      { type: 'user/message', data: { role: 'user', content: [{ type: 'text', text: '开启通话' }], source: { kind: 'user' } } },
+      { type: 'tool/call', data: { turn: 0, callId: 'call' } })
+    const reply = await tools.get('voice_call_toggle').execute({ enabled: true }, { agent, callId: 'call' })
+    assert.match(reply.message, /已开启/)
+  }
   const speaking = tools.get('pc_duplex_speak').execute({ text: '一二三四五六' },
     { agent, signal: new AbortController().signal })
   const spoken = await control.speech
@@ -165,8 +192,14 @@ test('FullAwake call control carries real bridge ASR finals into the host and fl
   const next = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '一起看电影' }] }
   emit('agent/inbox/claimed', { agent, message: next })
   assert.match(next.content[0].text, /已说出「一二」.*未说完「三四五六」/u)
-  control.send('audio.capture', { turnId: 'end', audio_epoch: 8 })
-  control.send('audio.transcript', { turnId: 'end', audio_epoch: 8, text: '先挂了', is_final: true })
+  if (initiator === 'desktop') {
+    control.send('pc.call_request', { requestId: 'call-stop', enabled: false, source: 'pc_desktop_app' })
+    for (let i = 0; i < 100 && control.replies.length < 4; i++) await delay(10)
+    assert.deepEqual(control.replies[3], ['call.state', { requestId: 'call-stop', active: false, accepted: true }])
+  } else {
+    control.send('audio.capture', { turnId: 'end', audio_epoch: 8 })
+    control.send('audio.transcript', { turnId: 'end', audio_epoch: 8, text: '先挂了', is_final: true })
+  }
   for (let i = 0; i < 50 && control.calls.length < 2; i++) await delay(10)
   assert.deepEqual(control.calls, [true, false])
   assert.equal(loadLastHandoff(root).kind, 'voice_call')

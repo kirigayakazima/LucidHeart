@@ -60,13 +60,22 @@ if (Test-Path -LiteralPath $torchLib) {
 $env:FULLAWAKE_BIND_HOST = $BindAddress
 $env:PYTHONUTF8 = '1'
 $env:FULLAWAKE_VOICE_ENABLED = '1'
-if (-not $env:FULLAWAKE_BREEZE_API_KEY) {
-    $env:FULLAWAKE_BREEZE_API_KEY = 'brz_XfxyZyDQK9a6Ex5-5l_9W9aJ9cMq9H8j'
-}
+
 $env:FULLAWAKE_VOICE_PROFILE = (Resolve-Path -LiteralPath $VoiceProfile).Path
 $env:FULLAWAKE_VOICE_PYTHON = (Resolve-Path -LiteralPath $VoicePython).Path
 $env:FULLAWAKE_VOICE_CLIENTS = $VoiceClients -join ','
 $runDir = Join-Path $SuiteDir 'local/fullawake'
+$desktopConfig = Join-Path $runDir 'desktop-config.json'
+if (Test-Path -LiteralPath $desktopConfig) {
+    $settings = Get-Content -LiteralPath $desktopConfig -Raw | ConvertFrom-Json
+    foreach ($name in 'FULLAWAKE_AUTH_TOKEN', 'FULLAWAKE_BREEZE_API_KEY', 'FULLAWAKE_WATCH_TOKEN') {
+        $value = $settings.PSObject.Properties[$name]
+        if (-not [Environment]::GetEnvironmentVariable($name) -and $value) {
+            [Environment]::SetEnvironmentVariable($name, [string]$value.Value, 'Process')
+        }
+    }
+}
+if (-not $env:FULLAWAKE_AUTH_TOKEN) { throw 'Set FULLAWAKE_AUTH_TOKEN before starting voice.' }
 if (-not $env:FULLAWAKE_ASR_BACKEND) { $env:FULLAWAKE_ASR_BACKEND = 'auto' }
 if (-not $env:FULLAWAKE_SENSEVOICE_MODEL_DIR) { $env:FULLAWAKE_SENSEVOICE_MODEL_DIR = Join-Path $runDir 'sensevoice-small' }
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
@@ -74,9 +83,7 @@ $env:FULLAWAKE_VOICE_WORK_DIR = Join-Path $runDir 'voice-work'
 if (-not $env:FULLAWAKE_ASR_MODEL_DIR) {
     $env:FULLAWAKE_ASR_MODEL_DIR = Join-Path $runDir 'faster-whisper-base'
 }
-if (-not $env:FULLAWAKE_WATCH_TOKEN) {
-    $env:FULLAWAKE_WATCH_TOKEN = 'xiaoman-watch-loopback-token-2026'
-}
+
 if (-not $env:FULLAWAKE_VAD_DEVICE_MODE) {
     $env:FULLAWAKE_VAD_DEVICE_MODE = 'speaker'
 }
@@ -96,14 +103,11 @@ set "PATH=$($torchLib);%PATH%"
 set "PYTHONPATH=$($pythonPathEntries -join ';');%PYTHONPATH%"
 set "FULLAWAKE_BIND_HOST=$BindAddress"
 set "FULLAWAKE_VOICE_ENABLED=1"
-set "FULLAWAKE_BREEZE_API_KEY=$($env:FULLAWAKE_BREEZE_API_KEY)"
 set "FULLAWAKE_VOICE_PROFILE=$($env:FULLAWAKE_VOICE_PROFILE)"
 set "FULLAWAKE_VOICE_PYTHON=$($env:FULLAWAKE_VOICE_PYTHON)"
 set "FULLAWAKE_VOICE_CLIENTS=$($env:FULLAWAKE_VOICE_CLIENTS)"
 set "FULLAWAKE_VOICE_WORK_DIR=$($env:FULLAWAKE_VOICE_WORK_DIR)"
 set "FULLAWAKE_ASR_MODEL_DIR=$($env:FULLAWAKE_ASR_MODEL_DIR)"
-set "FULLAWAKE_WATCH_TOKEN=$($env:FULLAWAKE_WATCH_TOKEN)"
-set "FULLAWAKE_AUTH_TOKEN=$($env:FULLAWAKE_AUTH_TOKEN)"
 set "PYTHONUTF8=1"
 cd /d "$ProjectDir"
 "$pythonExe" -m fullawake.gateway.mcp_server > "$stdoutFile" 2> "$stderrFile"

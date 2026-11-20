@@ -175,9 +175,12 @@ class WatchCapability(BaseCapability):
         self.desktop_hwnd = None
         self.desktop_identity = None
         self.desktop_paused = False
+        self.desktop_only = False
+        self.capture_target = lambda: {}
 
     async def stop_desktop(self):
         task, self.desktop_task = self.desktop_task, None
+        self.desktop_only = False
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -194,9 +197,20 @@ class WatchCapability(BaseCapability):
         if self.desktop_paused and self.clock and self.clock.client == 'desktop':
             self.received = now
             return
-        source_key = desktop_source_key(self.desktop_hwnd)
-        result = await asyncio.to_thread(capture_screenshot, self.desktop_hwnd, region='full')
-        if not result.get('success') or is_desktop_locked() or desktop_source_key(self.desktop_hwnd) != source_key:
+        target = self.capture_target()
+        hwnd = target.get('hwnd', self.desktop_hwnd)
+        monitor_id = target.get('monitor_id')
+        def target_key():
+            return f'monitor:{monitor_id}' if monitor_id else desktop_source_key(hwnd)
+        source_key = target_key()
+        options = {key: value for key, value in target.items() if key != 'hwnd'}
+        result = await asyncio.to_thread(capture_screenshot, hwnd, region='full', **options)
+        if target != self.capture_target() or (self.clock and self.clock.client != 'desktop'
+                                              and self.available(time.monotonic())):
+            return
+        if not result.get('success') or result.get('is_blank') or is_desktop_locked() or target_key() != source_key:
+            if self.clock and self.clock.client == 'desktop':
+                self.detach_clock()
             self.clear_timeline()
             return
         with Image.open(BytesIO(base64.b64decode(result['base64_data']))) as source:
@@ -412,6 +426,8 @@ class WatchCapability(BaseCapability):
         return receipt
 
     async def accept_clock(self, clock, now):
+        if self.desktop_only:
+            return {'ok': True, 'watchSessionId': None, 'command': None}
         old = self.clock
         if clock.playbackPositionSec > clock.durationSec:
             raise HTTPException(422, 'WATCH_INVALID_POSITION')
@@ -539,7 +555,7 @@ class WatchCapability(BaseCapability):
                 'tokenCost': 384, 'sceneAtSec': scene, 'cueId': cue, 'imageBase64': encoded,
                 'emotionHint': 'surprised' if frames[-1].diff_score >= self.sampler.shot_cut_threshold else 'engaged'}
 
-    async def control(self, args):
+    async def control(self, args, *, force_desktop=False):
         now = time.monotonic()
         action = args.get('action')
         if action == 'stop':
@@ -552,12 +568,18 @@ class WatchCapability(BaseCapability):
             hwnd = args.get('hwnd')
             if hwnd is not None and (type(hwnd) is not int or hwnd <= 0):
                 return {'error': 'WATCH_INVALID_WINDOW'}
+            if force_desktop:
+                self.desktop_only = True
+                if self.clock and self.clock.client != 'desktop':
+                    self.detach_clock()
             if self.desktop_task is None or self.desktop_task.done():
                 self.desktop_hwnd = hwnd
                 self.desktop_paused = False
                 self.desktop_started = now
                 await self.desktop_tick()
                 self.desktop_task = asyncio.create_task(self.desktop_loop())
+            elif force_desktop and self.clock is None:
+                await self.desktop_tick()
             return {'status': 'started', 'watchSessionId': self.session}
         if not self.enabled or not self.available(now) or args.get('watchSessionId') != self.session:
             return {'status': 'inactive'}

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
+  <title>FullAwake</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">ϟ</span><div><h1>FullAwake</h1><p>小满的桌面工作台</p></div></div>
+    <div class="status" aria-live="polite">
+      <span id="usb">USB 隧道 · 等待</span><span id="phone">手机小满 · 等待握手</span><span id="gateway">PC 网关 · 等待</span>
+    </div>
+    <button id="reconnect">重连手机</button>
+  </header>
+  <main>
+    <div class="actions">
+      <button id="call" class="call"><span>连麦</span><strong>开启连麦</strong></button>
+      <button id="watch" class="watch"><span>共享画面</span><strong>开启陪看</strong></button>
+    </div>
+    <div id="feedback" role="status" hidden></div>
+    <div class="workbench">
+      <section class="source-panel" aria-label="共享来源">
+        <div class="panel-head"><h2>共享来源</h2><button id="refresh">刷新</button></div>
+        <button id="auto" class="source">跟随前台窗口所在屏</button>
+        <div id="monitors"></div>
+        <label for="window-search">窗口</label>
+        <input id="window-search" type="search" placeholder="搜索标题或进程">
+        <select id="windows" aria-label="选定窗口"><option value="">选择窗口</option></select>
+      </section>
+      <section class="preview-panel" aria-label="实时预览">
+        <div class="panel-head"><h2>实时预览</h2><span id="backend"></span></div>
+        <details id="blank" hidden>
+          <summary>检测到画面全黑 · 查看处理方法</summary>
+          <p id="blank-description"></p>
+        </details>
+        <div class="viewport"><img id="preview" alt="当前共享画面" hidden><p id="preview-empty">等待画面</p></div>
+        <p id="target-label" class="muted">跟随前台窗口所在屏</p>
+      </section>
+    </div>
+    <div class="voice-panel">
+      <section>
+        <div class="panel-head"><h2>麦克风</h2><span id="asr">ASR · 待识别</span></div>
+        <div class="meter-row"><meter id="rms" min="0" max="1" value="0" aria-label="麦克风电平"></meter><span id="ptt">PTT 未按下</span></div>
+        <div class="audio-controls">
+          <select id="mode" aria-label="麦克风模式"><option value="ptt">按键说话</option><option value="auto">自动检测</option></select>
+          <select id="key" aria-label="按键说话快捷键"><option value="rctrl">右 Ctrl</option><option value="ralt">右 Alt</option><option value="f9">F9</option><option value="capslock">Caps Lock</option></select>
+          <button id="mute">静音</button>
+        </div>
+      </section>
+      <section>
+        <div class="panel-head"><h2>最近对话</h2></div>
+        <div id="turns"><p class="muted">连麦后显示识别和回复。</p></div>
+      </section>
+    </div>
+    <details class="logs"><summary>网关日志</summary><button id="restart">重启网关</button><pre id="logs"></pre></details>
+  </main>
+</body>
+</html>

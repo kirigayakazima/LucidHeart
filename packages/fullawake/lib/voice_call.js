@@ -47,6 +47,19 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
   bridge.on('capture', onCapture)
   bridge.on('transcript', onTranscript)
   bridge.on('disconnected', disconnected)
+  const onDesktopCall = ({ requestId, enabled }) => {
+    void (async () => {
+      const target = config.duplexTarget
+      const agent = target && service('agents')?.get?.(target)
+      if (enabled && !agent) {
+        bridge.replyDesktop('call', requestId, Boolean(capture), false)
+        return
+      }
+      await toggle(enabled, { agent, signal: AbortSignal.timeout(1750) }, { channel: 'direct' })
+      bridge.replyDesktop('call', requestId, Boolean(capture) && !starting, Boolean(capture) === enabled && !starting)
+    })().catch(() => bridge.replyDesktop('call', requestId, Boolean(capture), false))
+  }
+  bridge.on('pc-call-request', onDesktopCall)
   const unregister = ctx.tools.register(defineTool({
     name: 'voice_call_toggle',
     description: '用户明确说“开启通话/连麦”时 enabled=true，明确说“先挂了/结束通话”时 enabled=false。电脑须已开启麦克风和本地 VAD。挂断后将最近三轮话题交接到下一次本人私聊。',
@@ -55,11 +68,15 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
     async execute({ enabled }, exec) {
       const user = callCommand(exec, config)
       const command = enabled ? /(?:开启|开始)(?:语音)?(?:通话|连麦)|(?:来|一起)连麦|打个电话/u
-        : /先挂(?:了|啦)|结束通话|挂断|哥哥去忙了/u
+        : /先挂(?:了|啦)|结束通话|挂断|断开连接|关闭连麦|关闭通话|哥哥去忙了/u
       if (!user || typeof enabled !== 'boolean' || !command.test(user.text) ||
-          /如果|假如|引用|复述|(?:不要|不用|别).{0,6}(?:开启|开始|挂断|结束|连麦|打.{0,2}电话|通话)/u.test(user.text)) {
+          /如果|假如|引用|复述|(?:不要|不用|别).{0,6}(?:开启|开始|挂断|结束|断开|关闭|连麦|打.{0,2}电话|通话)/u.test(user.text)) {
         return { message: '请在本人已授权的私聊或绑定电脑会话中明确开启或结束通话。' }
       }
+      return toggle(enabled, exec, user)
+    },
+  }))
+  async function toggle(enabled, exec, user) {
       if (!enabled) {
         starting?.abort()
         close('hangup')
@@ -93,14 +110,14 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
         }
         return { message: '通话已开启，可以直接说话。用 pc_duplex_speak 从电脑回应，结束时说“先挂了”。' }
       } finally { starting = null }
-    },
-  }))
+  }
   return () => {
     starting?.abort()
     close('unloaded')
     bridge.off('capture', onCapture)
     bridge.off('transcript', onTranscript)
     bridge.off('disconnected', disconnected)
+    bridge.off('pc-call-request', onDesktopCall)
     if (typeof unregister === 'function') unregister()
   }
 }

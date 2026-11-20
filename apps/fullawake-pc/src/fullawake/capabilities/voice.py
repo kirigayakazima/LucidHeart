@@ -206,6 +206,7 @@ class VoiceCompute:
                 stream = recognizer.create_stream()
                 stream.accept_waveform(ASR_SAMPLE_RATE, samples)
                 recognizer.decode_stream(stream)
+                self.last_asr_backend = 'sensevoice'
                 transcript = re.sub(r'<\|[^|]*\|>', '', stream.result.text).strip()
                 return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),
                         'language': 'auto'} if transcript else AUDIO_UNCLEAR
@@ -213,6 +214,7 @@ class VoiceCompute:
                 logging.getLogger(__name__).warning('SenseVoice decode failed (%s); falling back to Whisper', type(error).__name__)
 
         asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '以下是普通话简体中文日常对话。小满，大肥鱼，清羽，阿醒，满宝。')
+        self.last_asr_backend = 'whisper'
         asr_lang = os.environ.get('FULLAWAKE_ASR_LANGUAGE', 'zh').strip() or None
         transcribe_opts = dict(
             beam_size=1, vad_filter=True, initial_prompt=asr_prompt,

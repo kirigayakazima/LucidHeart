@@ -7,7 +7,8 @@ if (-not $localIp) {
 }
 
 $port = 8765
-$token = "xiaoman-pc-bridge-secret-2026"
+$token = $env:FULLAWAKE_AUTH_TOKEN
+if (-not $token) { throw 'Set FULLAWAKE_AUTH_TOKEN before pairing.' }
 
 Write-Host "--- Copy and paste this into Phone DSHA MCP Client configuration ---" -ForegroundColor Green
 $configJson = @"

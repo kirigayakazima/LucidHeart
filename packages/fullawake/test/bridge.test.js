@@ -3,6 +3,31 @@ import { on, once } from 'node:events'
 import { test } from 'node:test'
 import { WebSocketServer } from 'ws'
 import { FullAwakeBridgeClient } from '../lib/bridge-client.js'
+
+test('repeated desktop bridge failures never delay the next reconnect past five seconds', t => {
+  const sockets = []
+  class UnreachableSocket extends EventTarget {
+    constructor() {
+      super()
+      sockets.push(this)
+    }
+    close() {}
+  }
+  const historical = globalThis.WebSocket
+  globalThis.WebSocket = UnreachableSocket
+  t.after(() => { globalThis.WebSocket = historical })
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const bridge = new FullAwakeBridgeClient('ws://127.0.0.1:8765/ws/bridge', 'fixture')
+  t.after(() => bridge.stop())
+  bridge.connect()
+  for (const [index, interval] of [1000, 2000, 4000, 5000, 5000].entries()) {
+    sockets.at(-1).dispatchEvent(new Event('error'))
+    t.mock.timers.tick(interval - 1)
+    assert.equal(sockets.length, index + 1)
+    t.mock.timers.tick(1)
+    assert.equal(sockets.length, index + 2)
+  }
+})
 import pkg from '../package.json' with { type: 'json' }
 
 const TOKEN = 'bridge-test-only'

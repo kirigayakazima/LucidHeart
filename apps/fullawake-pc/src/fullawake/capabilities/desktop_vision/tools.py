@@ -15,6 +15,7 @@ class DesktopVisionCapability(BaseCapability):
 
     def __init__(self):
         self.storyboard = GameStoryboard()
+        self.capture_target = lambda: {}
 
     @property
     def name(self) -> str:
@@ -111,4 +112,5 @@ class DesktopVisionCapability(BaseCapability):
             return capture_screenshot(auto_game=True, **({'region': region} if region is not None else {}))
         if hwnd is not None:
             hwnd = int(hwnd)
-        return capture_screenshot(hwnd=hwnd, **({'region': region} if region is not None else {}))
+        target = self.capture_target() if hwnd is None else {'hwnd': hwnd}
+        return capture_screenshot(**target, **({'region': region} if region is not None else {}))
