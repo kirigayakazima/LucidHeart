@@ -8,8 +8,20 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $SuiteDir = Split-Path -Parent (Split-Path -Parent $ProjectDir)
-$pythonExe = Join-Path $ProjectDir '.venv/Scripts/python.exe'
-if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Create the project uv environment first.' }
+$venvPythonExe = Join-Path $ProjectDir '.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $venvPythonExe)) { throw 'Create the project uv environment first.' }
+$pythonExe = $venvPythonExe
+$pyvenvCfg = Join-Path $ProjectDir '.venv/pyvenv.cfg'
+if (Test-Path -LiteralPath $pyvenvCfg) {
+    $homeLine = Get-Content -LiteralPath $pyvenvCfg | Where-Object { $_ -match '^\s*home\s*=' } | Select-Object -First 1
+    if ($homeLine) {
+        $baseHome = ($homeLine -split '=', 2)[1].Trim()
+        $basePython = Join-Path $baseHome 'python.exe'
+        if (Test-Path -LiteralPath $basePython) {
+            $pythonExe = $basePython
+        }
+    }
+}
 if (Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue) {
     Write-Output "Port 8765 is already in use; gateway is already running."
     return
@@ -102,4 +114,7 @@ cd /d "$ProjectDir"
     Write-Output "FullAwake voice started: pid=$($process.Id); bind=$BindAddress"
 } else {
     & $pythonExe -m fullawake.gateway.mcp_server
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
 }
