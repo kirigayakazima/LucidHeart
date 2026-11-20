@@ -183,8 +183,9 @@ def _covered(user32, hwnd, area, masks=None):
             continue
         if not user32.GetWindowRect(above, ctypes.byref(rect)):
             return True
-        if (rect.left < area['left'] + area['width'] and area['left'] < rect.right
-                and rect.top < area['top'] + area['height'] and area['top'] < rect.bottom):
+        overlap_w = min(rect.right, area['left'] + area['width']) - max(rect.left, area['left'])
+        overlap_h = min(rect.bottom, area['top'] + area['height']) - max(rect.top, area['top'])
+        if overlap_w > 16 and overlap_h > 16:
             overlay = _friendly_overlay(user32, above)
             if overlay:
                 if overlay == 'pet' and masks is not None:
@@ -202,6 +203,11 @@ def _friendly_overlay(user32, hwnd):
     handle = wintypes.HWND(hwnd)
     if user32.GetPropW(handle, PET_OVERLAY_PROPERTY):
         return 'pet'
+    if hasattr(user32, 'GetWindowTextW'):
+        title = ctypes.create_unicode_buffer(64)
+        user32.GetWindowTextW(handle, title, len(title))
+        if title.value == 'dsh-pet-standalone':
+            return 'pet'
     style = user32.GetWindowLongW(handle, -20)  # GWL_EXSTYLE
     if style & 0x80020 != 0x80020:  # WS_EX_LAYERED | WS_EX_TRANSPARENT
         return None
