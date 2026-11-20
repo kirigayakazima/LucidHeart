@@ -12,7 +12,7 @@ class ConsoleApi:
         self._supervisor = supervisor
         self._headers = {'Authorization': f'Bearer {supervisor.token}'}
         self._client = httpx.Client(base_url='http://127.0.0.1:8765/v1/desktop/', headers=self._headers,
-                                    timeout=8, trust_env=False, transport=transport)
+                                    timeout=2.5, trust_env=False, transport=transport)
         self._state = None
         self._listener = None
 
@@ -69,20 +69,22 @@ class ConsoleApi:
         return self._request('POST', 'target', json=value)
 
     def call(self, enabled):
-        return self._request('POST', 'call', json={'enabled': enabled})
+        return self._request('POST', 'call', json={'enabled': enabled}, timeout=4.5)
 
     def watch(self, enabled):
-        return self._request('POST', 'watch', json={'action': 'start' if enabled else 'stop', 'mode': 'desktop'})
+        return self._request('POST', 'watch', json={'action': 'start' if enabled else 'stop', 'mode': 'desktop'}, timeout=4.5)
 
     def audio(self, value):
         return self._request('POST', 'audio/config', json=value)
 
     def reconnect(self):
+        if self._state is None or self._supervisor.gateway_error:
+            self._supervisor.restart()
         self._supervisor.refresh_usb()
-        return self._request('POST', 'reconnect')
+        return self._request('POST', 'reconnect', timeout=4.5)
 
     def sync_session(self):
-        return self._request('POST', 'sync')
+        return self._request('POST', 'sync', timeout=4.5)
 
     def restart_gateway(self):
         self._supervisor.restart()

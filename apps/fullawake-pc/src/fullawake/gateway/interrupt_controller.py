@@ -801,7 +801,13 @@ class InterruptController:
             finally:
                 # ASGI disconnect may cancel the handler while a worker is
                 # still holding the microphone or a renderer lease.
+                # Release peer/vad references immediately and bound teardown so a stalled
+                # audio/ASR thread can never freeze the gateway or block shutdown.
                 with CancelScope(shield=True):
+                    if self.peer is peer:
+                        self.peer = None
+                    if self.vad is vad:
+                        self.vad = None
                     for task in readers:
                         task.cancel()
                     if peer is not None:
@@ -820,10 +826,13 @@ class InterruptController:
                                 vad.set_playback_active(False)
                             readers.append(asyncio.create_task(asyncio.to_thread(vad.stop)))
                     try:
-                        await asyncio.gather(*readers, return_exceptions=True)
+                        if readers:
+                            await asyncio.wait_for(asyncio.gather(*readers, return_exceptions=True), timeout=2.5)
+                    except asyncio.TimeoutError:
+                        log.warning('Bridge disconnect teardown timed out after 2.5s; releasing peer anyway')
                     finally:
-                        self.vad = None
-                        if peer is not None:
-                            self.peer = None
-                            if self.on_disconnect:
-                                await self.on_disconnect(peer)
+                        if peer is not None and self.on_disconnect:
+                            try:
+                                await asyncio.wait_for(self.on_disconnect(peer), timeout=2.0)
+                            except (asyncio.TimeoutError, Exception):
+                                log.warning('Bridge on_disconnect callback timed out or failed', exc_info=True)

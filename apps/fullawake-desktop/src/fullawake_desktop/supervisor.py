@@ -92,6 +92,33 @@ class Supervisor:
         Thread(target=read, daemon=True).start()
         return child
 
+    @staticmethod
+    def _port_open(port=8765):
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=.2):
+                return True
+        except OSError:
+            return False
+
+    def _reclaim_orphan_gateway(self):
+        """Terminate orphaned fullawake.gateway.mcp_server processes if they still hold port 8765."""
+        if os.name != 'nt' or not self._port_open():
+            return
+        try:
+            cmd = (
+                "Get-CimInstance Win32_Process | Where-Object { "
+                "$_.CommandLine -match 'fullawake\\.gateway\\.mcp_server' "
+                "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+            )
+            subprocess.run(['powershell', '-NoProfile', '-Command', cmd],
+                           capture_output=True, text=True, timeout=4, creationflags=HIDDEN)
+        except (OSError, subprocess.SubprocessError):
+            return
+        for _ in range(10):
+            if not self._port_open():
+                return
+            self.shutdown.wait(.2)
+
     def start_gateway(self):
         with self.lock:
             if self.shutdown.is_set() or (self.process and self.process.poll() is None):
@@ -101,12 +128,11 @@ class Supervisor:
             if len(auth) < 24 or auth == self.token or len(self.token) < 32:
                 self.gateway_error = '请配置手机配对密钥，并使用独立的本地控制台密钥。'
                 return
-            try:
-                with socket.create_connection(('127.0.0.1', 8765), timeout=.2):
-                    self.gateway_error = '8765 端口已由另一个进程占用。请先关闭旧网关，再点重启。'
-                    return
-            except OSError:
-                pass
+            if self._port_open():
+                self._reclaim_orphan_gateway()
+            if self._port_open():
+                self.gateway_error = '8765 端口已由另一个进程占用。请先关闭旧网关，再点重启。'
+                return
             try:
                 LOCAL.mkdir(parents=True, exist_ok=True)
                 self.process = self._launch('fullawake.gateway.mcp_server', env)
@@ -159,16 +185,22 @@ class Supervisor:
         if child and child.poll() is None:
             child.terminate()
             try:
-                child.wait(3)
+                child.wait(1.5)
             except subprocess.TimeoutExpired:
                 child.kill()
-                child.wait()
+                try:
+                    child.wait(1.5)
+                except subprocess.TimeoutExpired:
+                    if os.name == 'nt':
+                        subprocess.run(['taskkill', '/F', '/T', '/PID', str(child.pid)],
+                                       capture_output=True, timeout=3, creationflags=HIDDEN)
 
     def restart(self):
         with self.lock:
             self._stop(self.renderer)
             self._stop(self.process)
             self.renderer = self.process = None
+            self._reclaim_orphan_gateway()
         self.start_gateway()
 
     def close(self):
