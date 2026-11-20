@@ -254,7 +254,7 @@ async function synthesize(params) {
       fs.writeFileSync(finalOut, audioBuffer)
 
       let datasetPath = null
-      if (params.saveDataset !== false) {
+      if (params.saveDataset === true) {
         datasetPath = archiveToDataset({
           datasetDir: params.datasetDir || '/sdcard/rvc/dataset',
           text,
@@ -279,6 +279,9 @@ async function synthesize(params) {
       }
     } catch (err) {
       params.signal?.throwIfAborted()
+      if (params.allowLocalFallback !== true) {
+        throw new Error(`BreezeBlue 云端发声失败（已关闭本地 RVC 回退）: ${err.message}`)
+      }
       console.warn('[@dsh/rvc] BreezeBlue 在线合成失败，自动无缝降级至本地 RVC 引擎:', err.message)
       if (outWav && outWav.endsWith('.mp3')) {
         params.outWav = outWav.replace(/\.mp3$/, '.wav')
