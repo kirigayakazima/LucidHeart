@@ -93,6 +93,7 @@ class SpeechGate:
         self.on_end = on_end
         self.device_mode = device_mode
         self.playback_active = False
+        self.system_speaker_peak = 0.0
         self.noise = 40.0
         self.voiced = self.quiet = 0
         self.speaking = False
@@ -104,8 +105,9 @@ class SpeechGate:
     def feed(self, pcm):
         samples = memoryview(pcm).cast('h')
         rms = math.sqrt(sum(value * value for value in samples) / len(samples))
-        is_ducked = self.playback_active and self.device_mode == "speaker"
-        reference = self.reference if is_ducked else None
+        speaker_playing = self.playback_active or self.system_speaker_peak >= 0.025
+        is_ducked = speaker_playing and self.device_mode == "speaker"
+        reference = self.reference if (self.playback_active and self.device_mode == "speaker") else None
         echo = False
         if reference is not None and self.sample_rate == 16000:
             waveform, at, position = reference
@@ -113,7 +115,7 @@ class SpeechGate:
             echo = correlated_echo(samples, waveform, offset)
         voiced = not echo and self.detector.is_speech(pcm, self.sample_rate)
         if is_ducked:
-            min_rms = max(220.0, self.noise * 4.5)
+            min_rms = max(220.0, self.noise * 4.5, self.system_speaker_peak * 420.0)
             required_voiced = 4
         else:
             min_rms = max(55.0, self.noise * 2.5)
@@ -157,6 +159,8 @@ class VoiceVadListener:
         self._settings = None
         self.rms = 0.0
         self.ptt_active = False
+        self.last_utterance_ptt = False
+        self.last_utterance_speaker_active = False
 
     def configure(self, key, muted):
         self._settings = (key, muted, build_ptt_probe(key))
@@ -188,6 +192,7 @@ class VoiceVadListener:
             from collections import deque
             import sounddevice
             import webrtcvad
+            from fullawake.capabilities.audio_frontend import HybridVadDetector, SystemSpeakerMeter
 
             if self._stop.is_set():
                 return
@@ -195,22 +200,29 @@ class VoiceVadListener:
             pre_roll = deque(maxlen=15)
             utterance = []
             capturing = False
+            utterance_had_speaker = False
+            speaker_meter = SystemSpeakerMeter()
 
             def _handle_start():
-                nonlocal capturing, utterance
+                nonlocal capturing, utterance, utterance_had_speaker
                 capturing = True
                 utterance = list(pre_roll)
+                utterance_had_speaker = bool(gate.playback_active or gate.system_speaker_peak >= 0.025)
                 self.on_start()
 
             def _handle_end():
-                nonlocal capturing, utterance
+                nonlocal capturing, utterance, utterance_had_speaker
                 was_capturing = capturing
                 captured = utterance
+                had_speaker = utterance_had_speaker
                 capturing = False
                 utterance = []
+                utterance_had_speaker = False
                 self.on_end()
                 min_frames = 10 if self.ptt_probe is not None else 12
                 if was_capturing and self.on_utterance and len(captured) >= min_frames:
+                    self.last_utterance_ptt = self.ptt_probe is not None
+                    self.last_utterance_speaker_active = had_speaker
                     buf = BytesIO()
                     with wave.open(buf, 'wb') as out:
                         out.setnchannels(1)
@@ -219,7 +231,8 @@ class VoiceVadListener:
                         out.writeframes(b''.join(captured))
                     self.on_utterance(buf.getvalue())
 
-            gate = SpeechGate(webrtcvad.Vad(2), self.sample_rate, _handle_start, _handle_end, device_mode=self.device_mode)
+            detector = HybridVadDetector(webrtcvad.Vad(2), self.sample_rate)
+            gate = SpeechGate(detector, self.sample_rate, _handle_start, _handle_end, device_mode=self.device_mode)
             gate.set_playback_active(self._playback_active)
             self._gate = gate
             ptt_was_active = False
@@ -249,6 +262,9 @@ class VoiceVadListener:
                             self.on_end()
                         samples = memoryview(raw).cast('h')
                         self.rms = math.sqrt(sum(value * value for value in samples) / max(1, len(samples))) / 32768 if not muted else 0
+                        gate.system_speaker_peak = speaker_meter.peak()
+                        if gate.playback_active or gate.system_speaker_peak >= 0.025:
+                            utterance_had_speaker = True
                         if muted:
                             continue
                         if self.ptt_probe is not None:

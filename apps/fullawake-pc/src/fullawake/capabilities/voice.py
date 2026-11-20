@@ -148,6 +148,11 @@ class VoiceCompute:
         return self._artifacts
 
     @cached_property
+    def audio_frontend(self):
+        from fullawake.capabilities.audio_frontend import AudioFrontEndProcessor
+        return AudioFrontEndProcessor()
+
+    @cached_property
     def sensevoice_model(self):
         root = Path(os.environ.get('FULLAWAKE_SENSEVOICE_MODEL_DIR') or
                     Path(__file__).resolve().parents[5] / 'local/fullawake/sensevoice-small')
@@ -184,7 +189,7 @@ class VoiceCompute:
         except RuntimeError:
             return WhisperModel(model_dir, device='cpu', compute_type='int8', local_files_only=True)
 
-    def transcribe(self, audio: bytes):
+    def transcribe(self, audio: bytes, *, ptt: bool = False, speaker_active: bool = False, enhance: bool = False):
         from av.error import FFmpegError
         from faster_whisper.audio import decode_audio
 
@@ -200,6 +205,14 @@ class VoiceCompute:
             raise ValueError('Invalid FULLAWAKE_ASR_BACKEND')
         if not len(samples) or not any(samples):
             return AUDIO_UNCLEAR
+        if enhance:
+            cleaned, reject = self.audio_frontend.process(
+                samples, ASR_SAMPLE_RATE, ptt=ptt, speaker_active=speaker_active
+            )
+            if cleaned is None:
+                logging.getLogger(__name__).info('Audio front-end filtered utterance: %s', reject)
+                return AUDIO_UNCLEAR
+            samples = cleaned
         recognizer = self.sensevoice_model if backend != 'whisper' else None
         if recognizer is not None:
             try:

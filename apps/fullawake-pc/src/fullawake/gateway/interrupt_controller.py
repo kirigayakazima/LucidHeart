@@ -264,7 +264,14 @@ class InterruptController:
         generation = peer.call_generation
         released = time.monotonic()
         try:
-            result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
+            is_ptt = bool(getattr(self.vad, 'last_utterance_ptt', False))
+            spk_active = bool(getattr(self.vad, 'last_utterance_speaker_active', False))
+            try:
+                result = await asyncio.to_thread(
+                    self.voice.transcribe, wav_bytes, ptt=is_ptt, speaker_active=spk_active, enhance=True
+                )
+            except TypeError:
+                result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
             if text and not re.sub(r'[\s\W_]+', '', text):
                 log.info('Ignored punctuation-only ASR noise: %r', text)
