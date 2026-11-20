@@ -238,6 +238,8 @@ class VoiceVadListener:
             ptt_was_active = False
             applied = None
             muted = False
+            playback_cooldown_until = 0.0
+            barge_in_probe = build_ptt_probe(self.ptt_key or 'rctrl')
             if self.ptt_probe is not None:
                 log.info('Push-to-talk enabled (key=%s): hold key to speak', self.ptt_key or 'custom')
             with sounddevice.RawInputStream(device=self.device, samplerate=self.sample_rate,
@@ -294,6 +296,19 @@ class VoiceVadListener:
                         if self.reference_provider:
                             active, gate.reference = self.reference_provider()
                             gate.set_playback_active(active)
+                        now_mono = time.monotonic()
+                        if gate.playback_active:
+                            playback_cooldown_until = now_mono + 0.65
+                        # In Auto-VAD speaker mode, shield the mic while Xiao Man herself is speaking (+650ms tail)
+                        # so her own voice never interrupts herself or feeds back into ASR. Holding RCtrl still barges in.
+                        if self.device_mode == "speaker" and now_mono < playback_cooldown_until:
+                            if barge_in_probe is not None and barge_in_probe():
+                                playback_cooldown_until = 0.0
+                            else:
+                                if not capturing:
+                                    pre_roll.clear()
+                                    gate.voiced = gate.quiet = 0
+                                    continue
                         gate.feed(raw)
         except Exception as error:
             log.warning('Microphone VAD unavailable (%s)', type(error).__name__)

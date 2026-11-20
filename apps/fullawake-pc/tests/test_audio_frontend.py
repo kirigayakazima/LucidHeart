@@ -50,11 +50,16 @@ def test_audio_frontend_rejects_keyboard_noise_and_gates_foreign_voiceprint(tmp_
     assert cleaned is not None and reason == ''
     assert vp_file.is_file()
 
-    # 2. Short Auto-VAD utterance (< 1.0s, e.g. "嗯/好") is NEVER swallowed by voiceprint check
+    # 2. Short Auto-VAD utterance (< 1.0s, e.g. "嗯/好") in a quiet room is NEVER swallowed by voiceprint check
     current_vec = video_actor_vec
     short_reply = np.ones(10000, dtype=np.float32) * 0.08
-    cleaned, reason = proc.process(short_reply, 16000, ptt=False, speaker_active=True)
+    cleaned, reason = proc.process(short_reply, 16000, ptt=False, speaker_active=False)
     assert cleaned is not None and reason == ''
+
+    # 2b. Ultra-short burst (< 0.6s) while speakers ARE actively playing is blocked as short_speaker_bleed
+    ultra_short_bleed = np.ones(6000, dtype=np.float32) * 0.08
+    cleaned, reason = proc.process(ultra_short_bleed, 16000, ptt=False, speaker_active=True)
+    assert cleaned is None and reason.startswith('short_speaker_bleed')
 
     # 3. Long Auto-VAD utterance (>= 1.0s) from video actor while speakers are playing is rejected
     video_bleed = np.ones(20000, dtype=np.float32) * 0.08
