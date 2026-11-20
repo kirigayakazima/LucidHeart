@@ -1,6 +1,7 @@
 """Cancellation-aware PC transport for the existing BreezeBlue voice."""
 
 import asyncio
+import logging
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -51,8 +52,16 @@ class BreezeBlueAdapter:
                     if len(data) + len(chunk) > MAX_MP3_BYTES:
                         raise ValueError('BreezeBlue audio exceeds size limit')
                     data.extend(chunk)
-        except httpx.HTTPError:
-            raise OSError('BreezeBlue transport failed') from None
+        except httpx.HTTPError as error:
+            if self._client is client:
+                self._client = self._client_loop = None
+            try:
+                await client.aclose()
+            except httpx.HTTPError:
+                pass
+            status = getattr(getattr(error, 'response', None), 'status_code', None)
+            logging.getLogger(__name__).warning('BreezeBlue transport failed type=%s status=%s', type(error).__name__, status)
+            raise OSError(f'BreezeBlue transport failed ({type(error).__name__}, status={status})') from error
         if not (data.startswith(b'ID3') or (len(data) >= 2 and data[0] == 0xff and data[1] & 0xe0 == 0xe0)):
             raise ValueError('BreezeBlue response is not MP3')
         return bytes(data)

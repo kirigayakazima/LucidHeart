@@ -3,11 +3,14 @@
 import asyncio
 import base64
 import binascii
+import ctypes
 from collections import deque
 from io import BytesIO
 import hmac
+import hashlib
 from ipaddress import ip_address
 import json
+import logging
 import math
 import os
 import re
@@ -25,11 +28,22 @@ from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.core.session import is_desktop_locked
 from fullawake.acoustic_stitcher import utterance_sync
 from fullawake.lease_arbiter import LeaseArbiter, PlaybackLease
-from .see_now import DifferentialScreenSampler, render_contact_sheet
+from .see_now import DifferentialScreenSampler, FrameCandidate, render_contact_sheet
+from .screen import capture_screenshot
 
 CLOCK_TTL = 3.0
 REACTION_TTL = 15.0
 MAX_WAV_BYTES = 1024 * 1024
+
+
+def desktop_source_key(hwnd):
+    if os.name != 'nt':
+        return str(hwnd or 'primary-screen')
+    user32 = ctypes.windll.user32
+    handle = hwnd or user32.GetForegroundWindow()
+    title = ctypes.create_unicode_buffer(512)
+    user32.GetWindowTextW(handle, title, len(title))
+    return f'{handle}:{title.value}'
 
 
 class WatchInput(BaseModel):
@@ -156,6 +170,68 @@ class WatchCapability(BaseCapability):
         self.heart_mood = 'calm'
         self._echo_waveform = None
         self._echo_clock = None
+        self.desktop_task = None
+        self.desktop_started = 0
+        self.desktop_hwnd = None
+        self.desktop_identity = None
+        self.desktop_paused = False
+
+    async def stop_desktop(self):
+        task, self.desktop_task = self.desktop_task, None
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if self.clock and self.clock.client == 'desktop':
+            self.detach_clock()
+
+    async def desktop_tick(self):
+        now = time.monotonic()
+        if is_desktop_locked():
+            self.clear_timeline()
+            return
+        if self.clock and self.clock.client != 'desktop' and self.available(now):
+            return
+        if self.desktop_paused and self.clock and self.clock.client == 'desktop':
+            self.received = now
+            return
+        source_key = desktop_source_key(self.desktop_hwnd)
+        result = await asyncio.to_thread(capture_screenshot, self.desktop_hwnd, region='full')
+        if not result.get('success') or is_desktop_locked() or desktop_source_key(self.desktop_hwnd) != source_key:
+            self.clear_timeline()
+            return
+        with Image.open(BytesIO(base64.b64decode(result['base64_data']))) as source:
+            image = source.convert('RGB')
+            image.thumbnail((384, 384))
+        identity = hashlib.sha256(source_key.encode()).hexdigest()[:16]
+        position = time.monotonic() - self.desktop_started
+        if self.clock is None or self.clock.client != 'desktop' or self.desktop_identity != identity:
+            self.clear_timeline()
+            self.session = 'desktop-' + uuid.uuid4().hex[:8]
+            self.timeline = 'desktop-' + identity
+            self.start = position
+            self.desktop_identity = identity
+        self.clock = PlayerClock(client='desktop', source='desktop-source', segment=0, sequence=0,
+            videoId='desktop', title='共享桌面' if self.desktop_hwnd is None else '共享窗口',
+            playbackPositionSec=position, durationSec=86400., paused=False, speed=1.)
+        self.received = time.monotonic()
+        first = self.sampler.last_sec is None
+        self.sampler.process_frame(image, position)
+        if first:
+            self.sampler.frames.append(FrameCandidate(position, 0.06, image.copy()))
+        await self.flush_reaction(self.received)
+
+    async def desktop_loop(self):
+        try:
+            while time.monotonic() - self.desktop_started < 86400:
+                await asyncio.sleep(2.5)
+                try:
+                    await self.desktop_tick()
+                except (OSError, ValueError, RuntimeError) as error:
+                    logging.getLogger(__name__).warning('Desktop watch sample failed (%s)', type(error).__name__)
+                    self.detach_clock()
+        finally:
+            if self.clock and self.clock.client == 'desktop':
+                self.detach_clock()
 
     def microphone_reference(self):
         active = self.audio_leases.active
@@ -340,7 +416,7 @@ class WatchCapability(BaseCapability):
         if clock.playbackPositionSec > clock.durationSec:
             raise HTTPException(422, 'WATCH_INVALID_POSITION')
         if old and self.available(now):
-            if old.source != clock.source:
+            if old.source != clock.source and old.client != 'desktop':
                 raise HTTPException(409, 'WATCH_PLAYER_ALREADY_ACTIVE')
             if clock.sequence <= old.sequence or clock.segment < old.segment:
                 raise HTTPException(409, 'WATCH_CLOCK_OUT_OF_ORDER')
@@ -465,15 +541,38 @@ class WatchCapability(BaseCapability):
 
     async def control(self, args):
         now = time.monotonic()
+        action = args.get('action')
+        if action == 'stop':
+            await self.stop_desktop()
+            self.cancel_output()
+            return {'status': 'stopped'}
+        if action == 'start':
+            if not self.enabled or args.get('mode', 'auto') not in ('auto', 'desktop'):
+                return {'status': 'inactive'}
+            hwnd = args.get('hwnd')
+            if hwnd is not None and (type(hwnd) is not int or hwnd <= 0):
+                return {'error': 'WATCH_INVALID_WINDOW'}
+            if self.desktop_task is None or self.desktop_task.done():
+                self.desktop_hwnd = hwnd
+                self.desktop_paused = False
+                self.desktop_started = now
+                await self.desktop_tick()
+                self.desktop_task = asyncio.create_task(self.desktop_loop())
+            return {'status': 'started', 'watchSessionId': self.session}
         if not self.enabled or not self.available(now) or args.get('watchSessionId') != self.session:
             return {'status': 'inactive'}
-        action = args.get('action')
         if action == 'sensitivity':
             value = args.get('sensitivity')
             if type(value) not in (int, float) or not 0.04 <= value <= 0.4:
                 return {'error': 'WATCH_INVALID_SENSITIVITY'}
             self.sampler.min_diff_threshold = value
             return {'status': 'applied', 'sensitivity': value}
+        if self.clock.client == 'desktop' and action in ('pause', 'play'):
+            self.desktop_paused = action == 'pause'
+            self.clock.paused = self.desktop_paused
+            self.cues.clear()
+            self.cancel_output()
+            return {'status': 'applied'}
         if action not in ('pause', 'play'):
             return {'error': 'WATCH_INVALID_ACTION'}
         if self.command and now < self.command['expires']:
@@ -486,8 +585,9 @@ class WatchCapability(BaseCapability):
                                parameters={'type': 'object', 'properties': {'durationSec': {'type': 'number', 'minimum': 1, 'maximum': 30},
                                                                            'clockOnly': {'type': 'boolean'}}}, handler=self.summary),
                 ToolDefinition(name='pc_watch_control', description='Control only the explicitly shared player',
-                               parameters={'type': 'object', 'required': ['action', 'watchSessionId'], 'properties': {
-                                   'action': {'enum': ['pause', 'play', 'sensitivity']}, 'watchSessionId': {'type': 'string'},
+                               parameters={'type': 'object', 'required': ['action'], 'properties': {
+                                   'action': {'enum': ['start', 'stop', 'pause', 'play', 'sensitivity']}, 'watchSessionId': {'type': 'string'},
+                                   'mode': {'enum': ['auto', 'desktop']}, 'hwnd': {'type': 'integer'},
                                    'sensitivity': {'type': 'number', 'minimum': 0.04, 'maximum': 0.4}}}, handler=self.control)]
 
     def mount(self, app, interrupt_playback=None):

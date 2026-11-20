@@ -298,12 +298,18 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
     return { ...data, images: image ? [image] : [] }
   })
 
-  tool('pc_watch_control', '按用户请求暂停、播放或调整已共享播放器的差分阈值。queued 表示等待浏览器确认。', {
-    watchSessionId: { type: 'string', required: true, description: '当前陪看会话' },
-    action: { type: 'string', required: true, description: 'pause、play 或 sensitivity' },
+  tool('pc_watch_control', '按用户请求开始或停止任意电脑桌面、窗口、视频播放器及网页陪看，或控制浏览器共享播放器。queued 表示等待浏览器确认。', {
+    watchSessionId: { type: 'string', description: '暂停、播放及调整阈值时提供当前会话' },
+    action: { type: 'string', required: true, description: 'start、stop、pause、play 或 sensitivity' },
+    mode: { type: 'string', description: 'auto 或 desktop' }, hwnd: { type: 'integer', description: '可选共享窗口句柄，默认主屏幕' },
     sensitivity: { type: 'number', description: '差分阈值 0.04 至 0.4' },
   }, async (args, exec) => {
     if (!local) return { status: 'inactive' }
+    if (args.action === 'start') return setAuto({ enabled: true, mode: args.mode, hwnd: args.hwnd }, exec)
+    if (args.action === 'stop') {
+      if (auto && auto.owner !== exec?.agent?.id) return { status: 'unavailable' }
+      stopAuto()
+    }
     const reply = await callGatewayTool('pc_watch_control', args, exec?.signal)
     try { return JSON.parse(reply.content.find(block => block.type === 'text').text) }
     catch { return { status: 'offline' } }
@@ -334,10 +340,11 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
   tool('pc_watch_auto', '按用户请求开始或结束自动陪看。开启后常驻后台持续陪看（换视频自动无缝续播），小满的反应与语音直接发送给PC桌面桌宠，【严禁】在QQ聊天窗口重复转述、刷屏或同步每一句反应。QQ端只需回复一句简短确认即可。', {
     enabled: { type: 'boolean', required: true, description: '开启或停止自动陪看' },
     voice: { type: 'boolean', description: '使用 RVC 发声，默认开启（设为 false 则仅气泡）' },
-  }, async (args, exec) => {
+  }, setAuto)
+  async function setAuto(args, exec) {
     const owner = exec?.agent?.id
     if (!owner || (auto && auto.owner !== owner)) return { status: 'unavailable' }
-    if (!args.enabled) { stopAuto(); return { status: 'stopped' } }
+    if (!args.enabled) { stopAuto(); await callGatewayTool('pc_watch_control', { action: 'stop' }, exec?.signal); return { status: 'stopped' } }
     if (auto) return { status: 'already_started', watchSessionId: auto.session }
     if (mode !== 'legacy' && (!agencyService()?.evaluate || !service(ctx, 'heart')?.observe)) {
       return { status: 'unconfigured' }
@@ -350,13 +357,16 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           (args.voice === true && !bridge && !rvc?.prepare)) return { status: 'unconfigured' }
       if ((bridge && !bridge.turnLifecycle) || (mode === 'heart' && !bridge)) return { status: 'offline' }
     }
+    await callGatewayTool('pc_watch_control', { action: 'start', ...(args.mode && { mode: args.mode }),
+      ...(args.hwnd !== undefined && { hwnd: args.hwnd }) }, exec.signal)
     const { data } = await summary({ clockOnly: true }, exec.signal)
     if (!data?.watchSessionId || (!shadow && !data.widgetOnline) || exec.signal?.aborted || lifetime.signal.aborted) {
+      await callGatewayTool('pc_watch_control', { action: 'stop' })
       return { status: 'inactive' }
     }
     if (auto) return { status: 'already_started' }
     auto = { owner, session: data.watchSessionId, controller: new AbortController(), voice: useVoice,
       execution: { agent: exec.agent }, timeline: data.timelineId, scene: -Infinity, lastAttempt: -Infinity, busy: false }
     return { status: 'started', watchSessionId: auto.session, voice: useVoice }
-  })
+  }
 }

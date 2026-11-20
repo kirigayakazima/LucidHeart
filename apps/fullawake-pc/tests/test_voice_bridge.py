@@ -58,6 +58,72 @@ def long_audio():
     return base64.b64encode(buf.getvalue()).decode()
 
 
+@pytest.mark.parametrize('cancel', [False, True])
+def test_breeze_sentence_first_playback_prefetch_and_interrupt(bridge, monkeypatch, cancel, caplog):
+    client, gateway = bridge
+    monkeypatch.setattr(config, 'breeze_api_key', 'fixture-only')
+    caplog.set_level('INFO', logger='fullawake.gateway.interrupt_controller')
+    prefetched, stopped = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def synthesize(text, instructions, deadline_s):
+        calls.append(text)
+        if len(calls) == 2:
+            prefetched.set()
+            if cancel:
+                try:
+                    await asyncio.Future()
+                finally:
+                    stopped.set()
+        return b'fixture-mp3'
+    async def decode(_):
+        return long_audio()
+    async def wait(event):
+        await asyncio.wait_for(event.wait(), 3)
+    monkeypatch.setattr(gateway.interrupts.breeze, 'synthesize', synthesize)
+    monkeypatch.setattr('fullawake.gateway.interrupt_controller.game_audio_wav', decode)
+    with client.websocket_connect('/ws/pet?player=1') as pet, client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True, direct=True)
+        gateway.interrupts.peer.trace = {'turnId': 'trace-fixture', 'released': monotonic(), 'asr_done': monotonic()}
+        identity = {'epoch': 101, 'utteranceId': 'sentences'}
+        phone.send_json(frame('audio.prepare', 2, identity))
+        assert phone.receive_json()['type'] == 'audio.prepared'
+        phone.send_json(frame('audio.speak', 3, {**identity, 'text': '第一句现在就可以开始播放啦。第二句还在后台准备合成哦。',
+            'voiceProfile': 'breezeblue', 'deadlineMs': 15000}))
+        first = pet.receive_json()
+        assert first['text'] == '第一句现在就可以开始播放啦。'
+        assert pet.receive_json()['event'] == 'playback_audio'
+        client.portal.call(wait, prefetched)
+        if cancel:
+            client.portal.call(gateway.interrupts.on_speech_start, gateway.interrupts.peer)
+            event = pet.receive_json()
+            assert event['event'] == 'interrupt'
+            pet.send_json({'event': 'interrupt_ack', 'utteranceId': first['utteranceId'],
+                'interruptId': event['interruptId'], 'elapsedAudioMs': 444})
+            client.portal.call(wait, stopped)
+            assert phone.receive_json()['payload']['elapsedAudioMs'] == 444
+        else:
+            pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': first['utteranceId']})
+            second = pet.receive_json()
+            assert second['text'] == '第二句还在后台准备合成哦。'
+            assert pet.receive_json()['event'] == 'playback_audio'
+            pet.send_json({'event': 'playback_clock', 'mode': 'idle', 'outcome': 'played', 'utteranceId': second['utteranceId']})
+            assert phone.receive_json()['payload']['status'] == 'played'
+        assert 'stage=first_audio' in caplog.text
+        assert 'BreezeBlue audio ready in ' in caplog.text
+
+
+def test_mic_prefix_is_short_and_hangup_stays_bare(bridge, monkeypatch):
+    client, gateway = bridge
+    with client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True)
+        gateway.interrupts.peer.call_active = True
+        for text, expected in [('陪看模式 Claude', '[Voice message] 陪看模式 Claude'), ('先挂了', '先挂了')]:
+            monkeypatch.setattr(gateway.voice, 'transcribe', lambda _, text=text: {'ok': True, 'text': text})
+            client.portal.call(gateway.interrupts._transcribe_utterance, gateway.interrupts.peer, b'wav')
+            assert phone.receive_json()['type'] == 'audio.capture'
+            assert phone.receive_json()['payload']['text'] == expected
+
+
 def test_ptt_interrupt_empty_release_and_correlated_final_are_diagnosable(bridge, monkeypatch, caplog):
     client, gateway = bridge
     caplog.set_level('INFO', logger='fullawake.gateway.interrupt_controller')

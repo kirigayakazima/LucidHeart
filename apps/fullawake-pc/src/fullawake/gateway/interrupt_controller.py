@@ -264,7 +264,7 @@ class InterruptController:
                          turn_id, epoch, len(text), generation, text[:60])
                 log.info('LATENCY turnId=%s stage=asr asr_ms=%.0f', turn_id, (asr_done - released) * 1000)
                 delivered = text if _HANGUP_RE.match(text) else (
-                    f'[Voice message / PC麦克风实时连麦语音（已通过麦克风ASR转写送达，非手打文字；请调用 pc_duplex_speak 语音回应）] {text}'
+                    f'[Voice message] {text}'
                 )
                 peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
@@ -385,11 +385,15 @@ class InterruptController:
                 return
             await asyncio.sleep(0.1)
 
-    async def _stream_to_renderer(self, peer, lease, request, cancelled):
+    async def _stream_to_renderer(self, peer, lease, request, cancelled, renderer=None):
         async def fragments():
             yield request['text']
 
         async def render(sentence):
+            if await cancelled():
+                raise ValueError('VOICE_CANCELLED')
+            if renderer:
+                return sentence, await renderer(sentence)
             result = await self.voice.synthesize({**request, 'text': sentence}, disconnected=cancelled)
             return sentence, result['audioBase64']
 
@@ -406,6 +410,13 @@ class InterruptController:
                     return 'discarded'
                 if previous is None:
                     lease.deadline = time.monotonic() + 30
+                    trace = peer.trace
+                    if trace and 'command' in trace and 'played' not in trace:
+                        trace['played'] = played = time.monotonic()
+                        log.info('LATENCY turnId=%s stage=first_audio render_ms=%.0f total_ms=%.0f',
+                            trace['turnId'], (played - trace['command']) * 1000, (played - trace['released']) * 1000)
+                if self.vad and hasattr(self.vad, 'set_playback_active'):
+                    self.vad.set_playback_active(True)
                 previous = lease.renderer_id = renderer_id
                 lease.receipt = receipt
                 end = time.monotonic() + duration / 1000 + 2
@@ -428,6 +439,21 @@ class InterruptController:
             audio, duration, intent = None, 4000, 'talk'
             if isinstance(command, Speak) and command.voiceProfile == 'breezeblue':
                 started = time.monotonic()
+                if peer.capture_enabled and lease.game_event is None and len(command.text) > 18 and re.search(r'[。！？!?；;，]', command.text):
+                    async def sentence_audio(sentence):
+                        begin = time.monotonic()
+                        mp3 = await self.breeze.synthesize(sentence, command.instructions,
+                            deadline_s=min(8, max(.01, lease.deadline - begin)))
+                        downloaded = time.monotonic()
+                        if await cancelled():
+                            raise ValueError('VOICE_CANCELLED')
+                        wav = await game_audio_wav(mp3)
+                        log.info('BreezeBlue audio ready in %.0f ms (tts_download_ms=%.0f transcode_ms=%.0f chars=%d)',
+                            (time.monotonic() - begin) * 1000, (downloaded - begin) * 1000,
+                            (time.monotonic() - downloaded) * 1000, len(sentence))
+                        return wav
+                    outcome = await self._stream_to_renderer(peer, lease, {'text': command.text}, cancelled, sentence_audio)
+                    return
                 timings = {}
                 async def render_direct():
                     mp3 = await self.breeze.synthesize(command.text, command.instructions,

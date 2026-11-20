@@ -1,5 +1,15 @@
 # FullAwake PC
 
+0.2.13 提供 SenseVoice 本地中文 ASR、无需浏览器扩展的桌面陪看及 BreezeBlue 连麦分句起播。
+
+使用项目 uv 环境安装 ASR 依赖：`uv pip install --python apps/fullawake-pc/.venv/Scripts/python.exe --index-url https://pypi.tuna.tsinghua.edu.cn/simple sherpa-onnx==2.0.2`。启动脚本优先使用项目 `.venv`。`FULLAWAKE_ASR_BACKEND=auto|sensevoice|whisper`，默认 auto；前两种在模型或运行库缺失时回退既有本地 Whisper。
+
+将 [sherpa-onnx 官方 SenseVoice 导出模型](https://k2-fsa.github.io/sherpa/onnx/sense-voice/index.html) 的 `model.int8.onnx`（或 `model.onnx`）与匹配的 `tokens.txt` 放入 `local/fullawake/sensevoice-small/`。可通过 ModelScope 或国内镜像下载同一 sherpa-onnx 导出版本的两个文件，不能以 FunASR 的原始 PyTorch 权重代替。自定义路径使用 `FULLAWAKE_SENSEVOICE_MODEL_DIR`；程序不下载权重，模型不进入代码包。当前自动化验证使用识别器桩，真实中文准确率和延迟需安装权重后另测。
+
+`pc_watch_control(action="start", mode="desktop", hwnd=...)` 与 `pc_watch_auto(enabled=true)` 会同时启动 PC 采样和手机轮询。hwnd 可省略，默认共享主屏幕。浏览器精确时间轴活跃时优先使用它；否则以单调已陪看秒数标注桌面分镜，每 2.5 秒采样，输出单张 768×768 / 384-token 接触表。锁屏暂停，解锁恢复，24 小时自动结束。stop 取消采样任务。共享屏幕应由本人显式开启。
+
+BreezeBlue 多句连麦回复复用有界分句管线，首句完成转码即交给桌宠，后续合成与播放重叠。打断撤销整次租约并取消预取任务，累计已播放时长保持兼容。HTTP 传输异常清空失效连接池，日志记录错误类与状态码。LATENCY stage=first_audio 为交给播放器的时间，耳端真实首声仍需真机计量。
+
 小满的主脑、Heart 和 Memory 在手机，阿醒独立运行。以 `/health` 核对当前 PC 网关进程版本。
 
 ## 现有能力

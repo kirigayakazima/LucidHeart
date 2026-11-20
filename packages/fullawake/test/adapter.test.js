@@ -69,6 +69,10 @@ function startMockGateway(watch = null, moods = []) {
             } else {
               content = [{ type: 'text', text: '# DSHA - DeepSeek Heart Agent\nMulti-Agent System for Xiaoman & Axing.' }]
             }
+          } else if (tool === 'pc_watch_control' && watch) {
+            watch.controls ??= []
+            watch.controls.push(args.action)
+            content = [{ type: 'text', text: JSON.stringify({ status: args.action === 'start' ? 'started' : 'stopped' }) }]
           } else if (tool === 'pc_watch_get_summary' && watch) {
             const meta = { ...watch.metadata(), frameCount: args.clockOnly ? 0 : 1 }
             content = [{ type: 'text', text: JSON.stringify(meta) }]
@@ -468,6 +472,7 @@ test('watch autoplay uses one image in an isolated DSH model call', async () => 
     assert.match(blocks[1].text, /已播台词/)
     assert.doesNotMatch(blocks[1].text, /未来台词/)
     assert.equal((await host.tools.get('pc_watch_auto').execute({ enabled: false }, exec)).status, 'stopped')
+    assert.deepEqual(watch.controls, ['start', 'stop'])
   } finally {
     ctx.dispose()
     await gateway.close()

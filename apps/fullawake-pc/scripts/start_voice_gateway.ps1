@@ -8,13 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $SuiteDir = Split-Path -Parent (Split-Path -Parent $ProjectDir)
-$pythonExe = "C:\Users\xuaner\AppData\Local\Programs\Python\Python311\python.exe"
-if (-not (Test-Path -LiteralPath $pythonExe)) {
-    $pythonExe = "C:\Users\xuaner\AppData\Roaming\uv\python\cpython-3.10-windows-x86_64-none\python.exe"
-}
-if (-not (Test-Path -LiteralPath $pythonExe)) {
-    $pythonExe = Join-Path $ProjectDir '.venv/Scripts/python.exe'
-}
+$pythonExe = Join-Path $ProjectDir '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) { throw 'Create the project uv environment first.' }
 if (Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue) {
     Write-Output "Port 8765 is already in use; gateway is already running."
@@ -61,6 +55,8 @@ $env:FULLAWAKE_VOICE_PROFILE = (Resolve-Path -LiteralPath $VoiceProfile).Path
 $env:FULLAWAKE_VOICE_PYTHON = (Resolve-Path -LiteralPath $VoicePython).Path
 $env:FULLAWAKE_VOICE_CLIENTS = $VoiceClients -join ','
 $runDir = Join-Path $SuiteDir 'local/fullawake'
+if (-not $env:FULLAWAKE_ASR_BACKEND) { $env:FULLAWAKE_ASR_BACKEND = 'auto' }
+if (-not $env:FULLAWAKE_SENSEVOICE_MODEL_DIR) { $env:FULLAWAKE_SENSEVOICE_MODEL_DIR = Join-Path $runDir 'sensevoice-small' }
 New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 $env:FULLAWAKE_VOICE_WORK_DIR = Join-Path $runDir 'voice-work'
 if (-not $env:FULLAWAKE_ASR_MODEL_DIR) {

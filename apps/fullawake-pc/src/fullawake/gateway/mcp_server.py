@@ -107,6 +107,7 @@ class FullAwakeMCPGateway:
             try:
                 yield
             finally:
+                await self.watch.stop_desktop()
                 for task in background:
                     task.cancel()
                 await asyncio.gather(*background, return_exceptions=True)

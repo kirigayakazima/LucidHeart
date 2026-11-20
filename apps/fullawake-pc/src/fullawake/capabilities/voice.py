@@ -4,6 +4,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import stat
@@ -147,6 +148,21 @@ class VoiceCompute:
         return self._artifacts
 
     @cached_property
+    def sensevoice_model(self):
+        root = Path(os.environ.get('FULLAWAKE_SENSEVOICE_MODEL_DIR') or
+                    Path(__file__).resolve().parents[5] / 'local/fullawake/sensevoice-small')
+        model = next((root / name for name in ('model.int8.onnx', 'model.onnx') if (root / name).is_file()), None)
+        if model is None or not (root / 'tokens.txt').is_file():
+            return None
+        try:
+            import sherpa_onnx
+            return sherpa_onnx.OfflineRecognizer.from_sense_voice(model=str(model), tokens=str(root / 'tokens.txt'),
+                language='auto', use_itn=True, num_threads=4)
+        except (ImportError, OSError, RuntimeError, ValueError) as error:
+            logging.getLogger(__name__).warning('SenseVoice unavailable (%s); falling back to Whisper', type(error).__name__)
+            return None
+
+    @cached_property
     def asr_model(self):
         from faster_whisper import WhisperModel
 
@@ -178,6 +194,23 @@ class VoiceCompute:
             samples = decode_audio(source, sampling_rate=ASR_SAMPLE_RATE)
         except (FFmpegError, ValueError, IndexError):
             return AUDIO_UNCLEAR
+
+        backend = os.environ.get('FULLAWAKE_ASR_BACKEND', 'auto')
+        if backend not in ('auto', 'sensevoice', 'whisper'):
+            raise ValueError('Invalid FULLAWAKE_ASR_BACKEND')
+        if not len(samples) or not any(samples):
+            return AUDIO_UNCLEAR
+        recognizer = self.sensevoice_model if backend != 'whisper' else None
+        if recognizer is not None:
+            try:
+                stream = recognizer.create_stream()
+                stream.accept_waveform(ASR_SAMPLE_RATE, samples)
+                recognizer.decode_stream(stream)
+                transcript = re.sub(r'<\|[^|]*\|>', '', stream.result.text).strip()
+                return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),
+                        'language': 'auto'} if transcript else AUDIO_UNCLEAR
+            except (OSError, RuntimeError, ValueError) as error:
+                logging.getLogger(__name__).warning('SenseVoice decode failed (%s); falling back to Whisper', type(error).__name__)
 
         asr_prompt = os.environ.get('FULLAWAKE_ASR_PROMPT', '以下是普通话简体中文日常对话。小满，大肥鱼，清羽，阿醒，满宝。')
         asr_lang = os.environ.get('FULLAWAKE_ASR_LANGUAGE', 'zh').strip() or None

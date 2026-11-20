@@ -8,7 +8,7 @@
 | `@dsh/memory` | `0.1.9` | 不可变 `journal.jsonl` 记忆真源、FTS5、出处溯源、跨会话首轮接力 `handoff.js`、独立视觉相册 `album.jsonl` |
 | `@dsh/qq-plus` | `0.3.1` | 双角色（小满/阿醒）唤醒门控、情绪断句节奏、多目标隔离路由与方案 D 轻量能力路由 |
 | `@dsh/rvc` | `0.2.19` | BreezeBlue 云端拟人少女音、自主发声心智、Feiyu RVC ONNX 本地回退、PC 桌宠默认直出与 GPU 异步点歌 |
-| `dsh-fullawake` / `fullawake-pc` | `0.2.12` | PC 感官桥、游戏点播与被动守望、`region` 局部变焦、桌宠播放租约、`faster-whisper` 中文 ASR 与 `RCtrl` 按住说话（PTT） |
+| `dsh-fullawake` / `fullawake-pc` | `0.2.13` | PC 感官桥、游戏点播与被动守望、`region` 局部变焦、桌宠播放租约、`faster-whisper` 中文 ASR 与 `RCtrl` 按住说话（PTT） |
 | `@dsh/voice-duplex` | `0.1.1` | 显式连麦通话开关、Epoch 物理打断、草稿/定稿分离与挂断三轮话题接力 |
 | `dsh-sticker-look` | `0.2.4` | 零依赖 GIF 抽帧、384-token 接触表分镜与按需局部细节 |
 | `dsh-heart-wake` | `0.1.0` | 防自激自唤醒工具（单轮锁、安静时段闸、SQLite 滚动配额） |

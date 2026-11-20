@@ -19,6 +19,24 @@ def transport(monkeypatch, handler):
     monkeypatch.setattr(breezeblue_adapter.httpx, 'AsyncClient',
                         lambda **options: create(transport=httpx.MockTransport(handler), **options))
 
+def test_transport_error_resets_pool_and_next_request_recovers(adapter, monkeypatch, caplog):
+    count = 0
+    def respond(request):
+        nonlocal count
+        count += 1
+        if count == 1:
+            raise httpx.RemoteProtocolError('disconnected', request=request)
+        return httpx.Response(200, content=b'ID3ok')
+    transport(monkeypatch, respond)
+    async def run():
+        with pytest.raises(OSError, match='RemoteProtocolError'):
+            await adapter.synthesize('第一句')
+        assert adapter._client is None
+        assert await adapter.synthesize('第二句') == b'ID3ok'
+        await adapter.aclose()
+    asyncio.run(run())
+    assert 'RemoteProtocolError' in caplog.text
+
 
 def test_direct_cloud_request_uses_existing_voice_contract(adapter, monkeypatch):
     def respond(request):

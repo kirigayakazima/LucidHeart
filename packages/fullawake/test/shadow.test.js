@@ -109,7 +109,8 @@ test('shadow runs without renderer or inference services and logs a SPEAK withou
   watch.clock.status = 'paused'
   await watch.tick()
   assert.equal(watch.decisions().at(-1).detail.state, 'IDLE')
-  assert(watch.calls.gateway.every(([, clockOnly]) => clockOnly))
+  assert.equal(watch.calls.gateway[0][0], 'pc_watch_control')
+  assert(watch.calls.gateway.filter(([name]) => name === 'pc_watch_get_summary').every(([, clockOnly]) => clockOnly))
   const { gateway, ...effects } = watch.calls
   assert(Object.values(effects).every(count => count === 0))
   assert.deepEqual(fs.readFileSync(trigger), before)
@@ -131,6 +132,20 @@ test('shadow blocks manual speech and rejects images returned to a clock-only re
   assert.equal(watch.calls.image, 0)
   assert.equal(watch.calls.begin, 0)
   assert.equal(watch.calls.speak, 0)
+  assert.equal(watch.calls.infer, 0)
+  assert.equal(watch.calls.tts, 0)
+  assert.equal(watch.calls.reserve, 0)
+})
+
+test('desktop control start and stop coordinate PC control with phone polling', async t => {
+  const watch = fixture(t, 'shadow')
+  assert.equal((await watch.tool('pc_watch_control', { action: 'start', mode: 'desktop' })).status, 'started')
+  await watch.tick()
+  assert.ok(watch.calls.gateway.some(([name]) => name === 'pc_watch_get_summary'))
+  await watch.tool('pc_watch_control', { action: 'stop' })
+  const count = watch.calls.gateway.length
+  await watch.tick()
+  assert.equal(watch.calls.gateway.length, count)
   assert.equal(watch.calls.infer, 0)
   assert.equal(watch.calls.tts, 0)
   assert.equal(watch.calls.reserve, 0)
