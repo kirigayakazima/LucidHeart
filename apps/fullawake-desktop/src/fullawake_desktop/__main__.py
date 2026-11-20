@@ -31,7 +31,18 @@ def main():
     LOCAL.mkdir(parents=True, exist_ok=True)
     os.chdir(LOCAL)  # Keep renderer diagnostics and temporary browser data out of the source tree.
     window = webview.create_window('FullAwake · 桌面工作台', str(ui), js_api=api,
-                                   width=1170, height=820, min_size=(820, 620), background_color='#111218')
+                                   width=1170, height=820, min_size=(820, 620), background_color='#111218',
+                                   minimized=False, focus=True)
+
+    def bring_to_front():
+        try:
+            window.restore()
+            window.on_top = True
+            window.on_top = False
+        except Exception:
+            pass
+
+    window.events.shown += bring_to_front
 
     def quit_app():
         exiting.set()
