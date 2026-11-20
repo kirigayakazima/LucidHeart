@@ -10,6 +10,7 @@ from io import BytesIO
 import json
 import logging
 from pathlib import Path
+import re
 import time
 from typing import Literal
 from uuid import uuid4
@@ -33,6 +34,7 @@ from fullawake.pipeline.stream_worker import stream_sentences
 log = logging.getLogger(__name__)
 PROTOCOL = 'lucid.voice/1'
 INITIAL_EPOCH = 100
+_HANGUP_RE = re.compile(r'^(?:小满[，,\s]*)?(?:先挂(?:了|啦|了吧)|挂断(?:通话|电话)?|结束通话|哥哥去忙了)[。！!～~\s]*$')
 REVOKED_TTL = 60
 RENDERER_ACK_TIMEOUT = 0.2
 MAX_EPOCH = 2**53 - 1
@@ -258,12 +260,15 @@ class InterruptController:
                 turn_id = uuid4().hex
                 asr_done = time.monotonic()
                 peer.trace = {'turnId': turn_id, 'released': released, 'asr_done': asr_done}
-                log.info('PC mic final turnId=%s audio_epoch=%s chars=%s call_generation=%s',
-                         turn_id, epoch, len(text), generation)
+                log.info('PC mic final turnId=%s audio_epoch=%s chars=%s call_generation=%s text=%s',
+                         turn_id, epoch, len(text), generation, text[:60])
                 log.info('LATENCY turnId=%s stage=asr asr_ms=%.0f', turn_id, (asr_done - released) * 1000)
+                delivered = text if _HANGUP_RE.match(text) else (
+                    f'[Voice message / PC麦克风实时连麦语音（已通过麦克风ASR转写送达，非手打文字；请调用 pc_duplex_speak 语音回应）] {text}'
+                )
                 peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
-                          text=text[:1500], is_final=True)
+                          text=delivered[:1500], is_final=True)
             else:
                 log.info('PC mic transcript empty or call inactive (ignored, ok=%s)', bool(result and result.get('ok')))
         except Exception as error:
