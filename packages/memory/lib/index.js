@@ -46,7 +46,7 @@ export {
 };
 
 export const name = '@dsh/memory';
-export const inject = { tools: true, systemPrompt: true, compaction: false, presets: false };
+export const inject = ['tools', 'systemPrompt'];
 
 let defineTool = (t) => {
   const properties = {};

@@ -93,7 +93,7 @@ import { buildMoodSection, buildPromptBundle, buildSelfSection, buildVoiceSectio
 export const name = 'dsh-heart'
 
 /** 静态注入：服务必须写在这里，ctx.get() 拿不到（同生态插件的实测结论）。 */
-export const inject = { tools: true, webServer: true, agents: true, systemPrompt: true, qqbotMediaSender: false }
+export const inject = ['tools', 'webServer', 'agents', 'systemPrompt']
 
 function defineTool(def) {
   return defineDshTool({ ...def, async execute(...args) {
