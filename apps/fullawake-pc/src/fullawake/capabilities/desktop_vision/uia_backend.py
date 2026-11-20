@@ -19,6 +19,9 @@ class RECT(ctypes.Structure):
 
 
 WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+MONITORENUMPROC = ctypes.WINFUNCTYPE(
+    wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(RECT), wintypes.LPARAM
+)
 
 
 def attach_to_default_desktop() -> None:
@@ -73,6 +76,19 @@ def list_top_level_windows() -> List[Dict[str, Any]]:
     attach_to_default_desktop()
     user32 = ctypes.windll.user32
     raw_windows: List[Dict[str, Any]] = []
+    monitors: list[int] = []
+
+    @MONITORENUMPROC
+    def collect_monitor(handle, _hdc, _rect, _data):
+        monitors.append(handle)
+        return True
+
+    user32.EnumDisplayMonitors(None, None, collect_monitor, 0)
+    monitor_ids = {handle: index for index, handle in enumerate(monitors, start=1)}
+    user32.MonitorFromWindow.restype = wintypes.HMONITOR
+    user32.MonitorFromWindow.argtypes = (wintypes.HWND, wintypes.DWORD)
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    foreground = user32.GetForegroundWindow()
 
     def enum_callback(hwnd: int, extra: Any) -> int:
         if not user32.IsWindowVisible(hwnd):
@@ -113,6 +129,8 @@ def list_top_level_windows() -> List[Dict[str, Any]]:
             "process_name": proc_name,
             "pid": int(pid.value),
             "is_minimized": is_minimized,
+            "is_foreground": hwnd == foreground,
+            "monitor_id": monitor_ids.get(user32.MonitorFromWindow(hwnd, 2)),
             "bounds": {
                 "left": rect.left,
                 "top": rect.top,

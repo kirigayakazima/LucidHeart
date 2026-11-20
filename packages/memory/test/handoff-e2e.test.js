@@ -38,7 +38,7 @@ test('端到端会话接力器 (Turn 1 Session Handoff E2E 验证)', async (t) =
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: '小满，明天早上记得提醒我吃降压药' }],
-    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 19 } },
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', speakerId: 'owner', targetId: 'owner', start: 0, length: 16 } },
   };
   claim(agent1, msg1);
   emit(agent1, { type: 'turn/start' });
@@ -67,7 +67,7 @@ test('端到端会话接力器 (Turn 1 Session Handoff E2E 验证)', async (t) =
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: '早安小满' }],
-    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 4 } },
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', speakerId: 'owner', targetId: 'owner', start: 0, length: 4 } },
   };
 
   // Session 2 第一轮消息被 Claim
@@ -99,7 +99,7 @@ test('端到端会话接力器 (Turn 1 Session Handoff E2E 验证)', async (t) =
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: '刚刚吃了' }],
-    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 4 } },
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', speakerId: 'owner', targetId: 'owner', start: 0, length: 4 } },
   };
   session2.messages.push({ role: 'assistant', content: [{ type: 'text', text: '...' }] });
   claim(agent2, msg3);
@@ -140,7 +140,7 @@ test('端到端私聊与群聊强隔离 (Private vs Group Channel Air-Gap E2E)',
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: '小满，我今天去看了心理医生，这件事别告诉别人' }],
-    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 26 } },
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', speakerId: 'owner', targetId: 'owner', start: 0, length: 22 } },
   };
   claim(directAgent1, directMsg1);
   emit(directAgent1, { type: 'turn/start' });
@@ -165,6 +165,7 @@ test('端到端私聊与群聊强隔离 (Private vs Group Channel Air-Gap E2E)',
         channel: 'group',
         groupId: 'public-group-100',
         speaker: 'other_member',
+        speakerId: 'other_member',
         start: 0,
         length: 4,
       },
@@ -198,7 +199,7 @@ test('端到端私聊与群聊强隔离 (Private vs Group Channel Air-Gap E2E)',
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text: '早安' }],
-    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', start: 0, length: 2 } },
+    source: { kind: 'user', qq: { channel: 'direct', speaker: 'boss', speakerId: 'owner', targetId: 'owner', start: 0, length: 2 } },
   };
 
   claim(directAgent2, directMsg2);

@@ -216,8 +216,9 @@ test('模型参数契约与提示词沿用宿主接口，写入沿用角色范�
   assert.deepEqual(tools.get('memory_forget').parameters.required, ['targetId']);
   assert.equal(sections.length, 1);
   for (const name of tools.keys()) {
-    if (name !== 'memory_inspect') assert.ok(sections[0].text().includes(name));
+    if (!['memory_inspect', 'memory_context_health'].includes(name)) assert.ok(sections[0].text().includes(name));
   }
+  assert.ok(!sections[0].text().includes('memory_context_health'));
   const sister = memory.remember({ content: '阿醒的偏好', scope: 'axing_private' });
   const candidate = memory.remember({ content: '未确认偏好', confidence: 0.2 });
   for (const { id } of [sister, candidate]) {

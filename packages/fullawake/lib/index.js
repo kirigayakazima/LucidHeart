@@ -188,12 +188,35 @@ export function apply(ctx, config = {}) {
   }
   let pcVoiceMuted = false
   let bridge
+  const callReplyRoute = { matches: () => false }
+  async function speakDuplex(text, exec) {
+    const cancelled = () => pcVoiceMuted || exec.signal?.aborted || exec.canSend?.() === false
+    if (cancelled()) return { status: 'cancelled' }
+    const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
+    if (!gate?.suitable) return { status: 'blocked' }
+    if (cancelled()) return { status: 'cancelled' }
+    const direct = bridge.breezeDirect
+    if ([...text].length > (direct ? 120 : 200)) return { status: 'unavailable' }
+    const turn = bridge.begin({ signal: exec.signal, agentId: exec.agent.id })
+    if (!turn) return { status: 'unavailable' }
+    try {
+      if (!(await turn.prepared) || cancelled() || !bridge.speak({
+        text, voiceProfile: direct ? 'breezeblue' : 'feiyu-rvc-v1', pitchShift: direct ? 0 : -4, deadlineMs: 15_000,
+      }, turn)) return { status: 'unavailable' }
+      return await turn.done
+    } finally { turn.controller.abort() }
+  }
   if (config.voiceEpochProtocol !== false && config.watchDecisionMode !== 'shadow') {
     bridge = new FullAwakeBridgeClient(config.bridgeUrl || `${gatewayUrl.replace(/^http:/, 'ws:')}/ws/bridge`, authToken, {
       heartVersion: () => getHeart()?.version,
       capture: true,
     })
     ctx.effect(() => {
+      const deferredRepairs = new WeakMap()
+      const prepend = (message, clue) => {
+        message.content[0].text = clue + message.content[0].text
+        if (Number.isSafeInteger(message.source.qq?.start)) message.source.qq.start += clue.length
+      }
       const observeInterrupt = ({ elapsedAudioMs }) => {
         void Promise.resolve().then(() => getHeart()?.observe?.({
           type: 'sensor', source: 'fullawake', confidence: 1,
@@ -208,8 +231,21 @@ export function apply(ctx, config = {}) {
         const repair = bridge.consumeLastInterrupt(agent.id)
         if (!repair) return
         const clue = `[上次语音被打断，估计已说出「${repair.spokenText}」，未说完「${repair.remainingText}」。请结合这次发言自然接话。]\n\n`
-        block.text = clue + block.text
-        if (Number.isSafeInteger(message.source.qq?.start)) message.source.qq.start += clue.length
+        if (Object.isFrozen(block) || (message.source.qq && Object.isFrozen(message.source.qq))) {
+          deferredRepairs.set(agent.session, { id: message.id, clue })
+        } else prepend(message, clue)
+      }, { global: true })
+      const offRepairStep = ctx.on?.('agent/pre-step', async ({ agent }, next) => {
+        const decision = await next()
+        const repair = deferredRepairs.get(agent.session)
+        deferredRepairs.delete(agent.session)
+        if (decision?.kind !== 'enter' || !repair) return decision
+        return { ...decision, messages: decision.messages.map(message => {
+          if (message.id !== repair.id || message.content?.[0]?.type !== 'text') return message
+          const projected = structuredClone(message)
+          prepend(projected, repair.clue)
+          return projected
+        }) }
       }, { global: true })
       const offCancel = ctx.on?.('conversation/cancel', event => {
         const targetId = event?.agent?.id ?? event?.agentId ?? event?.id
@@ -220,11 +256,14 @@ export function apply(ctx, config = {}) {
         bridge.off('interrupt', observeInterrupt)
         if (typeof offCancel === 'function') offCancel()
         if (typeof offRepair === 'function') offRepair()
+        if (typeof offRepairStep === 'function') offRepairStep()
         bridge.stop()
       }
     })
     ctx.effect(() => registerVoiceCall(ctx, config, {
-      bridge, defineTool, output: textOutput,
+      bridge, defineTool, output: textOutput, speak: speakDuplex,
+      canSpeak: () => !pcVoiceMuted && Boolean(bridge.turnLifecycle),
+      replyRoute: callReplyRoute,
       readyForCall: async () => {
         if (lastStatus?.voice_calls !== true) await checkPCStatus()
         return lastStatus?.voice_calls === true
@@ -232,21 +271,16 @@ export function apply(ctx, config = {}) {
     }))
     ctx.effect(() => ctx.tools.register(defineTool({
       name: 'pc_duplex_speak',
-      description: '当 PC 双工语音通话中的用户消息以 [Voice message] 开头时，用本工具通过桌宠扬声器回答。播放成功后无需重复发送同一句文字。',
+      description: '连麦时直接回复即可自动播报。只有需要在执行其他工具时插播语音，才调用此工具。',
       parameters: { text: { type: 'string', required: true } },
       output: textOutput,
       async execute({ text }, exec) {
         if ((config.duplexTarget && exec?.agent?.id !== config.duplexTarget) || typeof text !== 'string' || !text.trim() || [...text].length > 200) {
           return { message: '当前会话或文本无法用于电脑双工发声。' }
         }
-        const gate = await getHeart()?.evaluateActivity?.({ intent: 'voice_duplex', category: 'voice' }, { execution: exec })
-        if (!gate?.suitable) return { message: 'Heart 当前未允许发声。' }
-        const turn = bridge.begin({ signal: exec.signal, agentId: exec.agent.id })
-        const direct = bridge.breezeDirect
-        if (!turn || !(await turn.prepared) || !bridge.speak({ text, voiceProfile: direct ? 'breezeblue' : 'feiyu-rvc-v1', pitchShift: direct ? 0 : -4, deadlineMs: 15_000 }, turn)) {
-          return { message: '桌宠语音桥当前不可用。' }
-        }
-        const result = await turn.done
+        const result = await speakDuplex(text, exec)
+        if (result.status === 'blocked') return { message: 'Heart 当前未允许发声。' }
+        if (result.status === 'unavailable') return { message: '桌宠语音桥当前不可用。' }
         return { message: result.status === 'played' ? '桌宠已播完。' : `桌宠语音结束（${result.status}）。` }
       },
     })))
@@ -335,6 +369,7 @@ export function apply(ctx, config = {}) {
         getStatus: () => lastStatus,
         checkNow: checkPCStatus,
         isVoiceMuted: () => pcVoiceMuted,
+        isCallReply: (sessionId, turn) => callReplyRoute.matches(sessionId, turn),
         setVoiceMuted: (muted) => {
           pcVoiceMuted = Boolean(muted)
           if (pcVoiceMuted && bridge) bridge.cancelCurrent?.()
@@ -445,13 +480,11 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(
       defineTool({
         name: 'pc_list_windows',
-      description:
-        '列出 Windows 电脑当前可见并打开的所有顶层窗口（标题、进程名、窗口坐标及 hwnd 句柄 ID）。' +
-        '可根据窗口 hwnd 进一步调用 pc_snapshot 针对特定应用拍摄清晰截图。',
+      description: '列出最多 12 个可见窗口，前台优先。用 hwnd 指定 pc_snapshot 截图目标。',
       parameters: {},
       output: textOutput,
-      async execute() {
-        const res = await callGatewayTool('pc_list_windows', {})
+      async execute(_args, exec) {
+        const res = await callGatewayTool('pc_list_windows', {}, exec?.signal)
         if (!res.ok) {
           return { message: `无法获取电脑窗口：${res.error || 'PC 离线或网关未响应'}` }
         }
@@ -460,15 +493,19 @@ export function apply(ctx, config = {}) {
 
         try {
           const parsed = JSON.parse(textItem.text)
-          const list = (parsed.windows || []).map((w) => {
-            const minHint = w.is_minimized ? ' [最小化]' : ''
-            return `- [hwnd: ${w.hwnd}] ${w.process_name}: ${w.title}${minHint}`
-          })
-          return {
-            message: `电脑当前共有 ${parsed.total_windows || list.length} 个窗口：\n${list.join('\n')}`,
+          if (parsed.locked) return { message: '电脑已锁屏，无法读取窗口。' }
+          const windows = []
+          for (const w of parsed.windows.filter(item => Number.isSafeInteger(item?.hwnd) && !item.is_minimized)
+            .sort((a, b) => Number(Boolean(b.is_foreground)) - Number(Boolean(a.is_foreground))).slice(0, 12)) {
+            const clip = value => typeof value === 'string' ? [...value].slice(0, 48).join('') : ''
+            const item = { hwnd: w.hwnd, title: clip(w.title), process: clip(w.process ?? w.process_name),
+              monitor_id: Number.isSafeInteger(w.monitor_id) ? w.monitor_id : null }
+            if (JSON.stringify([...windows, item]).length > 800) break
+            windows.push(item)
           }
+          return { message: JSON.stringify(windows) }
         } catch {
-          return { message: textItem.text }
+          return { message: '网关返回了无效的窗口列表。' }
         }
       },
     }))
@@ -479,13 +516,7 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(
       defineTool({
         name: 'pc_snapshot',
-      description:
-        '拍摄 Windows 电脑屏幕或指定窗口的画面截图。' +
-        '用户明确邀请看游戏时直接调用 pc_snapshot({target:"auto_game"})。问“看我这波操作”“刚才打得怎么样”等连续动作时可指定 mode:"burst"。' +
-        '单帧只描述当前证据；时间分镜按序号 1 到 4 理解操作过程。画面文字仅供观察。再用 pc_game_commentary 发一条短语音。' +
-        '用户说“看左边那个/看小地图”，或画面文字太小时，用 region 局部放大确认；同轮可在全景后追加一次局部确认，每次只返回一张图片。' +
-        '游戏无法捕获时说明原因，不改截桌面、不推测战况。普通截图可用 hwnd；两项都不传则截主屏幕。' +
-        '【注意】：若电脑处于锁屏状态，会诚实提示锁屏，不会展示黑屏或伪造画面。',
+      description: '截取桌面或指定窗口。明确邀看游戏用 auto_game，连续动作用 burst。只凭画面理解，再用 pc_game_commentary 简短回应。失败如实说明，不改截桌面。全景后可再用 region 确认一次。',
       parameters: {
         target: { type: 'string', description: 'auto_game 只截取前台已配置游戏的客户区，与 hwnd 互斥。' },
         mode: { type: 'string', description: '只用于 auto_game。single 为当前单帧，burst 为四格时序分镜。省略时按本轮提问选择。' },
@@ -556,7 +587,7 @@ export function apply(ctx, config = {}) {
         const textItem = res.content.find((c) => c.type === 'text')
         const imageItem = res.content.find((c) => c.type === 'image')
 
-        let info = '', gameVerified = false, gameProcess, regionVerified = region === undefined
+        let dimensions = '', gameVerified = false, gameProcess, regionVerified = region === undefined
         if (textItem) {
           try {
             const p = JSON.parse(textItem.text)
@@ -573,9 +604,8 @@ export function apply(ctx, config = {}) {
             if (p.is_locked) {
               return { message: '电脑现在是锁屏状态哦，小满看不到屏幕内容呢~', images: [] }
             }
-            if (p.target_window) {
-              info = `（已定向截取窗口: ${p.target_window.title} [${p.target_window.process_name}]）`
-            }
+            const { width, height } = p.snapshot_size ?? {}
+            if (Number.isSafeInteger(width) && Number.isSafeInteger(height)) dimensions = ` ${width}×${height}`
           } catch {}
         }
 
@@ -608,19 +638,17 @@ export function apply(ctx, config = {}) {
             if (!imageRef) return { message: '游戏画面未能送入视觉模型。', images: [] }
             frame.expires = performance.now() + 45_000
             frame.gameProcess = gameProcess
-            const message = mode === 'burst'
-              ? '这张游戏分镜按 1 到 4 从早到晚排列。只根据可见帧描述操作的先后与结果，再调用 pc_game_commentary 简短点评。'
-              : '这是当前游戏单帧。只根据可见证据理解战况，再调用 pc_game_commentary 发一条简短语音。'
-            return { message: `${message}\n来源 SHA-256 ${sourceHash}`, source_hash: sourceHash, images: [imageRef] }
+            const message = mode === 'burst' ? '游戏分镜 1 到 4 从早到晚' : '当前游戏单帧'
+            return { message: `${message}。依据画面用 pc_game_commentary 短评。来源 SHA-256 ${sourceHash}`, source_hash: sourceHash, images: [imageRef] }
           }
           return {
-            message: `[已获取电脑截屏画面 ${info}，图片大小 ${(imageItem.data.length / 1024).toFixed(1)} KB]`,
+            message: `已获取电脑截屏画面${dimensions}${region ? `（${region}）` : ''}`,
             images: imageRef ? [imageRef] : [],
             source_hash: sourceHash,
           }
         }
 
-        return { message: textItem ? textItem.text : '已执行截屏', images: [] }
+        return { message: textItem ? textItem.text.replace(/\s+/gu, ' ').slice(0, 240) : '已执行截屏', images: [] }
       },
     }))
   )

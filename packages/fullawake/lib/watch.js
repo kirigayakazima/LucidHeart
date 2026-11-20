@@ -4,7 +4,10 @@ const MAX_AUDIO = 1024 * 1024
 const output = {
   schema: { type: 'object', additionalProperties: true, properties: {} },
   render: (_args, { images = [], ...data }) => [
-    { type: 'text', text: JSON.stringify(data) },
+    { type: 'text', text: JSON.stringify(data.watchedInterval ? {
+      status: data.status, watchedInterval: data.watchedInterval, cueId: data.cueId,
+      timecodes: data.timecodes, subtitles: data.subtitles.slice(-6).map(cue => [cue.start, cue.end, cue.text.slice(0, 60)]),
+    } : data) },
     ...images.map(attachment => ({ type: 'image', attachment })),
   ],
 }

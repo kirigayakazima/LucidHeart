@@ -1,5 +1,7 @@
 """Tests for FullAwake MCP Gateway and Protocol Handling."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from fullawake.gateway.mcp_server import app
@@ -68,6 +70,31 @@ def test_mcp_tools_list(client):
     assert "pc_list_windows" in tool_names
     assert "pc_snapshot" in tool_names
     assert "pc_read_file" in tool_names
+
+
+@pytest.mark.parametrize("long_titles", (False, True))
+def test_mcp_window_list_adheres_to_hard_text_budget(client, monkeypatch, long_titles):
+    from fullawake.capabilities.desktop_vision import tools
+
+    monkeypatch.setattr(tools, "get_session_status", lambda: {"locked": False})
+    monkeypatch.setattr(tools, "list_top_level_windows", lambda: [
+        {"hwnd": i + 1, "title": '窗😀"\\' * 30 if long_titles else "窗",
+         "process_name": "game.exe" if long_titles else "g", "monitor_id": 2,
+         "is_foreground": i == 20, "is_minimized": i == 1}
+        for i in range(30)
+    ])
+    headers = {"Authorization": f"Bearer {config.auth_token}"}
+    response = client.post("/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "pc_list_windows"},
+    })
+    content = response.json()["result"]["content"][0]["text"]
+    windows = json.loads(content)["windows"]
+    assert len(content.encode("utf-16-le")) // 2 <= 800
+    assert len(windows) <= 12
+    assert windows[0]["hwnd"] == 21
+    assert len(windows[0]["title"]) <= 48
+    assert set(windows[0]) == {"hwnd", "title", "process", "monitor_id"}
+    assert 2 not in [item["hwnd"] for item in windows]
 
 
 def test_mcp_call_pc_read_file_safe(client):

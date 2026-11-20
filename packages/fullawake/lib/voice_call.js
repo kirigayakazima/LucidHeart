@@ -20,24 +20,89 @@ function callCommand(exec, config) {
   if (qq?.channel !== 'direct' || !sessionAllowed ||
       typeof qq.speaker !== 'string' || !Number.isSafeInteger(qq.start) || !Number.isSafeInteger(qq.length) ||
       qq.start < 0 || qq.length <= 0 || qq.start > block.text.length - qq.length) return null
-  return { text: block.text.slice(qq.start, qq.start + qq.length), channel: 'direct', speaker: qq.speaker }
+  return { text: block.text.slice(qq.start, qq.start + qq.length), channel: 'direct',
+    speaker: qq.speakerId || qq.speaker, targetId: qq.targetId }
 }
 
-export function registerVoiceCall(ctx, config, { bridge, defineTool, output, readyForCall }) {
+export function registerVoiceCall(ctx, config, {
+  bridge, defineTool, output, readyForCall, speak, canSpeak = () => false, replyRoute = {},
+}) {
   const service = name => ctx.get?.(name) ?? ctx[name]
   let capture = null
   let starting = null
   let handoffError = false
+  let pending = null
+  let turn = null
+  let playback = null
+  const revoke = (cancelPlayback = true) => {
+    pending = null
+    if (turn) turn.revoked = true
+    if (cancelPlayback) playback?.abort()
+  }
+  replyRoute.matches = (id, number) => turn?.voice === true &&
+    [turn.agent?.id, turn.session?.id, turn.session?.header?.id].includes(id) && turn.number === number
   const close = reason => {
     const previous = capture
     capture = null
+    revoke()
     bridge.cancelCurrent()
     try { previous?.close(reason) } catch {
       handoffError = true
       ctx.logger?.warn?.('[FullAwake] 通话已结束，记忆接力写入失败')
     }
   }
-  const onCapture = event => capture?.open(event)
+  let captureEpoch = -1
+  const onCapture = event => {
+    if (capture && event.audio_epoch > captureEpoch) {
+      captureEpoch = event.audio_epoch
+      // The PC revokes its own lease and then reports elapsedAudioMs asynchronously.
+      revoke(false)
+    }
+    capture?.open(event)
+  }
+  const offEvents = ctx.on?.('session/event', (session, event) => {
+    if (event.type === 'turn/start' && session === turn?.session) turn = null
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user') {
+      if (turn?.session === session) {
+        turn.revoked = true
+        turn.voice = false
+      }
+      if (session !== pending?.agent.session || event.data?.id !== pending.id) return
+      const events = session.snapshotEvents?.() ?? session.events
+      turn = { ...pending, session, number: events?.findLast(item => item.type === 'turn/start')?.data?.turn,
+        voice: canSpeak(), spoken: false, text: '' }
+      pending = null
+    }
+    if (session !== turn?.session || turn.revoked || !turn.voice) return
+    if (event.type === 'tool/call' && event.data?.name === 'pc_duplex_speak') turn.spoken = true
+    if (event.type === 'assistant/message') {
+      const message = event.data?.message ?? event.data
+      turn.text = !event.data?.interrupted && Array.isArray(message?.content) && message.content.every(block => block.type !== 'tool-call')
+        ? message.content.filter(block => block.type === 'text').map(block => block.text).join('\n').trim()
+        : ''
+    }
+    if (event.type !== 'turn/end' || (event.data?.reason && event.data.reason.kind !== 'completed') || turn.spoken || !turn.text) return
+    turn.spoken = true
+    const owner = turn
+    const controller = playback = new AbortController()
+    // Stay off the host turn's execution path. Playback can be interrupted after turn/end.
+    void Promise.resolve().then(async () => {
+      const limit = bridge.breezeDirect ? 120 : 200
+      const characters = [...owner.text]
+      const canSend = () => !owner.revoked && !controller.signal.aborted
+      for (let offset = 0; offset < characters.length && canSend(); offset += limit) {
+        const result = await speak(characters.slice(offset, offset + limit).join(''), {
+          agent: owner.agent, signal: controller.signal, canSend,
+        })
+        if (result?.status !== 'played') break
+      }
+    }).catch(() => ctx.logger?.warn?.('[FullAwake] 通话直出播报失败')).finally(() => {
+      if (playback === controller) playback = null
+    })
+  }, { global: true })
+  const offCancel = ctx.on?.('conversation/cancel', event => {
+    if ((event?.agent?.id ?? event?.agentId ?? event?.id) === (pending?.agent ?? turn?.agent)?.id) revoke()
+  })
   const onTranscript = event => {
     void Promise.resolve().then(() => capture?.receive(event)).catch(() => {
       ctx.logger?.warn?.('[FullAwake] 通话定稿未完成')
@@ -55,14 +120,16 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
         bridge.replyDesktop('call', requestId, Boolean(capture), false)
         return
       }
-      await toggle(enabled, { agent, signal: AbortSignal.timeout(1750) }, { channel: 'direct' })
+      const qq = agent && service('qqbotMediaSender')?.resolveTargetForSession?.(agent.session?.id ?? agent.session?.header?.id ?? agent.id)
+      const identity = qq?.scope === 'c2c' ? { targetId: qq.targetId, speaker: qq.targetId } : {}
+      await toggle(enabled, { agent, signal: AbortSignal.timeout(1750) }, { channel: 'direct', ...identity })
       bridge.replyDesktop('call', requestId, Boolean(capture) && !starting, Boolean(capture) === enabled && !starting)
     })().catch(() => bridge.replyDesktop('call', requestId, Boolean(capture), false))
   }
   bridge.on('pc-call-request', onDesktopCall)
   const unregister = ctx.tools.register(defineTool({
     name: 'voice_call_toggle',
-    description: '用户明确说“开启通话/连麦”时 enabled=true，明确说“先挂了/结束通话”时 enabled=false。电脑须已开启麦克风和本地 VAD。挂断后将最近三轮话题交接到下一次本人私聊。',
+    description: '明确请求连麦时开启，明确请求挂断时关闭。需电脑麦克风和本地 VAD。连麦直接回复即可自动播报。',
     parameters: { enabled: { type: 'boolean', required: true } },
     output,
     async execute({ enabled }, exec) {
@@ -95,10 +162,17 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
         const duplex = service('voiceDuplex')
         if (!agent || !duplex?.startCall || !service('memory')?.handoff?.saveCall) return { message: '语音会话或记忆接力服务尚未就绪。' }
         handoffError = false
-        const current = capture = duplex.startCall(agent, { channel: user.channel, speaker: user.speaker,
+        captureEpoch = -1
+        const current = capture = duplex.startCall(agent, { channel: user.channel, speaker: user.speaker, targetId: user.targetId,
+          onInput(message) {
+            const block = message.content[0]
+            if (!block?.text?.startsWith('[Voice message]')) return
+            pending = { agent, id: message.id }
+          },
           onEnd() {
             if (capture !== current) return
             capture = null
+            revoke()
             bridge.cancelCurrent()
             void bridge.setCallActive(false)
           },
@@ -108,7 +182,7 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
           close('unavailable')
           return { message: '电脑通话未能开启。' }
         }
-        return { message: '通话已开启，可以直接说话。用 pc_duplex_speak 从电脑回应，结束时说“先挂了”。' }
+        return { message: '通话已开启。直接回复即可在电脑播报，只有执行其他工具时需要插播才调用 pc_duplex_speak。结束时说“先挂了”。' }
       } finally { starting = null }
   }
   return () => {
@@ -118,6 +192,8 @@ export function registerVoiceCall(ctx, config, { bridge, defineTool, output, rea
     bridge.off('transcript', onTranscript)
     bridge.off('disconnected', disconnected)
     bridge.off('pc-call-request', onDesktopCall)
+    if (typeof offEvents === 'function') offEvents()
+    if (typeof offCancel === 'function') offCancel()
     if (typeof unregister === 'function') unregister()
   }
 }

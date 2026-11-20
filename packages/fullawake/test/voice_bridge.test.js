@@ -30,16 +30,18 @@ async function gateway(t) {
   const connected = Promise.withResolvers()
   sockets.on('connection', socket => {
     let send, seq = 0
-    const speech = Promise.withResolvers(), calls = [], replies = []
+    const speech = Promise.withResolvers(), calls = [], replies = [], utterances = [], cancellations = []
     socket.on('message', raw => {
       const { type, payload, ...identity } = JSON.parse(raw)
       send = (type, payload) => socket.send(JSON.stringify({ ...identity, type, commandSeq: ++seq, payload }))
       if (type === 'session.handshake') {
         send('session.handshake_ack', { status: 'ready', initialEpoch: 100, vadSupported: false, turnLifecycle: true })
-        connected.resolve({ speech: speech.promise, calls, replies, send: (type, payload) => send(type, payload) })
+        connected.resolve({ speech: speech.promise, calls, replies, utterances, cancellations,
+          send: (type, payload) => send(type, payload) })
       }
       if (type === 'audio.prepare') send('audio.prepared', { epoch: payload.epoch, utteranceId: payload.utteranceId })
-      if (type === 'audio.speak') speech.resolve(payload)
+      if (type === 'audio.speak') { utterances.push(payload); speech.resolve(payload) }
+      if (type === 'audio.cancel') cancellations.push(payload)
       if (['call.state', 'watch.state'].includes(type)) replies.push([type, payload])
       if (type === 'voice.call') {
         calls.push(payload.active)
@@ -204,4 +206,73 @@ for (const initiator of ['qq', 'desktop']) test(`FullAwake ${initiator} call car
   assert.deepEqual(control.calls, [true, false])
   assert.equal(loadLastHandoff(root).kind, 'voice_call')
   assert.equal(loadLastHandoff(root).lastExchange.user, '一起看电影')
+})
+
+test('PC talk directly plays final reply, skips explicit speech and QQ text, and cancels on hangup', { timeout: 5000 }, async t => {
+  const pc = await gateway(t)
+  const handlers = new Map(), services = new Map(), tools = new Map(), disposers = []
+  const emit = (type, ...args) => { for (const fn of handlers.get(type) ?? []) fn(...args) }
+  const ctx = {
+    tools: { register: tool => tools.set(tool.name, tool) },
+    get: name => services.get(name), provide: (name, value) => services.set(name, value),
+    on(type, fn) {
+      if (!handlers.has(type)) handlers.set(type, new Set())
+      handlers.get(type).add(fn)
+      return () => handlers.get(type).delete(fn)
+    },
+    effect: fn => disposers.push(fn()),
+  }
+  t.after(() => { for (const stop of disposers.reverse()) if (typeof stop === 'function') stop() })
+  const session = { id: 'pc', events: [] }
+  let turn = 0, audioRoute = []
+  const agent = { id: 'pc', session, followup(message) {
+    const send = (type, data) => {
+      const event = { type, data }
+      session.events.push(event)
+      emit('session/event', session, event)
+    }
+    turn++
+    send('turn/start', { turn })
+    send('user/message', message)
+    audioRoute.push(services.get('pcBridge').isCallReply(session.id, turn))
+    if (turn === 2) send('tool/call', { turn, name: 'pc_duplex_speak' })
+    send('assistant/message', { turn, message: { content: [{ type: 'text', text: '桌宠正在回应。' }] } })
+    send('turn/end', { turn, reason: { kind: 'completed' } })
+  } }
+  services.set('agents', { get: () => agent })
+  services.set('heart', { evaluateActivity: () => ({ suitable: true }), observe() {} })
+  services.set('memory', { handoff: { saveCall() {} } })
+  disposers.push(applyDuplex(ctx))
+  apply(ctx, { gatewayUrl: pc.url, duplexTarget: 'pc' })
+  const link = await pc.connected
+  link.send('pc.call_request', { requestId: 'start', enabled: true, source: 'pc_desktop_app' })
+  for (let i = 0; i < 60 && !link.replies.length; i++) await delay(10)
+  assert.equal(link.replies[0][1].accepted, true)
+  const mic = (epoch, words) => {
+    link.send('audio.capture', { turnId: `turn-${epoch}`, audio_epoch: epoch })
+    link.send('audio.transcript', { turnId: `turn-${epoch}`, audio_epoch: epoch, text: words, is_final: true })
+  }
+  mic(1, '电影几点开始')
+  const first = await link.speech
+  assert.equal(first.text, '桌宠正在回应。')
+  assert.deepEqual(audioRoute, [true])
+  link.send('audio.capture', { turnId: 'turn-2', audio_epoch: 2 })
+  link.send('audio.interrupt', { abortedEpoch: first.epoch, utteranceId: first.utteranceId,
+    reason: 'near_end_speech', localAudioStopped: true, elapsedAudioMs: 300 })
+  link.send('audio.transcript', { turnId: 'turn-2', audio_epoch: 2, text: '[Voice message] 等会再看', is_final: true })
+  for (let i = 0; i < 60 && turn !== 2; i++) await delay(10)
+  await delay(10)
+  assert.equal(link.utterances.length, 1)
+  agent.followup({ id: 'ordinary', role: 'user', source: { kind: 'user' },
+    content: [{ type: 'text', text: '[Voice message] QQ 文字模仿' }] })
+  assert.deepEqual(audioRoute, [true, true, false])
+  assert.equal(link.utterances.length, 1)
+  mic(3, '[Voice message] 再继续说')
+  for (let i = 0; i < 60 && link.utterances.length < 2; i++) await delay(10)
+  assert.equal(link.utterances.length, 2)
+  mic(4, '先挂了')
+  for (let i = 0; i < 60 && link.calls.length < 2; i++) await delay(10)
+  assert.equal(turn, 4)
+  assert.deepEqual(link.calls, [true, false])
+  assert.equal(link.cancellations.at(-1).epoch, link.utterances[1].epoch)
 })

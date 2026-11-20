@@ -52,7 +52,9 @@ for (const ending of ['tool', 'speech', 'disconnect']) {
       fs.rmSync(dataDir, { recursive: true, force: true })
     })
     const execute = (text, enabled, channel = 'direct') => {
-      const message = { role: 'user', source: { kind: 'user', qq: { channel, speaker: 'owner', start: 0, length: text.length } },
+      const message = { role: 'user', source: { kind: 'user', qq: {
+        channel, speaker: 'owner', targetId: 'owner', speakerId: 'owner', start: 0, length: text.length,
+      } },
         content: [{ type: 'text', text }] }
       return tools.get('voice_call_toggle').execute({ enabled }, { agent: { id: 'owner', session: { id: 'owner', events: [
         { type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: message },
@@ -83,16 +85,18 @@ for (const ending of ['tool', 'speech', 'disconnect']) {
       await setImmediate()
     }
     assert.equal(followups, 3)
-    const handoff = loadLastHandoff(dataDir, { channel: 'direct', speaker: 'owner' })
+    const handoff = loadLastHandoff(dataDir, { channel: 'direct', scope: 'xiaoman_private', targetId: 'owner', speaker: 'owner' })
     assert.equal(handoff.kind, 'voice_call')
     assert.equal(handoff.lastExchange.user, '通话话题1 / 通话话题2 / 通话话题3')
     assert.equal(handoff.lastExchange.assistant, '回应1 / 回应2 / 回应3')
     assert.deepEqual(fs.existsSync(journal) ? fs.readFileSync(journal) : null, before)
-    const message = { role: 'user', source: { kind: 'user', qq: { channel: 'direct', speaker: 'owner', start: 0, length: 4 } },
+    const message = { role: 'user', source: { kind: 'user', qq: {
+      channel: 'direct', speaker: 'owner', targetId: 'owner', speakerId: 'owner', start: 0, length: 4,
+    } },
       content: [{ type: 'text', text: '继续聊呀' }] }
     const qq = { id: 'owner', session: { id: 'owner', messages: [{ role: 'user' }, { role: 'user' }] } }
     emit('agent/inbox/claimed', { agent: qq, message })
-    assert.match(message.content[0].text, /刚刚通话里.*通话话题3/)
+    assert.match(message.content[0].text, /近期工作记忆[\s\S]*通话话题3/)
     assert.equal(message.content[0].text.slice(message.source.qq.start, message.source.qq.start + 4), '继续聊呀')
     const next = { ...message, source: { kind: 'user', qq: { ...message.source.qq, start: 0 } }, content: [{ type: 'text', text: '继续聊呀' }] }
     emit('agent/inbox/claimed', { agent: qq, message: next })

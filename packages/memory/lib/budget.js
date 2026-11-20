@@ -42,6 +42,7 @@ export function estimateTokens(text) {
  * @returns {{ text: string, count: number, usedTokens: number }}
  */
 export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
+  maxTokens = Number.isFinite(maxTokens) ? Math.max(0, Math.min(300, Math.floor(maxTokens))) : 300;
   if (!entries || entries.length === 0) {
     return { text: '', count: 0, usedTokens: 0 };
   }
@@ -100,10 +101,10 @@ export function formatConversationProjection(entries, label = '小满的回忆',
  */
 export function pruneToolOutput(text, maxChars = 1000) {
   if (!text || text.length <= maxChars) return text;
-
-  const headChars = Math.floor(maxChars * 0.4);
-  const tailChars = Math.floor(maxChars * 0.4);
-  const omitted = text.length - headChars - tailChars;
-
-  return `${text.slice(0, headChars)}\n\n[... 已省略中间 ${omitted} 字符冗余输出 ...] \n\n${text.slice(-tailChars)}`;
+  if (maxChars <= 0) return '';
+  const marker = `\n[已省略中间内容，原长 ${text.length} 字符]\n`;
+  if (maxChars <= marker.length) return text.slice(0, maxChars);
+  const head = Math.ceil((maxChars - marker.length) / 2);
+  const tail = Math.floor((maxChars - marker.length) / 2);
+  return text.slice(0, head) + marker + (tail ? text.slice(-tail) : '');
 }

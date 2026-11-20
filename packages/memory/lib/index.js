@@ -4,7 +4,7 @@
 
 import { MemoryService } from './service.js';
 import { AlbumLedger, ALBUM_KINDS } from './album.js';
-import { buildIntakeMetadata, readConversationInput, registerIntake } from './intake.js';
+import { buildIntakeMetadata, readConversationInput, registerIntake, retainCheckpointFact } from './intake.js';
 import { isInjectedMessage, readQqUtterance, resolveHostContext } from './host-context.js';
 import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
 import { getZonedParts } from './store.js';
@@ -23,6 +23,8 @@ import {
 import * as types from './types.js';
 import * as budget from './budget.js';
 import * as tokenizer from './tokenizer.js';
+import { ContextBudgetGuard } from './context_guard.js';
+import { WorkingMemory, continuityIdentity } from './working_memory.js';
 
 export {
   MemoryService,
@@ -44,7 +46,7 @@ export {
 };
 
 export const name = '@dsh/memory';
-export const inject = ['tools', 'systemPrompt'];
+export const inject = { tools: true, systemPrompt: true, compaction: false, presets: false };
 
 let defineTool = (t) => {
   const properties = {};
@@ -67,7 +69,7 @@ const textOutput = {
   schema: { type: 'object', properties: {}, additionalProperties: true },
   render: (_args, value) => [{
     type: 'text',
-    text: typeof value === 'string' ? value : (value?.message || JSON.stringify(value, null, 2)),
+    text: budget.pruneToolOutput(typeof value === 'string' ? value : (value?.message || JSON.stringify(value, null, 2)), 1200),
   }],
 };
 
@@ -88,44 +90,71 @@ export function apply(ctx, config = {}) {
   const injectedSessions = new Set();
   const activeTurnData = new WeakMap();
   const consumedCalls = new Set();
-  memory.handoff = Object.freeze({ saveCall: details => saveCallHandoff(dataDir, { ...details, scope }) });
+  const deferredClues = new WeakMap();
+  const workingMemory = new WorkingMemory(dataDir);
+  const guard = new ContextBudgetGuard(ctx, workingMemory, scope, {
+    retainFact: (events, source) => retainCheckpointFact(memory, events, source),
+  });
+  memory.context = Object.freeze({ projectRequest: options => guard.projectRequest(options), health: session => guard.health(session) });
+  memory.handoff = Object.freeze({ saveCall: details => saveCallHandoff(dataDir, { ...details, scope, workingMemory }) });
+  ctx.effect?.(() => () => guard.close());
+  ctx.on?.('agent/session-start', ({ agent, source }) => guard.sessionStarted(agent, source), { global: true });
+  ctx.on?.('agent/disposed', ({ agent }) => {
+    guard.release(agent);
+    injectedSessions.delete(agent.session?.id ?? agent.session?.header?.id ?? agent.id);
+  }, { global: true });
+  ctx.on?.('llm/stream', (options, next) => guard.stream(options, next), { global: true });
+
+  function projectClue(message, agent, clue, mark) {
+    if (Object.isFrozen(message) || (message.content?.[0] && Object.isFrozen(message.content[0])) ||
+        (message.source?.qq && Object.isFrozen(message.source.qq))) {
+      const pending = deferredClues.get(agent.session) ?? new Map();
+      pending.set(message.id, { clue, mark });
+      deferredClues.set(agent.session, pending);
+      return;
+    }
+    injectHandoffToMessage(message, clue);
+    mark();
+  }
+  ctx.on?.('agent/pre-step', async ({ agent }, next) => {
+    const decision = await next();
+    const pending = deferredClues.get(agent.session);
+    deferredClues.delete(agent.session);
+    if (decision?.kind !== 'enter' || !pending) return decision;
+    return { ...decision, messages: decision.messages.map(message => {
+      const entry = pending.get(message.id);
+      if (!entry) return message;
+      const projected = structuredClone(message);
+      injectHandoffToMessage(projected, entry.clue);
+      entry.mark();
+      return projected;
+    }) };
+  }, { global: true });
 
   // Prompt assembly runs after inbox claim, before user/message enters the session.
   ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
-    const sessionId = agent?.session?.id || agent?.session?.header?.id || agent?.id;
+    const session = agent?.session;
+    if (!session) return;
+    const sessionId = session.id || session.header?.id || agent.id;
+    const workingClue = guard.claim(agent, message);
     if (message.source?.kind === 'user') {
-      const qqUtterance = readQqUtterance(message);
-      const channel = qqUtterance?.channel || message.source?.qq?.channel || message.source?.channel || 'direct';
-      const speaker = qqUtterance?.speaker || message.source?.qq?.speaker || null;
-      const targetId = message.source?.qq?.targetId || message.source?.qq?.groupId || message.source?.qq?.peerId || null;
-
-      // 检查跨会话接力器（按通道与会话身份严格隔离）
-      const lastHandoff = loadLastHandoff(dataDir, { channel, targetId, speaker });
-      const messages = typeof agent?.session?.deriveMessages === 'function'
-        ? agent.session.deriveMessages()
-        : agent?.session?.messages;
-
-      const callHandoff = lastHandoff?.kind === 'voice_call' && channel === 'direct' &&
-        lastHandoff.channel === channel && (!speaker || !lastHandoff.speaker || speaker === lastHandoff.speaker) &&
-        !consumedCalls.has(lastHandoff.callId) && lastHandoff.sessionId !== sessionId &&
+      const identity = continuityIdentity(message, scope, sessionId);
+      const lastHandoff = identity && loadLastHandoff(dataDir, identity);
+      const callHandoff = lastHandoff?.kind === 'voice_call' && !consumedCalls.has(lastHandoff.callId) &&
+        lastHandoff.sessionId !== sessionId &&
         Date.now() - Date.parse(lastHandoff.updatedAt) >= 0 && Date.now() - Date.parse(lastHandoff.updatedAt) < 3_600_000;
-      if (callHandoff || shouldInjectHandoff({
+      const handoff = !workingClue && identity && (callHandoff || shouldInjectHandoff({
         lastHandoff,
         currentSessionId: sessionId,
-        channel,
-        targetId,
-        speaker,
-        messages,
+        ...identity,
+        messages: session.deriveMessages?.() ?? session.messages,
         injectedSessions,
-      })) {
-        const commitment = memory.commitments.getActiveCommitmentCare(new Date(), 'Asia/Shanghai', channel);
-        const clue = buildHandoffClue({ lastHandoff, commitment, channel });
-        if (clue) {
-          injectHandoffToMessage(message, clue);
-          if (sessionId) injectedSessions.add(sessionId);
-          if (callHandoff) consumedCalls.add(lastHandoff.callId);
-        }
-      }
+      })) ? buildHandoffClue({ lastHandoff, channel: identity.channel }) : '';
+      if (workingClue || handoff) projectClue(message, agent, workingClue || handoff, () => {
+        if (workingClue) guard.markInjected(agent);
+        if (sessionId) injectedSessions.add(sessionId);
+        if (callHandoff) consumedCalls.add(lastHandoff.callId);
+      });
 
       if (readConversationInput(message, { includeRoutine: true })) {
         currentTurn.set(agent.session, { message, origin: 'user_request', query: readConversationInput(message)?.text });
@@ -141,6 +170,7 @@ export function apply(ctx, config = {}) {
   }, { global: true });
 
   ctx.on?.('session/event', (session, event) => {
+    guard.event(session, event);
     if (event.type === 'turn/start') {
       currentTurn.delete(session);
       acceptedInput.delete(session);
@@ -148,9 +178,6 @@ export function apply(ctx, config = {}) {
         sessionId: session?.id || session?.header?.id,
         userText: '',
         assistantText: '',
-        channel: 'direct',
-        speaker: null,
-        targetId: null,
       });
     }
 
@@ -168,9 +195,7 @@ export function apply(ctx, config = {}) {
         const qqUtterance = readQqUtterance(event.data);
         const userUtterance = readConversationInput(event.data, { includeRoutine: true });
         td.userText = userUtterance?.text || qqUtterance?.text || extractTextFromMessage(event.data);
-        td.channel = qqUtterance?.channel || event.data?.source?.qq?.channel || event.data?.source?.channel || 'direct';
-        td.speaker = qqUtterance?.speaker || event.data?.source?.qq?.speaker || null;
-        td.targetId = event.data?.source?.qq?.targetId || event.data?.source?.qq?.groupId || event.data?.source?.qq?.peerId || null;
+        td.identity = continuityIdentity(event.data, scope, td.sessionId);
         td.time = event.time || Date.now();
       }
     } else if (event.type === 'user/message' && !isInjectedMessage(event.data)) {
@@ -180,7 +205,7 @@ export function apply(ctx, config = {}) {
     if (event.type === 'assistant/message') {
       const td = activeTurnData.get(session);
       if (td) {
-        const text = extractTextFromMessage(event.data);
+        const text = event.data?.interrupted ? '' : extractTextFromMessage(event.data?.message ?? event.data);
         if (text) td.assistantText = (td.assistantText ? td.assistantText + '\n' : '') + text;
       }
     }
@@ -189,12 +214,10 @@ export function apply(ctx, config = {}) {
       currentTurn.delete(session);
       acceptedInput.delete(session);
       const td = activeTurnData.get(session);
-      if (td && (td.userText || td.assistantText)) {
+      if (td?.identity && td.userText && (!event.data?.reason || event.data.reason.kind === 'completed')) {
         saveLastHandoff(dataDir, {
           sessionId: td.sessionId,
-          channel: td.channel || 'direct',
-          speaker: td.speaker || null,
-          targetId: td.targetId || null,
+          ...td.identity,
           updatedAt: new Date(td.time || Date.now()).toISOString(),
           lastExchange: {
             user: td.userText || '',
@@ -228,8 +251,18 @@ export function apply(ctx, config = {}) {
     };
 
     registerTool({
+      name: 'memory_context_health',
+      description: '查看当前会话的上下文估算、图片数量、清理和压缩水位。',
+      parameters: {},
+      output: textOutput,
+      execute(_args, exec) {
+        return exec?.agent?.session ? guard.health(exec.agent.session) : { message: '当前没有可查询的会话。' };
+      },
+    });
+
+    registerTool({
       name: 'memory_album_save',
-      description: '将本轮一起看过且值得纪念的图片、视频分镜或游戏高光存入共同相册。由你判断何时值得保存。描述只依据可见证据，source_hash 必须使用来源媒体或截图提供的 SHA-256，勿编造。相册与事实记忆独立。',
+      description: '把本轮共同看过的高光存入独立相册。只描述可见证据，source_hash 使用原媒体或截图的 SHA-256。',
       parameters: {
         kind: { type: 'string', enum: ALBUM_KINDS, required: true },
         title: { type: 'string', required: true, description: '简短高光标题，最多 120 字' },
@@ -251,6 +284,8 @@ export function apply(ctx, config = {}) {
           source_hash: args.source_hash, tags: args.tags ?? [], user_quote: args.user_quote ?? host.rawSnippet,
           source: { sessionId: host.sessionId, messageId: host.messageId, channel: host.channel,
             speaker: host.speaker, observedAt: host.observedAt }, scope });
+        guard.rememberReference(exec.agent, acceptedInput.get(exec.agent.session)?.event?.data,
+          'media', entry.id, { title: entry.title, albumId: entry.id });
         return { id: entry.id, created, message: created ? '已收入共同相册。' : '这个高光已经在相册里。' };
       },
     });
@@ -315,7 +350,9 @@ export function apply(ctx, config = {}) {
         const quote = evidence?.trim();
         if (exec?.signal?.aborted || !input || !title?.trim() || title.length > 90 || targetTime?.length > 90 ||
             !quote || quote.length > 120 || !input.text.includes(quote)) return {};
-        return receipt(memory.commitments.record({ title, targetTime, evidence: quote, channel: input.channel, initiator }));
+        const entry = memory.commitments.record({ title, targetTime, evidence: quote, channel: input.channel, initiator });
+        if (entry) guard.rememberReference(exec.agent, input.event.data, 'thread', entry.id, entry.title);
+        return receipt(entry);
       },
     });
 
@@ -330,7 +367,9 @@ export function apply(ctx, config = {}) {
       output: commitmentOutput,
       async execute({ id, status, note }, exec) {
         if (exec?.signal?.aborted || !acceptedInput.has(exec?.agent?.session) || note?.length > 120) return {};
-        return receipt(memory.commitments.resolve(id, status, note));
+        const entry = memory.commitments.resolve(id, status, note);
+        if (entry) guard.forgetReference(exec.agent, id);
+        return receipt(entry);
       },
     });
 
@@ -354,8 +393,12 @@ export function apply(ctx, config = {}) {
           ? memory.commitments.find(query).map(({ id, title, targetTime, status }) =>
             `- [${id}] ${title}${targetTime ? `（${targetTime}）` : ''} ${status === 'expired' ? '已逾期' : '待履约'}`)
           : [];
-        const message = [result.text, ...commitments].filter(Boolean).join('\n');
-        return { message: message || `未找到关于「${args.query}」的相关记忆。` };
+        let message = result.text;
+        for (const commitment of commitments) {
+          const next = [message, commitment].filter(Boolean).join('\n');
+          if (budget.estimateTokens(next) <= 300) message = next;
+        }
+        return { message: message || `未找到关于「${budget.pruneToolOutput(query, 100)}」的相关记忆。` };
       },
     });
 

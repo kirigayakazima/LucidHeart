@@ -58,7 +58,9 @@ function startMockGateway(watch = null, moods = []) {
           } else if (tool === 'pc_list_windows') {
             content = [{
               type: 'text',
-              text: '电脑当前共有 3 个可见窗口:\n1. [Code] Code - DSHA\n2. [Chrome] Google Chrome\n3. [Terminal] Windows Terminal',
+              text: JSON.stringify({ windows: Array.from({ length: 30 }, (_, i) => ({
+                hwnd: 100 + i, title: '窗口😀"'.repeat(12), process_name: 'Code', monitor_id: 1, is_foreground: i === 15,
+              })) }),
             }]
           } else if (tool === 'pc_read_file') {
             const filePath = String(args.path || '')
@@ -225,7 +227,11 @@ test('FullAwake Adapter: 2. 真实调用 PC 网关能力（pc_status / pc_list_w
 
     // 2. 测试 pc_list_windows
     const listRes = await pcListTool.execute({})
-    assert.match(listRes.message, /电脑当前共有/)
+    const windows = JSON.parse(listRes.message)
+    assert.ok(windows.length <= 12 && listRes.message.length <= 800)
+    assert.equal(windows[0].hwnd, 115)
+    assert.deepEqual(Object.keys(windows[0]), ['hwnd', 'title', 'process', 'monitor_id'])
+    assert.equal([...windows[0].title].length, 48)
 
     // 3. 测试 pc_read_file 读取合法文件
     const readRes = await pcReadTool.execute({ path: 'README.md', start_line: 1, end_line: 5 })

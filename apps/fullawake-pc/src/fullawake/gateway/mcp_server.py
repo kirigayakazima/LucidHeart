@@ -661,7 +661,7 @@ class FullAwakeMCPGateway:
                     content = [
                         {'type': 'image', 'data': result_data['imageBase64'], 'mimeType': 'image/png'},
                         {'type': 'text', 'text': json.dumps({k: v for k, v in result_data.items() if k != 'imageBase64'},
-                                                            ensure_ascii=False, allow_nan=False)},
+                                                            ensure_ascii=False, separators=(',', ':'), allow_nan=False)},
                     ]
                 elif isinstance(result_data, dict) and "base64_data" in result_data:
                     # Image content if snapshot
@@ -685,7 +685,7 @@ class FullAwakeMCPGateway:
                                     **({key: result_data[key] for key in ('mode', 'frame_count', 'duration_s')}
                                        if result_data.get('mode') == 'burst' else {}),
                                 },
-                                ensure_ascii=False,
+                                ensure_ascii=False, separators=(',', ':'),
                             ),
                         },
                     ]
@@ -693,7 +693,9 @@ class FullAwakeMCPGateway:
                     content = [
                         {
                             "type": "text",
-                            "text": json.dumps(result_data, ensure_ascii=False, indent=2, allow_nan=False),
+                            "text": json.dumps(result_data, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+                            if tool_name in ('pc_list_windows', 'pc_snapshot', 'pc_watch_get_summary')
+                            else json.dumps(result_data, ensure_ascii=False, indent=2, allow_nan=False),
                         }
                     ]
 

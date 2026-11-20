@@ -2,12 +2,32 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 from fullawake.capabilities.desktop_vision.game_storyboard import GameStoryboard
 from fullawake.capabilities.base import BaseCapability, ToolDefinition
 from fullawake.capabilities.desktop_vision.screen import REGION_BOXES, capture_screenshot
 from fullawake.capabilities.desktop_vision.uia_backend import list_top_level_windows
 from fullawake.core.session import get_session_status
+
+
+def compact_windows(windows: list[dict]) -> dict:
+    """Fit eligible windows into the MCP text payload, in foreground/Z order."""
+    result = {"total_windows": len(windows), "windows": []}
+    visible = sorted((w for w in windows if not w.get("is_minimized")),
+                     key=lambda w: not w.get("is_foreground"))
+    for window in visible[:12]:
+        result["windows"].append({
+            "hwnd": window["hwnd"],
+            "title": window["title"][:48],
+            "process": window.get("process_name", "")[:48],
+            "monitor_id": window.get("monitor_id"),
+        })
+        serialized = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized.encode("utf-16-le")) // 2 > 800:
+            result["windows"].pop()
+            break
+    return result
 
 
 class DesktopVisionCapability(BaseCapability):
@@ -41,10 +61,7 @@ class DesktopVisionCapability(BaseCapability):
             ),
             ToolDefinition(
                 name="pc_list_windows",
-                description=(
-                    "List all visible, active top-level windows currently open on the Windows desktop. "
-                    "Returns window titles, process names, dimensions, and window handle IDs for snapshot targeting."
-                ),
+                description="List up to 12 visible Windows windows, foreground first, with handles for screenshots.",
                 parameters={
                     "type": "object",
                     "properties": {},
@@ -90,11 +107,7 @@ class DesktopVisionCapability(BaseCapability):
                 "windows": [],
             }
 
-        windows = list_top_level_windows()
-        return {
-            "total_windows": len(windows),
-            "windows": windows,
-        }
+        return compact_windows(list_top_level_windows())
 
     async def handle_snapshot(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         hwnd = arguments.get("hwnd")

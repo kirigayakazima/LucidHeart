@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { collectExchanges, continuityKey, workingExchanges } from './working_memory.js';
 
 /**
  * 计算会话交接的唯一分区 Key
@@ -21,7 +22,11 @@ import { randomUUID } from 'node:crypto';
  * @param {string} [params.speaker] 发言者 ID
  * @returns {string}
  */
-export function resolveHandoffKey({ channel = 'direct', targetId = null, speaker = null } = {}) {
+export function resolveHandoffKey({ channel = 'direct', targetId = null, speaker = null, scope } = {}) {
+  if (scope) {
+    const key = continuityKey({ channel, scope, targetId, speaker });
+    return key && `${channel}:${key}`;
+  }
   const ch = ['direct', 'group'].includes(channel) ? channel : 'direct';
   if (ch === 'group') {
     return targetId ? `group:${targetId}` : 'group:default';
@@ -94,6 +99,12 @@ export function loadLastHandoff(dataDir, criteria = {}) {
     const content = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(content);
     if (!parsed || typeof parsed !== 'object') return null;
+    if (criteria.scope) {
+      const key = resolveHandoffKey(criteria);
+      const record = key && parsed.scopes?.[key];
+      return record && record.channel === criteria.channel && record.scope === criteria.scope &&
+        record.targetId === criteria.targetId && record.speaker === (criteria.speaker ?? null) ? record : null;
+    }
 
     const channel = criteria.channel || 'direct';
     const targetId = criteria.targetId || null;
@@ -101,8 +112,9 @@ export function loadLastHandoff(dataDir, criteria = {}) {
 
     if (parsed.scopes && typeof parsed.scopes === 'object') {
       if (channel === 'group') {
-        if (targetId && parsed.scopes[`group:${targetId}`]) {
-          return parsed.scopes[`group:${targetId}`];
+        if (targetId) {
+          const group = parsed.scopes[`group:${targetId}`];
+          return !speaker || group?.speaker === speaker ? group ?? null : null;
         }
         if (parsed.scopes['group:default']) {
           return parsed.scopes['group:default'];
@@ -111,8 +123,9 @@ export function loadLastHandoff(dataDir, criteria = {}) {
       }
 
       // direct 通道
-      if (speaker && parsed.scopes[`direct:${speaker}`]) {
-        return parsed.scopes[`direct:${speaker}`];
+      if (speaker || targetId) {
+        const record = speaker && parsed.scopes[`direct:${speaker}`];
+        return record && (!targetId || record.targetId === targetId) ? record : null;
       }
       if (parsed.scopes['direct:default']) {
         return parsed.scopes['direct:default'];
@@ -126,7 +139,7 @@ export function loadLastHandoff(dataDir, criteria = {}) {
 
     // 兼容旧版扁平结构
     if (parsed.lastExchange) {
-      if (channel === 'direct') {
+      if (channel === 'direct' && !speaker && !targetId) {
         return { channel: 'direct', ...parsed };
       }
       // 安全熔断：绝不把未分区的私聊交接送进群聊
@@ -171,7 +184,9 @@ export function saveLastHandoff(dataDir, handoffData, { strict = false } = {}) {
       channel,
       targetId: handoffData.targetId,
       speaker: handoffData.speaker,
+      scope: handoffData.scope,
     });
+    if (!key) return null;
 
     store.scopes[key] = {
       sessionId: handoffData.sessionId || '',
@@ -200,28 +215,18 @@ export function saveLastHandoff(dataDir, handoffData, { strict = false } = {}) {
 }
 
 /** Capture only accepted user turns from this call, followed by their assistant replies. */
-export function saveCallHandoff(dataDir, { agent, startIndex = 0, callId, channel = 'direct', speaker, targetId, scope } = {}) {
+export function saveCallHandoff(dataDir, { agent, startIndex = 0, callId, channel = 'direct', speaker, targetId,
+  scope, messageIds, workingMemory } = {}) {
   const session = agent?.session;
   const events = session?.snapshotEvents?.() ?? session?.events;
   if (!Array.isArray(events) || !Number.isSafeInteger(startIndex) || startIndex < 0 || !callId) return null;
-  const exchanges = [];
-  let current;
-  for (const event of events.slice(startIndex)) {
-    if (event?.type === 'turn/start') current = null;
-    if (event?.type === 'user/message' && event.data?.source?.kind === 'user') {
-      const user = extractTextFromMessage(event.data).slice(0, 300);
-      if (user) { current = { user, assistant: '' }; exchanges.push(current); }
-    }
-    if (event?.type === 'assistant/message' && current) {
-      const text = extractTextFromMessage(event.data);
-      if (text) current.assistant = [current.assistant, text].filter(Boolean).join('\n').slice(0, 500);
-    }
-    if (event?.type === 'turn/end') current = null;
-  }
-  const recent = exchanges.slice(-3);
+  const recent = collectExchanges(events.slice(startIndex), message =>
+    message?.source?.kind === 'user' && (messageIds ? messageIds.has(message.id) : !message.source.qq));
   if (!recent.length) return null;
-  return saveLastHandoff(dataDir, { kind: 'voice_call', callId, channel, speaker, targetId, scope,
-    sessionId: session.id ?? session.header?.id ?? agent.id,
+  const sessionId = session.id ?? session.header?.id ?? agent.id;
+  const identity = { channel, scope, speaker, targetId: targetId ?? (channel === 'direct' && `host:${sessionId}`) };
+  workingMemory?.save(identity, { recent_exchanges: workingExchanges(recent) });
+  return saveLastHandoff(dataDir, { kind: 'voice_call', callId, ...identity, sessionId,
     updatedAt: new Date().toISOString(), lastExchange: {
       user: recent.map(item => item.user.slice(0, 90)).join(' / '),
       assistant: recent.map(item => item.assistant.slice(0, 150)).filter(Boolean).join(' / '),

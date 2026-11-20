@@ -266,14 +266,14 @@ export class MemoryIndexer {
     return row ? JSON.parse(row.raw_json) : null;
   }
 
-  hasIntakeMatch(content, scope, candidate) {
+  hasIntakeMatch(content, scope, candidate, { includeHistory = false } = {}) {
     this.#assertReady();
     return !!this.db.prepare(`
       SELECT 1 FROM memories
       WHERE content = ? AND scope = ?
-        AND (status IN ('active', 'revoked') OR (? AND status = 'candidate'))
+        AND (? OR status IN ('active', 'revoked') OR (? AND status = 'candidate'))
       LIMIT 1
-    `).get(content, scope, Number(candidate));
+    `).get(content, scope, Number(includeHistory), Number(candidate));
   }
 
   /**

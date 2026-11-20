@@ -1,6 +1,7 @@
 import { MemoryOrigins } from './types.js';
 import { IntakeWeights } from './schema.js';
 import { readQqUtterance, resolveHostContext } from './host-context.js';
+import { findContradictions } from './contradictions.js';
 
 const durableKinds = ['preference', 'relationship', 'episodic', 'fact'];
 const routine = new Set(['早', '早安', '早上好', '晚安', '晚上好', '你好', '嗨', '哈喽', '在吗',
@@ -65,6 +66,35 @@ export function buildIntakeMetadata(host, { content, kind, origin, evidence, imp
     ...(importance !== undefined && { importance, salience: { importance, reason: 'intake-importance', policyVersion: '1' } }),
     retentionClass: claimType === 'model_inference' ? 'unknown' : kind === 'episodic' ? 'episodic' : 'stable',
   };
+}
+
+/** At a checkpoint, retain only an explicit, verifiable new fact from its own completed turn. */
+export function retainCheckpointFact(memory, events, { scope, sessionId, messageId }) {
+  const start = events.findLastIndex(event => event.type === 'turn/start');
+  if (start < 0 || events.at(-1)?.type !== 'turn/end') return false;
+  const turn = events.slice(start + 1);
+  if (turn.some(event => event.type === 'tool/call' && /^memory_(?:intake|remember|correct|forget)$/u.test(event.data?.name))) {
+    return false;
+  }
+  const event = turn.findLast(item => item.type === 'user/message' && item.data?.source?.kind === 'user');
+  if (!event || event.data.id !== messageId || !Number.isFinite(event.time) || event.time <= 0) return false;
+  const qq = readQqUtterance(event.data);
+  if (!qq || !/^(?:请记住|帮我记住|记住)[，,：:\s]/u.test(qq.text)) return false;
+  const content = qq.text.replace(leadIn, '').replace(/[。！!]+$/u, '').trim();
+  if (!firstPerson.test(content) || content.length > 90 ||
+      !/^(?:我|本人)(?:长期|一直|住在|居住在|常住|喜欢|不喜欢|最喜欢|不吃|每天|通常|的生日是)/u.test(content)) return false;
+  const kind = /^(?:我|本人)(?:喜欢|不喜欢|最喜欢|不吃)/u.test(content) ? 'preference' : 'fact';
+  const metadata = buildIntakeMetadata({
+    ...qq, sessionId, messageId, rawSnippet: qq.text, observedAt: new Date(event.time).toISOString(),
+    origin: 'user_request', targetId: event.data.source.qq.targetId,
+  }, { content, kind, evidence: content });
+  if (!metadata.confirmed) return false;
+  const entry = { content, kind, scope, ...metadata };
+  memory.ensureProjections();
+  if (memory.indexer.hasIntakeMatch(content, scope, false, { includeHistory: true }) ||
+      findContradictions({ ...entry, status: 'active' }, memory.indexer).length) return false;
+  memory.remember(entry);
+  return true;
 }
 
 export function registerIntake(registerTool, memory, scope, currentInput) {

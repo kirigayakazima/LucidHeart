@@ -166,7 +166,8 @@ def test_burst_returns_one_ordered_768_jpeg(desktop):
     result = snapshot(gateway.app, mode='burst')
     assert not result['isError'] and len(result['content']) == 2
     image, meta = result['content']
-    assert '"frame_count": 4' in meta['text'] and '"duration_s": 3.0' in meta['text']
+    metadata = json.loads(meta['text'])
+    assert metadata['frame_count'] == 4 and metadata['duration_s'] == 3.0
     with Image.open(BytesIO(base64.b64decode(image['data']))) as sheet:
         assert sheet.size == (768, 768)
         for i, rgb in enumerate([(220, 20, 20), (20, 220, 20), (20, 20, 220), (220, 220, 20)]):

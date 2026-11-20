@@ -257,14 +257,7 @@ export function apply(ctx, config) {
     ctx.tools.register(
       defineTool({
         name: 'heart_mood',
-        description:
-          '当对话中发生明确的新事件（如共同完成有意义的任务、取得突破进展、受到肯定）时，更新当前表达倾向。' +
-          '【严格约束】：' +
-          '1. 必须有具体事实证据，严禁在普通问答、日常打招呼或用户沉默时调用；' +
-          '2. 严禁为了让状态持续活跃而频繁重复调用；' +
-          '3. 任务完成通常对应 engaged（专注推进）或 cheerful（轻快愉悦），只有极少数重大里程碑才使用 excited；' +
-          '4. tired 仅代表表达风格舒缓简洁，只在确有持续工作证据时使用，严禁以此作为拒绝任务或推诿的理由；' +
-          '5. 严禁通过此工具触发额外通知、任务调度或主动联系用户。',
+        description: '仅有明确新事件证据才更新表达，普通问答、问候、沉默及重复保活都不调用。完成任务常用 engaged 或 cheerful，重大里程碑才用 excited。持续高负荷才用 tired，仍须完成任务。禁止借此通知、调度或主动联系。',
         parameters: {
           state: {
             type: 'string',
@@ -276,7 +269,7 @@ export function apply(ctx, config) {
           },
           reason: {
             type: 'string',
-            description: '触发新事件的具体原因枚举：baseline（仅限平复）| task_completed（有意义的任务完成）| positive_interaction（明确积极互动）| focus（深度专注攻坚）| deep_work（确有持续高负荷工作后的低活跃过渡）',
+            description: 'baseline 平复 | task_completed 重要完成 | positive_interaction 积极互动 | focus 专注 | deep_work 持续高负荷',
           },
         },
         output: textOutput,
@@ -332,7 +325,7 @@ export function apply(ctx, config) {
         description: externalMemory
           ? 'external 模式：仅 kind=notebook 可写 Heart 自我原则；不要将用户事实或历史写入 Notebook。kind=fact/memory 已停写，必须改用 Mnemon 官方记忆工具，Heart 不代转。'
           :
-          '往「你自己」里写一条。kind=notebook 写本子（你对自己的判断、规矩、改主意）；kind=fact 写事实（关于世界和对方的稳定事实，会变的就改，别往后追加第二条）；kind=memory 写情节（发生了什么，只追加，会自动带上出处：是你哪个会话里写的）。一次一条，控制在 800 字以内。',
+          '每次写一条，最多 800 字。notebook 写自我原则与变化，fact 写稳定事实并修订旧条目，memory 追加经历并自动记录来源会话。',
         parameters: {
           text: { type: 'string', description: '要写下的那一件事，一句话说清。' },
           kind: {

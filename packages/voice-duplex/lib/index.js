@@ -8,11 +8,12 @@ export function apply(ctx) {
   const sessions = new Map()
   const idOf = agent => agent?.session?.id ?? agent?.id
   const service = {
-    startCall(agent, { onEnd, channel = 'direct', speaker, targetId } = {}) {
+    startCall(agent, { onEnd, onInput, channel = 'direct', speaker, targetId } = {}) {
       const events = agent?.session?.snapshotEvents?.() ?? agent?.session?.events
       if (!Array.isArray(events)) throw new TypeError('Call handoff requires a readable host session')
       const startIndex = events.length
       const callId = randomUUID()
+      const messageIds = new Set()
       let listener
       listener = service.remote(agent, {
         onFinal(message) {
@@ -21,13 +22,19 @@ export function apply(ctx) {
             listener.close('hangup')
             return
           }
+          if (!text.startsWith('[Voice message]')) {
+            message.content[0].text = `[Voice message] ${text}`.slice(0, 1500)
+          }
+          messageIds.add(message.id)
+          if (messageIds.size > 16) messageIds.delete(messageIds.values().next().value)
+          onInput?.(message)
           return agent.followup(message)
         },
         onClose(reason) {
           try {
             const memory = ctx.get?.('memory') ?? ctx.memory
             if (typeof memory?.handoff?.saveCall !== 'function') throw new Error('Memory call handoff is unavailable')
-            memory.handoff.saveCall({ agent, startIndex, callId, channel, speaker, targetId })
+            memory.handoff.saveCall({ agent, startIndex, callId, channel, speaker, targetId, messageIds })
           } finally { onEnd?.(reason) }
         },
       })
