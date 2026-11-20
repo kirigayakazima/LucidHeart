@@ -86,6 +86,7 @@ class VoiceCallControl(StrictFrame):
 
 class DesktopReply(VoiceCallControl):
     accepted: bool
+    reason: str = Field(default='', max_length=200)
 
 
 class PetText(Utterance):

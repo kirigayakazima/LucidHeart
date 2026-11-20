@@ -75,8 +75,9 @@ export class FullAwakeBridgeClient extends EventEmitter {
 
   cancelCurrent() { this.#task?.controller.abort('conversation_cancelled') }
 
-  replyDesktop(kind, requestId, active, accepted) {
-    return this.ready && this.#send(this.#connection, `${kind}.state`, { requestId, active, accepted })
+  replyDesktop(kind, requestId, active, accepted, reason = '') {
+    const payload = { requestId, active, accepted, ...(reason ? { reason: String(reason).slice(0, 120) } : {}) }
+    return this.ready && this.#send(this.#connection, `${kind}.state`, payload)
   }
 
   consumeLastInterrupt(agentId) {

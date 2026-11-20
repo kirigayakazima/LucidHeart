@@ -284,11 +284,14 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
         }
         const target = config.duplexTarget
         const agent = (typeof resolveTarget === 'function' ? resolveTarget() : null) ?? (target && service(ctx, 'agents')?.get?.(target))
-        const gate = shadow || (await service(ctx, 'heart')?.evaluateActivity?.({ intent: 'pc_watch', category: 'voice' }))?.suitable === true
-        const result = agent && gate ? await setAuto({ enabled: true, pcInitiated: true },
-          { agent, signal: AbortSignal.timeout(1750) }) : null
-        bridge.replyDesktop('watch', requestId, Boolean(auto), ['started', 'already_started'].includes(result?.status))
-      })().catch(() => bridge.replyDesktop('watch', requestId, Boolean(auto), false))
+        if (!agent) {
+          bridge.replyDesktop('watch', requestId, Boolean(auto), false, '未找到活跃私聊会话，请先在私聊发一句话或点同步会话。')
+          return
+        }
+        const result = await setAuto({ enabled: true, pcInitiated: true }, { agent, signal: AbortSignal.timeout(1750) })
+        const ok = ['started', 'already_started'].includes(result?.status)
+        bridge.replyDesktop('watch', requestId, Boolean(auto), ok, ok ? '' : `陪看启动返回: ${result?.status || 'unknown'}`)
+      })().catch(err => bridge.replyDesktop('watch', requestId, Boolean(auto), false, err?.message || '手机端异常'))
     }
     const disconnected = () => { if (auto?.pcInitiated) stopAuto() }
     bridge.on('pc-watch-request', onWatch)

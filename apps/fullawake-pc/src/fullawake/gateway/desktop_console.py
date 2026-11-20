@@ -209,7 +209,7 @@ class DesktopConsole:
         async def call(body: Call):
             async with self.lock:
                 reply = await self.bridge.request_desktop('call', enabled=body.enabled, source='pc_desktop_app')
-                return {'accepted': bool(reply and reply.accepted), **self.state()}
+                return {'accepted': bool(reply and reply.accepted), 'reason': (reply.reason if reply else ''), **self.state()}
 
         @app.post('/v1/desktop/watch', dependencies=auth)
         async def watch(body: Watch):
@@ -231,7 +231,7 @@ class DesktopConsole:
                 if body.action == 'start' and not (reply and reply.accepted):
                     self.watch_peer = None
                     await self.watch.stop_desktop()
-                return {'accepted': bool(reply and reply.accepted), **self.state()}
+                return {'accepted': bool(reply and reply.accepted), 'reason': (reply.reason if reply else ''), **self.state()}
 
         @app.post('/v1/desktop/audio/config', dependencies=auth)
         async def audio(body: Audio):
@@ -260,7 +260,7 @@ class DesktopConsole:
         @app.post('/v1/desktop/sync', dependencies=auth)
         async def sync_session():
             reply = await self.bridge.request_desktop('sync', source='pc_desktop_app')
-            return {'accepted': bool(reply and reply.accepted), 'synced': bool(reply and reply.accepted), **self.state()}
+            return {'accepted': bool(reply and reply.accepted), 'synced': bool(reply and reply.accepted), 'reason': (reply.reason if reply else ''), **self.state()}
 
         @app.websocket('/ws/desktop')
         async def events(socket: WebSocket):

@@ -110,7 +110,7 @@ async function run(operation, requireReceipt = false) {
   renderState(state);
   try {
     const response = await operation();
-    notified = response.error || (requireReceipt && !response.accepted ? '手机未确认操作。请检查会话绑定、桌宠和 Heart 状态。' : '');
+    notified = response.error || (requireReceipt && !response.accepted ? (response.reason || '手机未确认操作。请检查会话绑定、桌宠和 Heart 状态。') : '');
     if (Object.hasOwn(response, 'bridge_connected')) renderState({ ...state, ...response });
     return response;
   } catch {

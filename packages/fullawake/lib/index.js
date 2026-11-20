@@ -231,7 +231,7 @@ export function apply(ctx, config = {}) {
       }
       const onSyncTarget = ({ requestId }) => {
         const { agentId } = activeTarget.sync(ctx)
-        bridge.replyDesktop('sync', requestId, Boolean(agentId), Boolean(agentId))
+        bridge.replyDesktop('sync', requestId, Boolean(agentId), Boolean(agentId), agentId ? '' : '手机端暂无活跃私聊会话，请先在私聊发一句话。')
       }
       bridge.on('interrupt', observeInterrupt)
       bridge.on('pc-sync-request', onSyncTarget)

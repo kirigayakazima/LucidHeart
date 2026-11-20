@@ -117,14 +117,15 @@ export function registerVoiceCall(ctx, config, {
       const target = config.duplexTarget
       const agent = (typeof resolveTarget === 'function' ? resolveTarget() : null) ?? (target && service('agents')?.get?.(target))
       if (enabled && !agent) {
-        bridge.replyDesktop('call', requestId, Boolean(capture), false)
+        bridge.replyDesktop('call', requestId, Boolean(capture), false, '未找到活跃私聊会话，请先在私聊给小满发一句话或点同步会话。')
         return
       }
       const qq = agent && service('qqbotMediaSender')?.resolveTargetForSession?.(agent.session?.id ?? agent.session?.header?.id ?? agent.id)
       const identity = qq?.scope === 'c2c' ? { targetId: qq.targetId, speaker: qq.targetId } : {}
-      await toggle(enabled, { agent, signal: AbortSignal.timeout(1750) }, { channel: 'direct', ...identity })
-      bridge.replyDesktop('call', requestId, Boolean(capture) && !starting, Boolean(capture) === enabled && !starting)
-    })().catch(() => bridge.replyDesktop('call', requestId, Boolean(capture), false))
+      const res = await toggle(enabled, { agent, signal: AbortSignal.timeout(1750), pcInitiated: true }, { channel: 'direct', ...identity })
+      const ok = Boolean(capture) === enabled && !starting
+      bridge.replyDesktop('call', requestId, Boolean(capture) && !starting, ok, ok ? '' : (res?.message || '开启通话失败'))
+    })().catch(err => bridge.replyDesktop('call', requestId, Boolean(capture), false, err?.message || '手机端异常'))
   }
   bridge.on('pc-call-request', onDesktopCall)
   const unregister = ctx.tools.register(defineTool({
@@ -155,8 +156,10 @@ export function registerVoiceCall(ctx, config, {
       starting = new AbortController()
       const signal = exec.signal ? AbortSignal.any([starting.signal, exec.signal]) : starting.signal
       try {
-        const gate = await service('heart')?.evaluateActivity?.({ intent: 'voice_call', category: 'voice' }, { execution: exec })
-        if (gate?.suitable !== true) return { message: 'Heart 当前未允许开启通话。' }
+        if (!exec?.pcInitiated) {
+          const gate = await service('heart')?.evaluateActivity?.({ intent: 'voice_call', category: 'voice' }, { execution: exec })
+          if (gate?.suitable !== true) return { message: 'Heart 当前未允许开启通话。' }
+        }
         if (!await readyForCall() || signal.aborted || !bridge.turnLifecycle) return { message: '电脑通话链路尚未就绪。' }
         const agent = service('agents')?.get?.(config.duplexTarget || exec?.agent?.id) ?? exec?.agent
         const duplex = service('voiceDuplex')
