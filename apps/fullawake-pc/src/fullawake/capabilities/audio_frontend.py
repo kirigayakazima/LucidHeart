@@ -244,8 +244,9 @@ class AudioFrontEndProcessor:
         except Exception:
             return None
 
-    def enroll_from_ptt(self, samples: np.ndarray, sample_rate: int = 16000) -> bool:
-        """Automatically update owner voiceprint centroid from clean PTT utterances >= 1.2s (locked once count >= 5)."""
+    def enroll_from_ptt(self, samples: np.ndarray, sample_rate: int = 16000, *,
+                        min_similarity: float = 0.55) -> bool:
+        """Update owner voiceprint centroid only from high-quality clean PTT utterances >= 1.2s (locked once count >= 5)."""
         if self._owner_count >= 5 and os.environ.get('FULLAWAKE_VOICEPRINT_UNLOCK', '') != '1':
             return False
         if len(samples) < int(sample_rate * 1.2):
@@ -258,6 +259,10 @@ class AudioFrontEndProcessor:
                 self._owner_embedding = emb
                 self._owner_count = 1
             else:
+                sim = float(np.dot(self._owner_embedding, emb))
+                if sim < min_similarity:
+                    log.info('Skipped low-similarity PTT voiceprint sample (sim=%.2f<%.2f)', sim, min_similarity)
+                    return False
                 weight = min(self._owner_count, 7)
                 merged = self._owner_embedding * weight + emb
                 norm = float(np.linalg.norm(merged))
@@ -305,24 +310,34 @@ class AudioFrontEndProcessor:
             return None, f'non_vocal_noise(raw={raw_rms:.4f},clean={clean_rms:.4f})'
 
         if ptt:
-            if not speaker_active and clean_rms >= 0.012:
-                self.enroll_from_ptt(arr, sample_rate)
-            return arr, ''
-
-        # Context-aware voiceprint check:
-        # - When PC speakers are playing audio (video/music) and owner voiceprint is enrolled:
-        #   require >= 0.6s and cosine similarity >= 0.38 so speaker bleed is blocked.
-        # - When room is quiet: allow short replies (< 1.0s, e.g. "嗯/好") and check >= 1.0s with gentle threshold 0.28.
-        if self._owner_embedding is not None:
-            if speaker_active and len(arr) < int(sample_rate * 0.6):
-                return None, 'short_speaker_bleed(<0.6s)'
-            min_len = int(sample_rate * (0.6 if speaker_active else 1.0))
-            if len(arr) >= min_len:
+            # Verify PTT utterances against owner voiceprint when enrolled and long enough,
+            # and only keep high-clarity, high-similarity clips as voiceprint references.
+            if self._owner_embedding is not None and len(arr) >= int(sample_rate * 0.55):
                 emb = self.compute_embedding(arr, sample_rate)
                 if emb is not None and len(emb) == len(self._owner_embedding):
                     sim = float(np.dot(self._owner_embedding, emb))
-                    threshold = float(os.environ.get('FULLAWAKE_VOICEPRINT_THRESHOLD', '0.38' if speaker_active else '0.28'))
-                    if sim < threshold:
-                        return None, f'voiceprint_mismatch(sim={sim:.2f}<{threshold:.2f},speaker={speaker_active})'
+                    ptt_threshold = float(os.environ.get('FULLAWAKE_PTT_VOICEPRINT_THRESHOLD',
+                                                         '0.30' if speaker_active else '0.25'))
+                    if sim < ptt_threshold:
+                        return None, f'ptt_voiceprint_mismatch(sim={sim:.2f}<{ptt_threshold:.2f})'
+                    if not speaker_active and clean_rms >= 0.015 and sim >= 0.55:
+                        self.enroll_from_ptt(arr, sample_rate)
+            elif self._owner_embedding is None and not speaker_active and clean_rms >= 0.015:
+                self.enroll_from_ptt(arr, sample_rate)
+            return arr, ''
+
+        # Strict owner voiceprint gate for Auto-VAD:
+        # Once owner voiceprint is enrolled, every Auto-VAD utterance must be verifiable (>= 0.55s quiet / >= 0.6s speaker)
+        # and match the owner's voiceprint before reaching ASR.
+        if self._owner_embedding is not None:
+            min_len = int(sample_rate * (0.6 if speaker_active else 0.55))
+            if len(arr) < min_len:
+                return None, f'short_unverified(<{min_len / sample_rate:.2f}s,speaker={speaker_active})'
+            emb = self.compute_embedding(arr, sample_rate)
+            if emb is not None and len(emb) == len(self._owner_embedding):
+                sim = float(np.dot(self._owner_embedding, emb))
+                threshold = float(os.environ.get('FULLAWAKE_VOICEPRINT_THRESHOLD', '0.38' if speaker_active else '0.30'))
+                if sim < threshold:
+                    return None, f'voiceprint_mismatch(sim={sim:.2f}<{threshold:.2f},speaker={speaker_active})'
 
         return arr, ''

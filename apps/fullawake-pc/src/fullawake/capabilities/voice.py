@@ -162,7 +162,7 @@ class VoiceCompute:
         try:
             import sherpa_onnx
             return sherpa_onnx.OfflineRecognizer.from_sense_voice(model=str(model), tokens=str(root / 'tokens.txt'),
-                language='auto', use_itn=True, num_threads=4)
+                language='zh', use_itn=True, num_threads=4)
         except (ImportError, OSError, RuntimeError, ValueError) as error:
             logging.getLogger(__name__).warning('SenseVoice unavailable (%s); falling back to Whisper', type(error).__name__)
             return None
@@ -221,8 +221,11 @@ class VoiceCompute:
                 recognizer.decode_stream(stream)
                 self.last_asr_backend = 'sensevoice'
                 transcript = re.sub(r'<\|[^|]*\|>', '', stream.result.text).strip()
+                if enhance and transcript and not re.search(r'[\u4e00-\u9fff]', transcript):
+                    logging.getLogger(__name__).info('ASR filtered non-Chinese utterance: %r', transcript)
+                    return AUDIO_UNCLEAR
                 return {'ok': True, 'text': transcript, 'duration': round(len(samples) / ASR_SAMPLE_RATE, 2),
-                        'language': 'auto'} if transcript else AUDIO_UNCLEAR
+                        'language': 'zh'} if transcript else AUDIO_UNCLEAR
             except (OSError, RuntimeError, ValueError) as error:
                 logging.getLogger(__name__).warning('SenseVoice decode failed (%s); falling back to Whisper', type(error).__name__)
 
