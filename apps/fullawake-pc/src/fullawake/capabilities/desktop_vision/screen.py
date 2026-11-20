@@ -24,6 +24,52 @@ class RECT(ctypes.Structure):
     ]
 
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
+def _select_monitor(sct, user32) -> Dict[str, Any]:
+    """Select the monitor of the foreground window, falling back to the true primary display."""
+    displays = sct.monitors[1:] if len(sct.monitors) > 1 else sct.monitors
+    if not displays:
+        return sct.monitors[0]
+    if len(displays) == 1:
+        return displays[0]
+
+    try:
+        hwnd = user32.GetForegroundWindow()
+        if hwnd and hasattr(user32, "MonitorFromWindow") and hasattr(user32, "GetMonitorInfoW"):
+            hmon = user32.MonitorFromWindow(wintypes.HWND(hwnd), 2)  # MONITOR_DEFAULTTONEAREST
+            if hmon:
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if user32.GetMonitorInfoW(wintypes.HANDLE(hmon), ctypes.byref(info)):
+                    rect = info.rcMonitor
+                    w, h = rect.right - rect.left, rect.bottom - rect.top
+                    for m in displays:
+                        if m["left"] == rect.left and m["top"] == rect.top and m["width"] == w and m["height"] == h:
+                            return m
+                    is_primary = bool(info.dwFlags & 1)
+                    for m in displays:
+                        if m.get("is_primary") is is_primary:
+                            return m
+    except Exception:
+        pass
+
+    for m in displays:
+        if m.get("is_primary") is True:
+            return m
+    for m in displays:
+        if m.get("left") == 0 and m.get("top") == 0:
+            return m
+    return displays[0]
+
+
 PET_OVERLAY_PROPERTY = 'LucidHeart.GameWatch.PetOverlay.v1'
 REGION_BOXES = {
     'full': (0, 0, 1, 1),
@@ -184,8 +230,7 @@ def capture_screenshot(hwnd: Optional[int] = None, *, auto_game: bool = False, s
                 "height": height,
             }
         else:
-            # Capture primary monitor (monitor 1)
-            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+            monitor = _select_monitor(sct, user32)
 
         try:
             sct_img = sct.grab(monitor)
