@@ -170,9 +170,29 @@ def foreground_game(user32):
     return hwnd, pid.value, process, {'left': origin.x, 'top': origin.y, 'width': width, 'height': height}
 
 
+def _visible_rect(user32, hwnd, rect):
+    """Return DWM extended frame bounds (excluding invisible resize shadows), falling back to GetWindowRect."""
+    try:
+        dwmapi = getattr(ctypes.windll, 'dwmapi', None)
+        if dwmapi is not None and dwmapi.DwmGetWindowAttribute(
+                wintypes.HWND(hwnd), 9, ctypes.byref(rect), ctypes.sizeof(rect)) == 0:
+            if rect.right > rect.left and rect.bottom > rect.top:
+                return True
+    except (AttributeError, OSError):
+        pass
+    return bool(user32.GetWindowRect(hwnd, ctypes.byref(rect)))
+
+
 def _covered(user32, hwnd, area, masks=None):
     """Reject other visible windows, returning masks for recognized overlays."""
     user32.GetWindow.restype = wintypes.HWND
+    target = RECT()
+    if _visible_rect(user32, hwnd, target):
+        t_left, t_top, t_right, t_bottom = target.left, target.top, target.right, target.bottom
+    else:
+        t_left, t_top = area['left'], area['top']
+        t_right, t_bottom = t_left + area['width'], t_top + area['height']
+    t_area = max(1, (t_right - t_left) * (t_bottom - t_top))
     above = hwnd
     rect = RECT()
     for _ in range(256):
@@ -181,14 +201,15 @@ def _covered(user32, hwnd, area, masks=None):
             return False
         if not user32.IsWindowVisible(above) or user32.IsIconic(above) or is_window_cloaked(above):
             continue
-        if not user32.GetWindowRect(above, ctypes.byref(rect)):
+        if not _visible_rect(user32, above, rect):
             return True
-        overlap_w = min(rect.right, area['left'] + area['width']) - max(rect.left, area['left'])
-        overlap_h = min(rect.bottom, area['top'] + area['height']) - max(rect.top, area['top'])
+        overlap_w = min(rect.right, t_right) - max(rect.left, t_left)
+        overlap_h = min(rect.bottom, t_bottom) - max(rect.top, t_top)
         if overlap_w > 16 and overlap_h > 16:
             overlay = _friendly_overlay(user32, above)
             if overlay:
-                if overlay == 'pet' and masks is not None:
+                # Only black-mask small compact pet windows; never black-out fullscreen transparent pet canvases.
+                if overlay == 'pet' and masks is not None and (overlap_w * overlap_h) < t_area * 0.5:
                     masks.append((max(0, rect.left - area['left']), max(0, rect.top - area['top']),
                                   min(area['width'], rect.right - area['left']) - 1,
                                   min(area['height'], rect.bottom - area['top']) - 1))
