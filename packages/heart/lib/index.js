@@ -1118,6 +1118,49 @@ export function registerRoutes(ctx, root, config, state = {}) {
   }))
   ctx.effect(() => webServer.register({
     kind: 'exact',
+    path: '/api/dsh-heart/sync-session',
+    handler: (req, res) => {
+      try {
+        const agents = ctx.get?.('agents') ?? ctx.agents
+        const sender = ctx.get?.('qqbotMediaSender') ?? ctx.qqbotMediaSender
+        const list = typeof agents?.list === 'function' ? agents.list() : []
+        const isGroup = (agent) => {
+          const sid = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
+          try {
+            const info = sender?.resolveTargetForSession?.(sid)
+            if (info?.scope === 'group') return true
+            if (info?.scope === 'c2c') return false
+          } catch {}
+          return /(?:^|[:-])group(?:[:-]|$)/i.test(String(sid || ''))
+        }
+        const isC2c = (agent) => {
+          const sid = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
+          try { return sender?.resolveTargetForSession?.(sid)?.scope === 'c2c' } catch { return false }
+        }
+        const direct = list.filter((a) => a?.id && !isGroup(a))
+        const chosen =
+          direct.find((a) => isC2c(a) && a.status === 'running') ||
+          direct.find((a) => isC2c(a)) ||
+          direct.find((a) => a.status === 'running') ||
+          direct[direct.length - 1] ||
+          null
+        if (!chosen?.id) {
+          sendJson(res, 200, { ok: false, error: '当前未找到活跃私聊会话，请先在私聊发一句话' })
+          return
+        }
+        const targetFile = path.join(os.homedir(), '.dsh', 'fullawake-active-target.json')
+        fs.mkdirSync(path.dirname(targetFile), { recursive: true })
+        const tmp = `${targetFile}.${process.pid}.tmp`
+        fs.writeFileSync(tmp, JSON.stringify({ agentId: chosen.id, updatedAt: new Date().toISOString() }) + '\n', 'utf8')
+        fs.renameSync(tmp, targetFile)
+        sendJson(res, 200, { ok: true, agentId: chosen.id })
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: err?.message || '同步失败' })
+      }
+    },
+  }))
+  ctx.effect(() => webServer.register({
+    kind: 'exact',
     path: '/api/dsh-heart/export',
     handler: (req, res) => {
       const out = exportBundleToFile(root, path.join(root, 'heart-export-' + dateOf() + '.json.gz'))

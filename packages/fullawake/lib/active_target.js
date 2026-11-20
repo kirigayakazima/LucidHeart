@@ -119,8 +119,9 @@ export class ActiveTargetStore {
     )
   }
 
-  /** Resolve target agent: explicit config.duplexTarget -> observed active direct session -> fallback active direct session. */
+  /** Resolve target agent: explicit config.duplexTarget -> observed/persisted active direct session -> fallback active direct session. */
   resolve(ctx) {
+    this.#load()
     const agents = ctx?.get?.('agents') ?? ctx?.agents
     if (!agents) return null
     if (this.config?.duplexTarget) {

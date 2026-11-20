@@ -172,6 +172,7 @@ window.__ModuleLoader__.load({
           'div',
           { style: { margin: '10px 0' } },
           h('button', { style: btn, onClick: () => act('/api/dsh-heart/tick', '叫它醒一次') }, '现在醒一次'),
+          h('button', { style: btn, onClick: () => act('/api/dsh-heart/sync-session', '同步电脑会话') }, '同步电脑会话'),
           h('button', { style: btn, onClick: () => act('/api/dsh-heart/export', '导出') }, '导出备份'),
           h('button', { style: btn, onClick: load }, '刷新')
         ),
