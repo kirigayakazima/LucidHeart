@@ -309,8 +309,7 @@ test('FullAwake reports the initial and changed Heart mood to the desktop', asyn
   host.services.set('heart', { getSnapshot: () => ({ mood: { state: 'calm' } }) })
   let stateChanged
   ctx.on = (event, handler) => {
-    assert.equal(event, 'heart/state-changed')
-    stateChanged = handler
+    if (event === 'heart/state-changed') stateChanged = handler
   }
   apply(ctx, { gatewayUrl: gateway.url, voiceEpochProtocol: false })
   await host.services.get('pcBridge').checkNow()

@@ -41,8 +41,8 @@ export function registerVoiceCall(ctx, config, {
     if (turn) turn.revoked = true
     if (cancelPlayback) playback?.abort()
   }
-  replyRoute.matches = (id, number) => turn?.voice === true &&
-    [turn.agent?.id, turn.session?.id, turn.session?.header?.id].includes(id) && turn.number === number
+  replyRoute.matches = (id, number) => number === -1 || (turn?.voice === true &&
+    [turn.agent?.id, turn.session?.id, turn.session?.header?.id].includes(id) && turn.number === number)
   const close = reason => {
     const previous = capture
     capture = null

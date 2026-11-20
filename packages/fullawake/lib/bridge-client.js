@@ -276,10 +276,18 @@ export class FullAwakeBridgeClient extends EventEmitter {
     this.#drop(connection)
   }
 
-  #newTask(phase, signal, timeout) {
-    if (!this.ready || this.#task || signal?.aborted || this.#connection.epoch >= MAX_EPOCH) return null
+  #newTask(phase, signal, timeout, priority = 'user') {
+    if (!this.ready || signal?.aborted || this.#connection.epoch >= MAX_EPOCH) return null
+    if (this.#task) {
+      if (priority === 'user' && this.#task.priority === 'watch') {
+        this.#task.controller.abort('preempted_by_user')
+      } else {
+        return null
+      }
+    }
+    if (this.#task) return null
     const connection = this.#connection
-    const task = { connection, phase, epoch: ++connection.epoch, utteranceId: `utt-${randomUUID()}`,
+    const task = { connection, phase, priority, epoch: ++connection.epoch, utteranceId: `utt-${randomUUID()}`,
       controller: new AbortController(), prepared: Promise.withResolvers(), done: Promise.withResolvers() }
     const forwardAbort = () => task.controller.abort(signal.reason)
     const cancel = () => {
@@ -360,9 +368,13 @@ export class FullAwakeBridgeClient extends EventEmitter {
     return promise
   }
 
-  begin({ signal, cue, gameProcess, gameEventId, agentId } = {}) {
+  get isUserBusy() {
+    return Boolean(this.#task && this.#task.priority !== 'watch')
+  }
+
+  begin({ signal, cue, gameProcess, gameEventId, agentId, priority = 'user' } = {}) {
     if (!this.turnLifecycle || (gameEventId !== undefined && (!this.breezeDirect || !text(gameEventId, 80) || cue || gameProcess))) return null
-    const task = this.#newTask('preparing', signal, TURN_MS)
+    const task = this.#newTask('preparing', signal, TURN_MS, priority)
     if (!task) return null
     task.agentId = agentId
     if (!this.#send(task.connection, 'audio.prepare', { ...this.#identity(task), ...(cue && {

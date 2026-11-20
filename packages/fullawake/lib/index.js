@@ -2,7 +2,7 @@
 // 运行在手机 DSHA 侧，桥接 PC Gateway 暴露的 MCP 视觉与安全文件能力，
 // 并基于 Heart Protocol v1 向 Heart 汇报 PC 在线/离线与设备感官观察。
 
-import { registerWatch } from './watch.js'
+import { registerWatch, WatchContextStore } from './watch.js'
 import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
 import { registerVoiceCall } from './voice_call.js'
@@ -30,7 +30,7 @@ try {
 
 export const name = 'dsh-fullawake'
 
-export const inject = ['tools']
+export const inject = ['tools', 'systemPrompt']
 
 export const Config = z
   ? z.object({
@@ -198,7 +198,7 @@ export function apply(ctx, config = {}) {
     if (cancelled()) return { status: 'cancelled' }
     const direct = bridge.breezeDirect
     if ([...text].length > (direct ? 120 : 200)) return { status: 'unavailable' }
-    const turn = bridge.begin({ signal: exec.signal, agentId: exec.agent.id })
+    const turn = bridge.begin({ signal: exec.signal, agentId: exec.agent.id, priority: 'user' })
     if (!turn) return { status: 'unavailable' }
     try {
       if (!(await turn.prepared) || cancelled() || !bridge.speak({
@@ -299,7 +299,18 @@ export function apply(ctx, config = {}) {
       },
     })))
   }
-  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge, resolveTarget: resolveDesktopTarget })
+  const watchContext = new WatchContextStore()
+  if (typeof ctx.systemPrompt?.section === 'function') {
+    ctx.effect(() => {
+      const dispose = ctx.systemPrompt.section({
+        name: 'fullawake:watch-context',
+        order: 58,
+        text: () => watchContext.formatPrompt(),
+      })
+      return () => { if (typeof dispose === 'function') dispose() }
+    })
+  }
+  registerWatch(ctx, config, { defineTool, callGatewayTool, gatewayUrl, authToken, bridge, resolveTarget: resolveDesktopTarget, watchContext })
   if (bridge && (config.gameWatchQqSessions?.length || config.duplexTarget)) ctx.effect(() => registerGameCompanion(ctx, config, {
     bridge, defineTool, output: textOutput,
     readyForWatch: async () => { await initialStatus; return lastStatus?.game_watch_sessions === true },
