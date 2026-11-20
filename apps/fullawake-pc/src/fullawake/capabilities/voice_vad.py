@@ -222,9 +222,10 @@ class VoiceVadListener:
                                            blocksize=frames, channels=1, dtype='int16', latency='low') as stream:
                 self._available = True
                 self._ready.set()
+                log.info('Microphone input stream active (rate=%d, device=%s)', self.sample_rate, self.device)
                 while not self._stop.is_set():
                     pcm, overflowed = stream.read(frames)
-                    if not overflowed and not self._stop.is_set():
+                    if not self._stop.is_set():
                         raw = bytes(pcm)
                         if self.ptt_probe is not None:
                             ptt_active = bool(self.ptt_probe())
@@ -238,9 +239,11 @@ class VoiceVadListener:
                                     log.info('PTT released: mic gate closed (%d frames)', len(utterance))
                                     if capturing:
                                         _handle_end()
-                            if ptt_active and capturing and len(utterance) < 1500:
+                            if ptt_active and capturing and not overflowed and len(utterance) < 1500:
                                 utterance.append(raw)
                             pre_roll.clear()
+                            continue
+                        if overflowed:
                             continue
                         if capturing:
                             if len(utterance) < 750:
