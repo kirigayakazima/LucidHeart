@@ -27,7 +27,9 @@ function callCommand(exec, config) {
 export function registerVoiceCall(ctx, config, {
   bridge, defineTool, output, readyForCall, speak, canSpeak = () => false, replyRoute = {}, resolveTarget,
 }) {
-  const service = name => ctx.get?.(name) ?? ctx[name]
+  const service = name => {
+    try { return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name] } catch { return null }
+  }
   let capture = null
   let starting = null
   let handoffError = false

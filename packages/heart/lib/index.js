@@ -93,7 +93,7 @@ import { buildMoodSection, buildPromptBundle, buildSelfSection, buildVoiceSectio
 export const name = 'dsh-heart'
 
 /** 静态注入：服务必须写在这里，ctx.get() 拿不到（同生态插件的实测结论）。 */
-export const inject = ['tools', 'webServer', 'agents', 'systemPrompt']
+export const inject = { tools: true, webServer: true, agents: true, systemPrompt: true, qqbotMediaSender: false }
 
 function defineTool(def) {
   return defineDshTool({ ...def, async execute(...args) {
@@ -1121,8 +1121,9 @@ export function registerRoutes(ctx, root, config, state = {}) {
     path: '/api/dsh-heart/sync-session',
     handler: (req, res) => {
       try {
-        const agents = ctx.get?.('agents') ?? ctx.agents
-        const sender = ctx.get?.('qqbotMediaSender') ?? ctx.qqbotMediaSender
+        const agents = typeof ctx.get === 'function' ? ctx.get('agents') : ctx.agents
+        let sender = null
+        try { sender = typeof ctx.get === 'function' ? ctx.get('qqbotMediaSender') : ctx.qqbotMediaSender } catch {}
         const list = typeof agents?.list === 'function' ? agents.list() : []
         const isGroup = (agent) => {
           const sid = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id

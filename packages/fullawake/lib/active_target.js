@@ -24,8 +24,12 @@ function getAgentById(agents, id) {
   return null
 }
 
+function getService(ctx, name) {
+  try { return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name] } catch { return null }
+}
+
 function isGroupSession(ctx, agent) {
-  const sender = ctx?.get?.('qqbotMediaSender') ?? ctx?.qqbotMediaSender
+  const sender = getService(ctx, 'qqbotMediaSender')
   const sessionId = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
   try {
     const info = sender?.resolveTargetForSession?.(sessionId)
@@ -37,7 +41,7 @@ function isGroupSession(ctx, agent) {
 }
 
 function isDirectC2c(ctx, agent) {
-  const sender = ctx?.get?.('qqbotMediaSender') ?? ctx?.qqbotMediaSender
+  const sender = getService(ctx, 'qqbotMediaSender')
   const sessionId = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
   try {
     return sender?.resolveTargetForSession?.(sessionId)?.scope === 'c2c'
@@ -99,7 +103,7 @@ export class ActiveTargetStore {
 
   /** Pick the best available direct (non-group) agent from ctx.agents. */
   #pickFallback(ctx) {
-    const agents = ctx?.get?.('agents') ?? ctx?.agents
+    const agents = getService(ctx, 'agents')
     if (!agents || typeof agents.list !== 'function') return null
     const list = agents.list().filter(agent => agent?.id && !isGroupSession(ctx, agent))
     if (!list.length) return null
@@ -122,7 +126,7 @@ export class ActiveTargetStore {
   /** Resolve target agent: explicit config.duplexTarget -> observed/persisted active direct session -> fallback active direct session. */
   resolve(ctx) {
     this.#load()
-    const agents = ctx?.get?.('agents') ?? ctx?.agents
+    const agents = getService(ctx, 'agents')
     if (!agents) return null
     if (this.config?.duplexTarget) {
       const explicit = getAgentById(agents, this.config.duplexTarget)
@@ -139,7 +143,7 @@ export class ActiveTargetStore {
 
   /** Explicitly synchronize to the currently active direct session and persist it. */
   sync(ctx) {
-    const agents = ctx?.get?.('agents') ?? ctx?.agents
+    const agents = getService(ctx, 'agents')
     const agent = (this.#lastAgentId && getAgentById(agents, this.#lastAgentId)) ||
       this.#pickFallback(ctx) ||
       (this.config?.duplexTarget ? getAgentById(agents, this.config.duplexTarget) : null)

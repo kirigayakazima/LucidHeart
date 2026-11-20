@@ -30,7 +30,20 @@ try {
 
 export const name = 'dsh-fullawake'
 
-export const inject = ['tools']
+export const inject = {
+  tools: true,
+  agents: false,
+  heart: false,
+  memory: false,
+  voiceDuplex: false,
+  qqbotMediaSender: false,
+  rvcWatchVoice: false,
+  attachments: false,
+  llm: false,
+  agency: false,
+  companion: false,
+  runtimeCapabilities: false,
+}
 
 export const Config = z
   ? z.object({
