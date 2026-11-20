@@ -64,3 +64,23 @@ def test_deadline_cancels_inflight_request(adapter, monkeypatch):
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(adapter.synthesize('好险呀', deadline_s=0.05))
     assert cancelled == [True]
+
+
+def test_reuses_async_client_within_same_event_loop(adapter, monkeypatch):
+    created = []
+    real_client = httpx.AsyncClient
+
+    def factory(**options):
+        client = real_client(transport=httpx.MockTransport(lambda _: httpx.Response(200, content=b'ID3ok')), **options)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(breezeblue_adapter.httpx, 'AsyncClient', factory)
+
+    async def run_twice():
+        assert await adapter.synthesize('第一句') == b'ID3ok'
+        assert await adapter.synthesize('第二句') == b'ID3ok'
+        await adapter.aclose()
+
+    asyncio.run(run_twice())
+    assert len(created) == 1

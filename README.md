@@ -1,6 +1,6 @@
 # LucidHeart / HeartAwake Suite
 
-自研核心源码 Monorepo：`packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake,companion,evolution,voice-duplex,heart-wake,xhs-scroll}`，PC 节点 `apps/fullawake-pc`，只读工具 `tools/memory-shape`，预设与锁清单 `manifests/`。当前源码包含 **Suite 0.11.0 基线与下一阶段 Track 0–3 实现**，新版本尚未上机。手机 `suite-full-20261118` 的真实安装事实见工作区 `docs/STATUS.md`。
+自研核心源码 Monorepo：`packages/{heart,memory,qq-plus,rvc,sticker-look,fullawake,companion,evolution,voice-duplex,heart-wake,xhs-scroll}`，PC 节点 `apps/fullawake-pc`，只读工具 `tools/memory-shape`，预设与锁清单 `manifests/`。当前源码包含 **Suite 0.11.0 基线与 Track 0–3 实现**（手机端 `suite-full-20261118` 与 `track0-3-20261119` 均已完成原生事务安装，真实运行与现场验收状态见工作区 `docs/STATUS.md`）。
 
 | 模块 | 当前源码 | 职责 |
 |---|---|---|

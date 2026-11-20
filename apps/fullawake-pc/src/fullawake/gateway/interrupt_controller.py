@@ -178,6 +178,8 @@ class Peer:
     lease: Lease | None = None
     speech_generation: int = 0
     game_offer: tuple[str, int] | None = None
+    # Latency trace for the most recent mic final: {'turnId', 'released', 'asr_done', 'command', 'played'}.
+    trace: dict | None = None
     jobs: set = field(default_factory=set)
     outbound: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=16))
 
@@ -246,6 +248,7 @@ class InterruptController:
         if self.peer is not peer or not peer.call_active or not peer.capture_enabled:
             return
         generation = peer.call_generation
+        released = time.monotonic()
         try:
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
@@ -253,8 +256,11 @@ class InterruptController:
                 self._capture_epoch += 1
                 epoch = self._capture_epoch
                 turn_id = uuid4().hex
+                asr_done = time.monotonic()
+                peer.trace = {'turnId': turn_id, 'released': released, 'asr_done': asr_done}
                 log.info('PC mic final turnId=%s audio_epoch=%s chars=%s call_generation=%s',
                          turn_id, epoch, len(text), generation)
+                log.info('LATENCY turnId=%s stage=asr asr_ms=%.0f', turn_id, (asr_done - released) * 1000)
                 peer.send('audio.capture', turnId=turn_id, audio_epoch=epoch)
                 peer.send('audio.transcript', turnId=turn_id, audio_epoch=epoch,
                           text=text[:1500], is_final=True)
@@ -417,12 +423,15 @@ class InterruptController:
             audio, duration, intent = None, 4000, 'talk'
             if isinstance(command, Speak) and command.voiceProfile == 'breezeblue':
                 started = time.monotonic()
+                timings = {}
                 async def render_direct():
                     mp3 = await self.breeze.synthesize(command.text, command.instructions,
                                                        deadline_s=min(8, lease.deadline - started))
+                    timings['tts'] = time.monotonic()
                     if not self._can_render(peer, lease):
                         return None
                     wav = await game_audio_wav(mp3)
+                    timings['transcode'] = time.monotonic()
                     if lease.game_event and not await self.game_watch.revalidate(lease.game_session, lease.game_event):
                         return None
                     return wav
@@ -431,7 +440,11 @@ class InterruptController:
                 if audio is None:
                     return
                 duration = wav_duration(audio)
-                log.info('BreezeBlue audio ready in %.0f ms', (time.monotonic() - started) * 1000)
+                log.info('BreezeBlue audio ready in %.0f ms (tts_download_ms=%.0f transcode_ms=%.0f chars=%d)',
+                         (time.monotonic() - started) * 1000,
+                         (timings.get('tts', started) - started) * 1000,
+                         (timings.get('transcode', started) - timings.get('tts', started)) * 1000,
+                         len(command.text))
             elif isinstance(command, Speak):
                 profile = json.loads(Path(config.voice_profile).read_text(encoding='utf-8-sig'))
                 request = {'text': command.text, 'voice': {
@@ -460,6 +473,14 @@ class InterruptController:
             lease.receipt = self.watch.play_bridge(lease.renderer_id, command.text, audio, duration, intent)
             if not lease.receipt:
                 return
+            trace = peer.trace
+            if audio is not None and trace and 'command' in trace and 'played' not in trace:
+                trace['played'] = played = time.monotonic()
+                log.info('LATENCY turnId=%s stage=first_audio render_ms=%.0f total_ms=%.0f '
+                         '(asr=%.0f phone_llm=%.0f render=%.0f)', trace['turnId'],
+                         (played - trace['command']) * 1000, (played - trace['released']) * 1000,
+                         (trace['asr_done'] - trace['released']) * 1000,
+                         (trace['command'] - trace['asr_done']) * 1000, (played - trace['command']) * 1000)
             if lease.game_event is not None:
                 log.info('Game watch %s event to renderer in %.0f ms', lease.game_event.type,
                          (time.monotonic() - lease.game_event.timestamp) * 1000)
@@ -516,6 +537,12 @@ class InterruptController:
                       'audio.cancel': Utterance, 'pet.text': PetText}
             command = models[frame.type].model_validate(frame.payload)
             now = time.monotonic()
+            trace = peer.trace
+            if trace and 'command' not in trace and frame.type in ('audio.prepare', 'audio.speak', 'audio.play'):
+                trace['command'] = now
+                # Covers USB bridge + phone DSH scheduling + DeepSeek generation of the reply/tool call.
+                log.info('LATENCY turnId=%s stage=phone_llm kind=%s phone_llm_ms=%.0f',
+                         trace['turnId'], frame.type, (now - trace['asr_done']) * 1000)
             peer.prune_revoked(now)
             lease = peer.lease
             matches = lease and (lease.command.epoch, lease.command.utteranceId) == (command.epoch, command.utteranceId)
