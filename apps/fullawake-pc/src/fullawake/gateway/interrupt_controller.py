@@ -266,6 +266,9 @@ class InterruptController:
         try:
             result = await asyncio.to_thread(self.voice.transcribe, wav_bytes)
             text = str((result or {}).get('text') or '').strip() if result and result.get('ok') else ''
+            if text and not re.sub(r'[\s\W_]+', '', text):
+                log.info('Ignored punctuation-only ASR noise: %r', text)
+                return
             if text and self.peer is peer and peer.call_active and not self.mic_muted and peer.call_generation == generation:
                 self._capture_epoch += 1
                 epoch = self._capture_epoch
