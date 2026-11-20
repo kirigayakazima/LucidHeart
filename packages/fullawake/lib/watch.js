@@ -448,7 +448,8 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           bridge.replyDesktop('watch', requestId, Boolean(auto), false, '未找到活跃私聊会话，请先在私聊发一句话或点同步会话。')
           return
         }
-        const result = await setAuto({ enabled: true, pcInitiated: true }, { agent, signal: AbortSignal.timeout(1750) })
+        if (auto && auto.owner !== agent.id) stopAuto()
+        const result = await setAuto({ enabled: true, pcInitiated: true }, { agent, signal: AbortSignal.timeout(3500) })
         const ok = ['started', 'already_started'].includes(result?.status)
         bridge.replyDesktop('watch', requestId, Boolean(auto), ok, ok ? '' : `陪看启动返回: ${result?.status || 'unknown'}`)
       })().catch(err => bridge.replyDesktop('watch', requestId, Boolean(auto), false, err?.message || '手机端异常'))
@@ -554,16 +555,26 @@ export function registerWatch(ctx, config, { defineTool, callGatewayTool, gatewa
           (args.voice === true && !bridge && !rvc?.prepare)) return { status: 'unconfigured' }
       if ((bridge && !bridge.turnLifecycle) || (mode === 'heart' && !bridge)) return { status: 'offline' }
     }
-    if (!args.pcInitiated) await callGatewayTool('pc_watch_control', { action: 'start', ...(args.mode && { mode: args.mode }),
+    if (args.pcInitiated) {
+      if (exec.signal?.aborted || lifetime.signal.aborted) return { status: 'inactive' }
+      if (auto) return { status: 'already_started', watchSessionId: auto.session }
+      auto = { owner, session: null, controller: new AbortController(), voice: useVoice,
+        execution: { agent: exec.agent }, pcInitiated: true,
+        timeline: null, scene: -Infinity, lastAttempt: -Infinity,
+        lastSpokeAt: -Infinity, lastUserActivityAt: 0, silentStreak: 0, activeTurn: null, busy: false }
+      watchContext.setState(true)
+      return { status: 'started', watchSessionId: null, voice: useVoice }
+    }
+    await callGatewayTool('pc_watch_control', { action: 'start', ...(args.mode && { mode: args.mode }),
       ...(args.hwnd !== undefined && { hwnd: args.hwnd }) }, exec.signal)
     const { data } = await summary({ clockOnly: true }, exec.signal)
     if (!data?.watchSessionId || (!shadow && !data.widgetOnline) || exec.signal?.aborted || lifetime.signal.aborted) {
-      if (!args.pcInitiated) await callGatewayTool('pc_watch_control', { action: 'stop' })
+      await callGatewayTool('pc_watch_control', { action: 'stop' })
       return { status: 'inactive' }
     }
     if (auto) return { status: 'already_started' }
     auto = { owner, session: data.watchSessionId, controller: new AbortController(), voice: useVoice,
-      execution: { agent: exec.agent }, pcInitiated: args.pcInitiated === true,
+      execution: { agent: exec.agent }, pcInitiated: false,
       timeline: data.timelineId, scene: -Infinity, lastAttempt: -Infinity,
       lastSpokeAt: -Infinity, lastUserActivityAt: 0, silentStreak: 0, activeTurn: null, busy: false }
     watchContext.setState(true, data.title)

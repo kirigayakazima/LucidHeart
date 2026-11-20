@@ -716,7 +716,7 @@ class InterruptController:
         peer.desktop_pending[key] = waiter
         try:
             peer.send(f'pc.{kind}_request', requestId=request_id, **payload)
-            reply = await asyncio.wait_for(waiter, 2)
+            reply = await asyncio.wait_for(waiter, 4)
             return reply if self.peer is peer else None
         except (asyncio.TimeoutError, asyncio.QueueFull):
             return None

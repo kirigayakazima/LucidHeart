@@ -204,3 +204,48 @@ test('FullAwakeBridgeClient user priority preempts active watch lease, while wat
   userTurn.controller.abort()
   assert.equal(bridge.isUserBusy, false)
 })
+
+test('PC-initiated watch request starts immediately on foreground session even before first clock frame and rebinds on session switch', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const disposers = []
+  const replies = []
+  const services = new Map([
+    ['heart', { getSnapshot: () => ({ presence: 'present', mood: { state: 'calm' } }), evaluateActivity: async () => ({ suitable: true }) }],
+    ['attachments', { async saveImage() { return { id: 'img', mediaType: 'image/png' } } }],
+    ['llm', { async *stream() { yield { type: 'finish', reason: { kind: 'stop' } } } }],
+  ])
+  const ctx = {
+    get: name => services.get(name),
+    effect: fn => disposers.push(fn()),
+    tools: { register() { return () => {} } },
+  }
+  const bridge = Object.assign(new EventEmitter(), {
+    turnLifecycle: true,
+    replyDesktop(kind, requestId, active, accepted, reason) {
+      replies.push({ kind, requestId, active, accepted, reason })
+    },
+  })
+  let currentAgent = { id: 'session-a', session: Session.create(randomUUID()) }
+  let gatewayCalls = 0
+  async function callGatewayTool() {
+    gatewayCalls++
+    return { ok: true, content: [{ type: 'text', text: JSON.stringify({ status: 'inactive' }) }] }
+  }
+  registerWatch(ctx, { watchDecisionMode: 'legacy' }, {
+    defineTool: v => v, callGatewayTool, gatewayUrl: 'http://127.0.0.1:28765', bridge,
+    resolveTarget: () => currentAgent,
+  })
+  t.after(() => { for (const d of disposers) d?.() })
+
+  // 1. Click Start Watch on PC before PC even has a clock frame -> succeeds immediately with 0 blocking HTTP calls
+  bridge.emit('pc-watch-request', { action: 'start', requestId: 'req-1' })
+  for (let i = 0; i < 10 && replies.length < 1; i++) await nextTurn()
+  assert.deepEqual(replies[0], { kind: 'watch', requestId: 'req-1', active: true, accepted: true, reason: '' })
+  assert.equal(gatewayCalls, 0)
+
+  // 2. User switches to a new session (/new) and clicks Start Watch again -> cleanly rebinds instead of failing 'unavailable'
+  currentAgent = { id: 'session-b', session: Session.create(randomUUID()) }
+  bridge.emit('pc-watch-request', { action: 'start', requestId: 'req-2' })
+  for (let i = 0; i < 10 && replies.length < 2; i++) await nextTurn()
+  assert.deepEqual(replies[1], { kind: 'watch', requestId: 'req-2', active: true, accepted: true, reason: '' })
+})
