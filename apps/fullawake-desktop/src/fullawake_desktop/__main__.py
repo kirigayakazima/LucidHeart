@@ -77,21 +77,13 @@ def main():
     api._select_home_export = lambda: window.create_file_dialog(
         webview.SAVE_DIALOG, save_filename='xiaoman-home.png', file_types=('PNG (*.png)',))
 
-    def bring_to_front():
+    def apply_icon_async():
         from threading import Timer
-        def _finish():
-            _apply_window_icon('FullAwake · 桌面工作台', ICON_PATH)
-            try:
-                window.restore()
-                window.on_top = True
-                window.on_top = False
-            except Exception:
-                pass
-        t = Timer(0.35, _finish)
+        t = Timer(0.4, _apply_window_icon, args=('FullAwake · 桌面工作台', ICON_PATH))
         t.daemon = True
         t.start()
 
-    window.events.shown += bring_to_front
+    window.events.shown += apply_icon_async
 
     def quit_app():
         from threading import Thread
