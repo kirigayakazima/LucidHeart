@@ -1,198 +1,248 @@
 'use strict';
 
 (() => {
-  const width = 960, height = 560;
+  const width = 1600, height = 900;
+  // Pixel-accurate anchor coordinates (feet / rest center) on the 1600x900 illustrated room.
   const places = {
-    window: [462, 390], sofa: [185, 421], desk: [635, 400], computer: [736, 400], bed: [791, 473], door: [872, 341],
+    window: [795, 678],
+    sofa: [355, 760],
+    desk: [1150, 682],
+    computer: [1205, 672],
+    bed: [1250, 792],
+    door: [1395, 702],
   };
-  const light = [
-    [0, [40, 41, 83], [104, 94, 150]], [5, [62, 65, 120], [211, 139, 128]],
-    [8, [116, 174, 193], [255, 218, 177]], [15, [126, 174, 192], [255, 226, 182]],
-    [19, [99, 94, 149], [247, 165, 126]], [22, [40, 41, 83], [104, 94, 150]],
-    [24, [40, 41, 83], [104, 94, 150]],
+
+  // Bookshelf / photo album clickable region on the upper-left wall.
+  const ALBUM_RECT = { x: 14, y: 120, w: 266, h: 228 };
+
+  // Window fairy light bulb positions along the curtain rod for live twinkling at night.
+  const FAIRY_LIGHTS = [
+    [590, 128], [625, 138], [662, 146], [700, 149], [738, 142],
+    [775, 125], [818, 125], [856, 140], [895, 147], [935, 145], [972, 136], [1005, 126],
   ];
-  const paletteAt = hour => {
-    const end = light.findIndex(([time]) => hour < time);
-    const start = light[end - 1], next = light[end];
-    const amount = (hour - start[0]) / (next[0] - start[0]);
-    return [1, 2].map(index => 'rgb(' + start[index].map((channel, component) =>
-      Math.round(channel + (next[index][component] - channel) * amount)).join(',') + ')');
-  };
+
+  // Precomputed drifting dust motes for warm daytime sunbeams / lamp airiness.
+  const MOTES = Array.from({ length: 22 }, (_, i) => ({
+    x: 560 + ((i * 73) % 520),
+    y: 220 + ((i * 59) % 440),
+    r: 1.4 + (i % 3) * 0.7,
+    speed: 0.25 + (i % 5) * 0.08,
+    phase: i * 1.37,
+  }));
+
+  function loadImage(src) {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = src;
+    return img;
+  }
+
+  function ready(img) {
+    return Boolean(img && img.complete && img.naturalWidth > 0);
+  }
+
+  // Smoothly compute night blend factor [0 = full daytime, 1 = full night] from local hour.
+  function nightFactor(hour) {
+    if (hour >= 20.5 || hour < 5.0) return 1;
+    if (hour >= 8.5 && hour < 17.0) return 0;
+    if (hour >= 5.0 && hour < 8.5) return 1 - (hour - 5.0) / 3.5;
+    return (hour - 17.0) / 3.5;
+  }
 
   function create(canvas, onAlbum) {
     const ctx = canvas.getContext('2d', { alpha: false });
     const scale = Math.min(devicePixelRatio || 1, 2);
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
+
+    const bgDay = loadImage('home_room_day.jpg');
+    const bgNight = loadImage('home_room_night.jpg');
+    const sprites = {
+      idle: loadImage('sprites/xiaoman_idle.png'),
+      walk: loadImage('sprites/xiaoman_walk.png'),
+      read: loadImage('sprites/xiaoman_read.png'),
+      rest: loadImage('sprites/xiaoman_rest.png'),
+    };
+
     let active = false, frame = null, paintedAt = -Infinity;
     let state = { place: 'window', pose: 'idle', source: 'offline' };
     let position = places.window, from = position, destination = position, movedAt = 0;
+    let facing = 1; // 1 = normal, -1 = flipped horizontally
+    let hoverAlbum = false;
 
-    const round = (x, y, w, h, radius, color) => {
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.roundRect(x, y, w, h, radius); ctx.fill();
+    const triggerPaint = () => {
+      if (active && !document.hidden) draw(performance.now());
     };
-    const ellipse = (x, y, rx, ry, color) => {
-      ctx.fillStyle = color;
-      ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 2 * Math.PI); ctx.fill();
-    };
-    const line = (points, color, weight = 1) => {
-      ctx.strokeStyle = color; ctx.lineWidth = weight; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.beginPath();
-      points.forEach(([x, y], index) => index ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-      ctx.stroke();
-    };
-    const shape = (points, color) => {
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      points.forEach(([x, y], index) => index ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-      ctx.closePath(); ctx.fill();
-    };
+    for (const img of [bgDay, bgNight, ...Object.values(sprites)]) {
+      img.addEventListener('load', triggerPaint, { once: true });
+    }
 
-    function windowView(hour, seconds) {
-      round(338, 61, 242, 226, 16, '#372b44');
-      ctx.save();
-      ctx.beginPath(); ctx.roundRect(351, 75, 216, 195, 8); ctx.clip();
-      const sky = ctx.createLinearGradient(0, 75, 0, 270);
-      const [top, bottom] = paletteAt(hour);
-      sky.addColorStop(0, top); sky.addColorStop(1, bottom);
-      ctx.fillStyle = sky; ctx.fillRect(351, 75, 216, 195);
-      const dark = hour < 6 || hour >= 19;
-      if (dark) {
-        for (let i = 0; i < 24; i++) {
-          ellipse(358 + (i * 59) % 200, 82 + (i * 37) % 91, 1.2, 1.2,
-            'rgba(255,244,203,' + (.4 + Math.sin(i + seconds / 2) * .23) + ')');
+    function drawFallbackRoom(night) {
+      const grad = ctx.createLinearGradient(0, 0, 0, height);
+      grad.addColorStop(0, night > 0.5 ? '#231d36' : '#4a3d5f');
+      grad.addColorStop(1, night > 0.5 ? '#181426' : '#2d233a');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    function drawBackdrop(hour, seconds) {
+      const night = nightFactor(hour);
+      const hasDay = ready(bgDay), hasNight = ready(bgNight);
+      if (hasDay && hasNight) {
+        ctx.globalAlpha = 1;
+        ctx.drawImage(bgDay, 0, 0, width, height);
+        if (night > 0.01) {
+          ctx.globalAlpha = night;
+          ctx.drawImage(bgNight, 0, 0, width, height);
+          ctx.globalAlpha = 1;
         }
+      } else if (hasNight) {
+        ctx.drawImage(bgNight, 0, 0, width, height);
+      } else if (hasDay) {
+        ctx.drawImage(bgDay, 0, 0, width, height);
+      } else {
+        drawFallbackRoom(night);
       }
-      const orbX = 387 + ((hour + (dark ? 6 : 0)) % 12) * 10;
-      ellipse(orbX, 130, 28, 28, '#ffdeb34a');
-      ellipse(orbX, 130, 18, 18, dark ? '#f5e6cb' : '#fff2c2');
-      shape([[345, 235], [389, 203], [430, 216], [488, 171], [530, 203], [571, 190], [571, 275], [345, 275]], '#605d86');
-      shape([[345, 250], [405, 222], [461, 241], [517, 212], [571, 232], [571, 275], [345, 275]], '#454b69');
-      for (let i = 0; i < 13; i++) {
-        const x = 347 + i * 18, y = 255 - (i * 13) % 17;
-        shape([[x - 13, 278], [x, y - 19], [x + 12, 278]], '#36465b');
+
+      // Live ambient lighting overlays
+      if (night > 0.2) {
+        // Twinkling fairy lights along the curtain rod
+        for (let i = 0; i < FAIRY_LIGHTS.length; i++) {
+          const [fx, fy] = FAIRY_LIGHTS[i];
+          const twinkle = 0.55 + 0.45 * Math.sin(seconds * 2.1 + i * 1.15);
+          const alpha = night * twinkle * 0.55;
+          const g = ctx.createRadialGradient(fx, fy, 1, fx, fy, 20);
+          g.addColorStop(0, `rgba(255, 232, 168, ${alpha})`);
+          g.addColorStop(1, 'rgba(255, 210, 120, 0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(fx, fy, 20, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Soft pulsing warm desk lamp halo
+        const lampPulse = 0.88 + 0.12 * Math.sin(seconds * 1.4);
+        const lamp = ctx.createRadialGradient(1088, 370, 12, 1088, 395, 210);
+        lamp.addColorStop(0, `rgba(255, 215, 138, ${0.22 * night * lampPulse})`);
+        lamp.addColorStop(1, 'rgba(255, 195, 110, 0)');
+        ctx.fillStyle = lamp;
+        ctx.fillRect(860, 180, 460, 420);
       }
-      ctx.restore();
-      line([[459, 76], [459, 270]], '#372b44', 10);
-      line([[353, 177], [566, 177]], '#372b44', 7);
-      round(329, 271, 260, 15, 6, '#ca927b');
-      round(327, 61, 14, 219, 6, '#a36378');
-      round(576, 61, 14, 219, 6, '#a36378');
-      line([[330, 59], [587, 59]], '#e2b19a', 5);
+
+      // Animated TV glow when Xiaoman is watching movies/videos on the sofa
+      if (state.place === 'sofa' || state.pose === 'watch') {
+        const flicker = 0.78 + 0.22 * Math.sin(seconds * 3.7) * Math.cos(seconds * 1.9);
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(300, 355, 224, 140, 6);
+        const tvScreen = ctx.createLinearGradient(300, 355, 524, 495);
+        tvScreen.addColorStop(0, `rgba(128, 178, 255, ${0.28 * flicker})`);
+        tvScreen.addColorStop(0.5, `rgba(196, 158, 255, ${0.22 * flicker})`);
+        tvScreen.addColorStop(1, `rgba(110, 210, 225, ${0.26 * flicker})`);
+        ctx.fillStyle = tvScreen;
+        ctx.fill();
+        const spill = ctx.createRadialGradient(412, 430, 30, 412, 470, 260);
+        spill.addColorStop(0, `rgba(155, 190, 255, ${0.18 * flicker})`);
+        spill.addColorStop(1, 'rgba(155, 190, 255, 0)');
+        ctx.fillStyle = spill;
+        ctx.fillRect(150, 220, 520, 480);
+        ctx.restore();
+      }
+
+      // Softly drifting golden dust motes in the sunbeams / warm air
+      const moteAlphaBase = night < 0.5 ? 0.38 : 0.16;
+      for (const m of MOTES) {
+        const mx = m.x + Math.sin(seconds * m.speed + m.phase) * 18;
+        const my = m.y + Math.cos(seconds * m.speed * 0.8 + m.phase) * 14;
+        const pulse = 0.5 + 0.5 * Math.sin(seconds * 1.6 + m.phase);
+        ctx.fillStyle = `rgba(255, 238, 196, ${(moteAlphaBase * pulse).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(mx, my, m.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Subtle warm highlight when hovering the bookshelf (共同相册)
+      if (hoverAlbum) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 226, 168, 0.78)';
+        ctx.lineWidth = 3;
+        ctx.fillStyle = 'rgba(255, 226, 168, 0.10)';
+        ctx.beginPath();
+        ctx.roundRect(ALBUM_RECT.x, ALBUM_RECT.y, ALBUM_RECT.w, ALBUM_RECT.h, 12);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(20, 18, 32, 0.82)';
+        ctx.beginPath();
+        ctx.roundRect(ALBUM_RECT.x + 52, ALBUM_RECT.y + ALBUM_RECT.h + 10, 162, 32, 16);
+        ctx.fill();
+        ctx.fillStyle = '#f8e9cc';
+        ctx.font = '600 14px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('点击查看共同相册', ALBUM_RECT.x + 133, ALBUM_RECT.y + ALBUM_RECT.h + 31);
+        ctx.restore();
+      }
     }
 
-    function room(hour, seconds) {
-      const wall = ctx.createLinearGradient(0, 0, 0, 357);
-      wall.addColorStop(0, '#3c304b'); wall.addColorStop(1, '#79546a');
-      ctx.fillStyle = wall; ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = '#413043'; ctx.fillRect(0, 307, width, 43);
-      ctx.fillStyle = '#a97977'; ctx.fillRect(0, 342, width, 7);
-      const floor = ctx.createLinearGradient(0, 350, 0, height);
-      floor.addColorStop(0, '#76515a'); floor.addColorStop(1, '#463641');
-      ctx.fillStyle = floor; ctx.fillRect(0, 349, width, height - 349);
-      for (let i = -2; i < 13; i++) line([[480 + (i - 4) * 76, 352], [480 + (i - 4) * 125, 560]], '#2e22394f', 2);
-      for (const y of [371, 402, 454, 518]) line([[0, y], [960, y]], '#2e223943', 2);
-
-      windowView(hour, seconds);
-      round(809, 99, 112, 247, 15, '#382b42');
-      round(819, 110, 92, 233, 11, '#69495e');
-      round(832, 128, 65, 86, 7, '#805669');
-      round(832, 226, 65, 99, 7, '#795167');
-      ellipse(893, 224, 5, 5, '#f1bd8d');
-      round(831, 350, 84, 19, 9, '#976476');
-      line([[847, 358], [900, 358]], '#d19a9b', 2);
-
-      // Bookshelf / album, separate from the television alcove.
-      round(93, 84, 156, 115, 10, '#423045');
-      round(103, 94, 136, 94, 5, '#664259');
-      for (const [x, size, color] of [[115, 56, '#d99473'], [135, 63, '#7aa7a0'], [155, 48, '#caa1b0'], [173, 59, '#b97d89']]) {
-        round(x, 182 - size, 15, size, 2, color);
-        line([[x + 3, 170], [x + 11, 170]], '#eee0c0', 2);
-      }
-      round(193, 120, 33, 53, 5, '#704d76');
-      round(201, 135, 17, 20, 2, '#e4b592');
-      ellipse(209, 145, 4, 4, '#b36e78');
-      round(88, 181, 166, 12, 5, '#c08376');
-
-      round(64, 219, 171, 83, 12, '#342b43');
-      round(72, 227, 155, 64, 7, '#4c5275');
-      shape([[72, 275], [122, 253], [161, 270], [223, 241], [227, 291], [72, 291]], '#656789');
-      ellipse(194, 244, 10, 10, '#e5b99e');
-      round(67, 300, 170, 15, 6, '#aa756e');
-      round(89, 314, 11, 25, 4, '#422d45'); round(210, 314, 11, 25, 4, '#422d45');
-
-      round(313, 317, 270, 29, 12, '#46334b');
-      round(321, 317, 255, 9, 4, '#cb957c');
-      for (const [x, color] of [[347, '#678983'], [535, '#729584']]) {
-        ellipse(x, 291, 15, 18, color);
-        ellipse(x - 13, 297, 12, 7, '#61847d');
-        ellipse(x + 12, 286, 11, 6, '#8ba794');
-        shape([[x - 13, 301], [x + 13, 301], [x + 8, 319], [x - 8, 319]], '#dd9b83');
-      }
-
-      ellipse(271, 452, 222, 57, '#b17987');
-      ellipse(271, 452, 200, 48, '#c99097');
-      ellipse(271, 452, 175, 39, '#bd8291');
-      round(73, 356, 218, 74, 22, '#845768');
-      round(80, 349, 203, 61, 20, '#b77d8a');
-      round(87, 391, 184, 35, 13, '#d69a9c');
-      round(71, 378, 33, 54, 13, '#a3677d'); round(267, 378, 33, 54, 13, '#a3677d');
-      round(115, 363, 38, 36, 9, '#e4a47e'); round(223, 361, 32, 36, 8, '#8fa2a4');
-      line([[171, 397], [171, 424]], '#b77988', 2);
-      round(72, 433, 15, 14, 4, '#493546'); round(273, 433, 15, 14, 4, '#493546');
-
-      round(617, 291, 154, 12, 5, '#dca483');
-      round(610, 302, 168, 22, 7, '#9c6264');
-      round(621, 322, 14, 62, 4, '#593d50'); round(752, 322, 14, 62, 4, '#593d50');
-      round(701, 232, 59, 47, 6, '#382e47'); round(707, 238, 47, 31, 3, '#7d91aa');
-      round(728, 274, 7, 14, 2, '#3c2e46'); round(714, 286, 36, 5, 2, '#53415b');
-      round(628, 284, 25, 7, 3, '#6b4c60');
-      line([[643, 285], [643, 238], [657, 226]], '#e5b187', 4);
-      shape([[646, 238], [652, 218], [672, 218], [681, 238]], '#f2ba8b');
-      const lamp = ctx.createRadialGradient(664, 237, 4, 664, 237, 120);
-      lamp.addColorStop(0, '#ffd3a449'); lamp.addColorStop(1, '#ffd3a400');
-      ctx.fillStyle = lamp; ctx.fillRect(534, 112, 250, 250);
-
-      round(702, 406, 177, 87, 19, '#513a52');
-      round(703, 395, 179, 84, 18, '#bc8d98');
-      round(706, 396, 177, 33, 15, '#e0b2ac');
-      round(726, 403, 67, 37, 12, '#f4cec0');
-      round(714, 431, 165, 49, 13, '#8e7ba4');
-      line([[721, 445], [870, 445]], '#bba3bd', 2);
-      line([[721, 457], [870, 457]], '#bba3bd', 2);
-      for (const x of [732, 769, 806, 843]) line([[x, 432], [x, 475]], '#a58cb2', 2);
+    function pickSpriteSheet(pose) {
+      if (pose === 'walk' && ready(sprites.walk)) return sprites.walk;
+      if (pose === 'rest' && ready(sprites.rest)) return sprites.rest;
+      if ((pose === 'read' || pose === 'sit') && ready(sprites.read)) return sprites.read;
+      if (ready(sprites.idle)) return sprites.idle;
+      return null;
     }
 
-    function xiaoman(x, y, pose, seconds) {
+    function drawXiaoman(x, y, pose, seconds) {
       ctx.save();
       ctx.translate(x, y);
-      ellipse(0, 0, 28, 7, '#29223655');
-      const step = pose === 'walk' ? Math.sin(seconds * 15) * 4 : 0;
-      if (pose === 'rest') { ctx.translate(-13, -8); ctx.rotate(-Math.PI / 2); ctx.scale(.74, .74); }
-      if (['sit', 'read', 'watch'].includes(pose)) ctx.translate(0, 5);
-      ctx.translate(0, pose === 'walk' ? -Math.abs(step) : Math.sin(seconds * 2.1) * 1.05);
-      round(-16, -17, 12, 17 - step, 5, '#c7897d');
-      round(5, -17, 12, 17 + step, 5, '#c7897d');
-      round(-23, -42, 46, 31, 13, '#f1a98c');
-      ellipse(-23, -92, 17, 25, '#4d466d'); ellipse(23, -92, 17, 25, '#4d466d');
-      ellipse(0, -77, 30, 31, '#5c537d');
-      ellipse(0, -71, 24, 22, '#f9c9af');
-      ellipse(-23, -70, 5, 7, '#f9c9af'); ellipse(23, -70, 5, 7, '#f9c9af');
-      ellipse(-9, -89, 21, 12, '#615782'); ellipse(8, -88, 18, 11, '#615782');
-      shape([[-23, -86], [-6, -87], [-20, -70]], '#615782');
-      shape([[11, -89], [24, -89], [21, -70]], '#615782');
-      const blink = pose === 'rest' || seconds % 5.8 > 5.64;
-      for (const eye of [-9, 9]) ellipse(eye, -70, 2.3, blink ? .8 : 4, '#34283e');
-      ellipse(-16, -62, 5, 2.5, '#eba198'); ellipse(16, -62, 5, 2.5, '#eba198');
-      line([[-3, -62], [0, -60], [3, -62]], '#965c6a', 1.3);
-      shape([[14, -97], [30, -103], [29, -91], [14, -95], [7, -88], [4, -101]], '#f5c283');
-      ellipse(15, -95, 3.5, 3.5, '#e7a27a');
-      round(-23, -33, 10, 17, 5, '#f9c9af'); round(14, -33, 10, 17, 5, '#f9c9af');
-      if (pose === 'read') {
-        shape([[-15, -36], [-1, -32], [15, -36], [12, -22], [-1, -19], [-12, -22]], '#eee1bb');
-        line([[-1, -32], [-1, -20]], '#a8797c', 2);
+
+      // Soft ground contact shadow
+      const shadowW = pose === 'rest' ? 68 : 54;
+      const shadowGrad = ctx.createRadialGradient(0, 0, 4, 0, 0, shadowW);
+      shadowGrad.addColorStop(0, 'rgba(18, 12, 28, 0.44)');
+      shadowGrad.addColorStop(1, 'rgba(18, 12, 28, 0)');
+      ctx.fillStyle = shadowGrad;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, shadowW, 14, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      const sheet = pickSpriteSheet(pose);
+      if (sheet) {
+        const frameCount = 8;
+        const cellW = sheet.naturalWidth / frameCount;
+        const cellH = sheet.naturalHeight;
+        const fps = pose === 'walk' ? 9 : pose === 'rest' ? 4 : 6;
+        const idx = Math.floor(seconds * fps) % frameCount;
+        const drawSize = pose === 'rest' ? 215 : 235;
+        const bob = pose === 'walk' ? -Math.abs(Math.sin(seconds * 11)) * 6 : Math.sin(seconds * 2.0) * 1.8;
+
+        ctx.save();
+        ctx.translate(0, bob);
+        if (facing < 0 && pose === 'walk') ctx.scale(-1, 1);
+        ctx.drawImage(sheet, idx * cellW, 0, cellW, cellH, -drawSize / 2, -drawSize + 18, drawSize, drawSize);
+        ctx.restore();
+      } else {
+        // Minimal clean fallback while sprites load
+        ctx.fillStyle = '#7ea8ff';
+        ctx.beginPath();
+        ctx.arc(0, -68, 36, 0, Math.PI * 2);
+        ctx.fill();
       }
+
+      // Gentle floating status indicator (sleep Zzz or cheerful note)
+      if (pose === 'rest') {
+        const rise = (seconds * 18) % 36;
+        const alpha = Math.sin((rise / 36) * Math.PI) * 0.85;
+        ctx.fillStyle = `rgba(218, 224, 255, ${alpha.toFixed(2)})`;
+        ctx.font = '700 22px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('zZz', 42, -165 - rise);
+      } else if (state.pose === 'watch' || state.place === 'sofa') {
+        const floatY = Math.sin(seconds * 2.4) * 5;
+        ctx.fillStyle = 'rgba(255, 226, 175, 0.78)';
+        ctx.font = '600 18px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('✦', 56, -188 + floatY);
+      }
+
       ctx.restore();
     }
 
@@ -200,16 +250,29 @@
       const now = new Date();
       ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
       const hour = now.getHours() + now.getMinutes() / 60;
-      room(hour, at / 1000);
-      const progress = Math.min(1, Math.max(0, (at - movedAt) / 950));
+      const seconds = at / 1000;
+
+      drawBackdrop(hour, seconds);
+
+      const progress = Math.min(1, Math.max(0, (at - movedAt) / 1050));
       const curve = progress * progress * (3 - 2 * progress);
       position = from.map((value, index) => value + (destination[index] - value) * curve);
-      xiaoman(...position, progress < 1 && from !== destination ? 'walk' : state.pose, at / 1000);
-      const dim = (1 + Math.cos(hour / 24 * 2 * Math.PI)) * .07 + (state.pose === 'rest' ? .12 : 0);
-      ctx.fillStyle = 'rgba(43,32,67,' + dim + ')';
-      ctx.fillRect(0, 0, width, height);
+      const moving = progress < 1 && from !== destination;
+      if (moving && Math.abs(destination[0] - from[0]) > 2) {
+        facing = destination[0] < from[0] ? 1 : -1;
+      }
+
+      drawXiaoman(position[0], position[1], moving ? 'walk' : state.pose, seconds);
+
+      // Soft nocturnal / rest atmospheric veil
+      const restDim = state.pose === 'rest' ? 0.14 : 0;
+      if (restDim > 0) {
+        ctx.fillStyle = `rgba(18, 16, 36, ${restDim})`;
+        ctx.fillRect(0, 0, width, height);
+      }
       if (state.source === 'offline') {
-        ctx.fillStyle = '#3b30401d'; ctx.fillRect(0, 0, width, height);
+        ctx.fillStyle = 'rgba(24, 22, 38, 0.18)';
+        ctx.fillRect(0, 0, width, height);
       }
     }
 
@@ -231,12 +294,30 @@
         frame = null;
       }
     }
-    document.addEventListener('visibilitychange', syncVisibility);
-    canvas.addEventListener('click', event => {
+
+    function pointerInAlbum(event) {
       const bounds = canvas.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return false;
       const x = (event.clientX - bounds.left) * width / bounds.width;
       const y = (event.clientY - bounds.top) * height / bounds.height;
-      if (x >= 88 && x <= 254 && y >= 84 && y <= 199) onAlbum();
+      return x >= ALBUM_RECT.x && x <= ALBUM_RECT.x + ALBUM_RECT.w &&
+        y >= ALBUM_RECT.y && y <= ALBUM_RECT.y + ALBUM_RECT.h;
+    }
+
+    document.addEventListener('visibilitychange', syncVisibility);
+    canvas.addEventListener('mousemove', event => {
+      const next = pointerInAlbum(event);
+      if (next !== hoverAlbum) {
+        hoverAlbum = next;
+        canvas.style.cursor = next ? 'pointer' : 'default';
+      }
+    });
+    canvas.addEventListener('mouseleave', () => {
+      hoverAlbum = false;
+      canvas.style.cursor = 'default';
+    });
+    canvas.addEventListener('click', event => {
+      if (pointerInAlbum(event)) onAlbum();
     });
 
     return {
