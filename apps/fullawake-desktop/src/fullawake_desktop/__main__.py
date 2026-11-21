@@ -94,16 +94,15 @@ def main():
     window.events.shown += bring_to_front
 
     def quit_app():
+        from threading import Thread
         exiting.set()
-        window.destroy()
+        def _do_destroy():
+            try:
+                window.destroy()
+            except Exception:
+                pass
+        Thread(target=_do_destroy, daemon=True).start()
 
-    def closing():
-        if exiting.is_set():
-            return True
-        window.hide()
-        return False
-
-    window.events.closing += closing
     tray = make_tray(window, api, quit_app)
     tray.run_detached()
     supervisor.start()
@@ -113,9 +112,21 @@ def main():
     except (RuntimeError, webview.WebViewException):
         ctypes.windll.user32.MessageBoxW(None, '无法启动 WebView2 窗口。请检查 Edge WebView2 Runtime。', 'FullAwake', 0x10)
     finally:
-        tray.stop()
-        supervisor.close()
-        api._close()
+        exiting.set()
+        try:
+            tray.stop()
+        except Exception:
+            pass
+        try:
+            supervisor.close()
+        except Exception:
+            pass
+        try:
+            api._close()
+        except Exception:
+            pass
+        # Exit cleanly after stopping child processes so CoreCLR/WebView2 COM threads never hang shutdown.
+        os._exit(0)
 
 
 if __name__ == '__main__':

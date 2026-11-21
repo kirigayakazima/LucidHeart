@@ -281,15 +281,15 @@ class Supervisor:
         if child and child.poll() is None:
             child.terminate()
             try:
-                child.wait(1.5)
+                child.wait(0.6)
             except subprocess.TimeoutExpired:
                 child.kill()
                 try:
-                    child.wait(1.5)
+                    child.wait(0.5)
                 except subprocess.TimeoutExpired:
                     if os.name == 'nt':
                         subprocess.run(['taskkill', '/F', '/T', '/PID', str(child.pid)],
-                                       capture_output=True, timeout=3, creationflags=HIDDEN)
+                                       capture_output=True, timeout=2, creationflags=HIDDEN)
 
     def restart(self):
         with self.lock:
@@ -305,4 +305,4 @@ class Supervisor:
             self._stop(self.renderer)
             self._stop(self.process)
         if self.thread:
-            self.thread.join(timeout=3)
+            self.thread.join(timeout=0.8)
