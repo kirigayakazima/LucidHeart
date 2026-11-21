@@ -7,6 +7,7 @@ import { registerTaskView } from './task_view.js'
 import { FullAwakeBridgeClient } from './bridge-client.js'
 import { registerVoiceCall } from './voice_call.js'
 import { ActiveTargetStore } from './active_target.js'
+import { HomeProjection } from './home_projection.js'
 import { createHash } from 'node:crypto'
 import { GAME_VOICE_DIRECTION, gameWatchTurn, registerGameCompanion, resolveDeliveryTarget } from './game_watch.js'
 
@@ -37,6 +38,7 @@ export const Config = z
       gatewayUrl: z.string().default('http://127.0.0.1:28765').description('FullAwake PC Gateway URL'),
       authToken: z.string().default('').description('Bearer Token，留空时读取 FULLAWAKE_AUTH_TOKEN '),
       pollIntervalSeconds: z.number().default(30).description('PC 在线状态心跳轮询间隔 (秒)'),
+      homeProjection: z.boolean().default(true).description('手机 Heart 状态只读投影到「小满的家」'),
       watchProvider: z.string().default('').description('自动陪看的 DSH 视觉模型提供者'),
       watchModel: z.string().default('').description('自动陪看的 DSH 视觉模型'),
       watchDecisionMode: z.union(['legacy', 'shadow', 'heart']).default('legacy').description('陪看决策模式'),
@@ -97,7 +99,9 @@ export function apply(ctx, config = {}) {
   let pcOnline = false
   let lastStatus = null
   let initialStatus
+  let homeProjection
   const gameFrames = new WeakMap()
+  let activeTarget
 
   // 1. JSON-RPC 2.0 工具调用封装
   async function callGatewayTool(toolName, args = {}, signal) {
@@ -209,7 +213,7 @@ export function apply(ctx, config = {}) {
   }
   let resolveDesktopTarget = null
   if (config.voiceEpochProtocol !== false && config.watchDecisionMode !== 'shadow') {
-    const activeTarget = new ActiveTargetStore(config, {
+    activeTarget = new ActiveTargetStore(config, {
       ...(config.activeTargetFile !== undefined ? { stateFile: config.activeTargetFile } : {}),
     })
     resolveDesktopTarget = () => activeTarget.resolve(ctx)
@@ -231,12 +235,15 @@ export function apply(ctx, config = {}) {
       }
       const onSyncTarget = ({ requestId }) => {
         const { agentId } = activeTarget.sync(ctx)
+        if (agentId) homeProjection?.refresh()
         bridge.replyDesktop('sync', requestId, Boolean(agentId), Boolean(agentId), agentId ? '' : '手机端暂无活跃私聊会话，请先在私聊发一句话。')
       }
       bridge.on('interrupt', observeInterrupt)
       bridge.on('pc-sync-request', onSyncTarget)
       const offRepair = ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+        const previous = activeTarget.currentId
         activeTarget.observe(agent, message)
+        if (activeTarget.currentId !== previous) homeProjection?.refresh()
         if (!agent?.id || message?.source?.kind !== 'user') return
         const block = message.content?.[0]
         if (block?.type !== 'text' || typeof block.text !== 'string') return
@@ -349,7 +356,10 @@ export function apply(ctx, config = {}) {
     pcOnline = currentOnline
     lastStatus = statusData
     try { ctx.get?.('runtimeCapabilities')?.record('pc_bridge', currentOnline ? 'available' : 'offline', 'gateway_status') } catch {}
-    if (!wasOnline && currentOnline) syncDesktopMood(getHeart()?.getSnapshot?.())
+    if (!wasOnline && currentOnline) {
+      homeProjection?.refresh(true)
+      syncDesktopMood(getHeart()?.getSnapshot?.())
+    }
 
     // 状态变化触发 Heart Protocol v1 观察接入
     const heart = typeof ctx.get === 'function' ? ctx.get('heart') : ctx.heart
@@ -448,6 +458,20 @@ export function apply(ctx, config = {}) {
       })
     }
   })
+
+  if (config.homeProjection !== false && ['linux', 'android'].includes(process.platform) && authToken &&
+      /^http:\/\/127\.0\.0\.1(?::\d+)?$/.test(gatewayUrl)) {
+    activeTarget ??= new ActiveTargetStore(config, {
+      ...(config.activeTargetFile !== undefined ? { stateFile: config.activeTargetFile } : {}),
+    })
+    homeProjection = new HomeProjection(ctx, { gatewayUrl, authToken, bridge, privateScope: () => activeTarget.privateScope(ctx) })
+    ctx.effect(() => homeProjection.start())
+    if (!bridge) ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
+      const previous = activeTarget.currentId
+      activeTarget.observe(agent, message)
+      if (activeTarget.currentId !== previous) homeProjection.refresh()
+    }, { global: true })
+  }
 
   // 4. 定时轮询 PC 在线状态（卸载时自动销毁）
   ctx.effect(() => {

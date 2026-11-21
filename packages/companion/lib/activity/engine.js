@@ -49,6 +49,12 @@ export function activityEngine(db, now) {
   }
   return {
     active, get,
+    peekActive(scope) {
+      const row = db.prepare("SELECT type, created_at, updated_at, control_json FROM activities WHERE scope=? AND status='active'").get(scope)
+      if (!row) return null
+      const { control_json, ...activity } = row
+      return stopReason({ ...goalPolicy(), ...JSON.parse(control_json) }, now()) ? null : activity
+    },
     start(scope, { type, title, budget }, state = { round: 0 }) {
       return transaction(db, () => {
         requireThat(!active(scope), '请先暂停或结束当前活动')

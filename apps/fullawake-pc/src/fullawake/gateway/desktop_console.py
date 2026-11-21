@@ -10,10 +10,12 @@ from typing import Literal
 import mss
 from fastapi import Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fullawake.capabilities.desktop_vision.screen import capture_screenshot, encode_snapshot, grab_area
 from fullawake.capabilities.desktop_vision.uia_backend import list_top_level_windows
+from fullawake.capabilities.desktop_vision.watch import native_loopback
+from fullawake.capabilities.home_state import HomeSnapshot, HomeState
 from fullawake.capabilities.voice_vad import PTT_VIRTUAL_KEYS
 from fullawake.core.config import config
 from fullawake.core.session import is_desktop_locked
@@ -120,6 +122,7 @@ class DesktopConsole:
         self.ptt_key = config.ptt_key if config.ptt_key in PTT_VIRTUAL_KEYS else 'rctrl'
         self.vad_mode = 'ptt' if config.ptt_key in PTT_VIRTUAL_KEYS else 'auto'
         self.log = ConsoleLog()
+        self.home = HomeState()
         gateway.desktop.capture_target = self.capture_target
         self.watch.capture_target = self.capture_target
 
@@ -155,6 +158,18 @@ class DesktopConsole:
             self.watch.detach_clock()
         return self.target
 
+    def home_view(self, *, include_album=False):
+        peer = self.bridge.peer
+        game = self.bridge.game_watch.session
+        task = self.watch.desktop_task
+        return self.home.view({
+            'call_active': bool(peer and peer.call_active),
+            'watch_active': task is not None and not task.done(),
+            'target_label': self.target['label'],
+            'game_watch_active': peer is not None and game is not None and game.owner is peer,
+            'pet_running': self.watch.player is not None,
+        }, include_album=include_album)
+
     def state(self):
         peer, vad = self.bridge.peer, self.bridge.vad
         turns = []
@@ -172,15 +187,41 @@ class DesktopConsole:
                 'active_target': self.target, 'ptt_key': self.ptt_key, 'vad_mode': self.vad_mode,
                 'muted': self.bridge.mic_muted, 'mic_rms': getattr(vad, 'rms', 0.0),
                 'ptt_active': getattr(vad, 'ptt_active', False), 'renderer_online': self.watch.player is not None,
-                'asr_backend': getattr(self.gateway.voice, 'last_asr_backend', None), 'recent_turns': turns}
+                'asr_backend': getattr(self.gateway.voice, 'last_asr_backend', None), 'recent_turns': turns,
+                'home': self.home_view()}
 
     async def disconnect(self, peer):
+        if self.bridge.peer is None or self.bridge.peer is peer:
+            self.home.invalidate()
         if self.watch_peer is peer:
             self.watch_peer = None
             await self.watch.stop_desktop()
 
     def mount(self, app):
         auth = [Depends(authenticate)]
+
+        @app.post('/v1/home/snapshot', status_code=204)
+        async def publish_home(request: Request):
+            token = config.auth_token.strip()
+            if not token or not native_loopback(request) or not hmac.compare_digest(
+                request.headers.get('authorization', '').encode(), f'Bearer {token}'.encode()
+            ):
+                raise HTTPException(403, 'HOME_PUBLISH_FORBIDDEN')
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 12_288:
+                    raise HTTPException(413, 'HOME_SNAPSHOT_TOO_LARGE')
+                body.extend(chunk)
+            try:
+                snapshot = HomeSnapshot.model_validate_json(body)
+            except ValidationError:
+                raise HTTPException(422, 'HOME_SNAPSHOT_INVALID') from None
+            if not self.home.accept(snapshot):
+                raise HTTPException(409, 'HOME_SNAPSHOT_STALE')
+
+        @app.get('/v1/desktop/home', dependencies=auth)
+        async def home():
+            return self.home_view(include_album=True)
 
         @app.get('/v1/desktop/state', dependencies=auth)
         async def state():

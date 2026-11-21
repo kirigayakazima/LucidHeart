@@ -17,6 +17,23 @@ header { justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #2e264c; color: #cbbaff; font-size: 29px; }
 .brand-icon { width: 42px; height: 42px; border-radius: 10px; object-fit: contain; background: #222334; padding: 2px; border: 1px solid var(--line); }
 .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.view-switch { display: inline-flex; gap: 3px; padding: 3px; border-radius: 11px; background: #25212c; }
+.view-switch button { white-space: nowrap; border-color: transparent; background: transparent; color: #c2b5c5; }
+.view-switch button[aria-selected="true"] { background: #403246; color: #ffe9d8; }
+.home-panel { overflow: hidden; border: 1px solid #443644; border-radius: 18px; background: #231d2a; }
+.home-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 20px; flex-wrap: wrap; }
+.home-heading h2 { font-size: 21px; letter-spacing: .04em; color: #ffdfc4; }
+#home-status, .home-hint { color: #d5bec8; font-size: 13px; margin-top: 5px; }
+.home-hint { padding: 0 20px 12px; }
+.home-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.home-tools button, #home-drawer button { background: #352b3b; border-color: #5c4655; color: #ffeadc; }
+#home-canvas { display: block; width: 100%; height: auto; aspect-ratio: 12 / 7; background: #352649; }
+#home-drawer { width: min(490px, calc(100vw - 32px)); max-height: 85vh; margin-right: 0; padding: 0; border: 1px solid #5c4655; border-radius: 16px; color: #f7edf1; background: #27202e; }
+#home-drawer::backdrop { background: #100c16c2; }
+#home-album-items { padding: 0 20px 20px; }
+.home-entry { padding: 12px 0; border-bottom: 1px solid #564254; }
+.home-entry p { margin: 5px 0; }
+.home-entry small { color: #d5bec8; }
 #pet.active { background: #1e3b34; border-color: #3f7a68; color: #c7f7e4; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; flex-wrap: wrap; }
 .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
@@ -72,5 +89,6 @@ meter { flex: 1; min-width: 50px; height: 16px; accent-color: #78ecb6; }
 #restart { margin-top: 10px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; color: var(--muted); }
 @media (max-width: 900px) { header, main { padding: 14px 18px; } header { gap: 8px; } .status span { padding: 4px 7px; } }
+@media (max-width: 1040px) { header { flex-wrap: wrap; } }
 
 .header-actions { display: flex; gap: 8px; }

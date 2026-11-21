@@ -63,6 +63,17 @@ export class ActiveTargetStore {
     return this.#lastAgentId || this.config?.duplexTarget || ''
   }
 
+  /** Home needs positive private-chat evidence and must never persist a fallback. */
+  privateScope(ctx) {
+    const id = this.currentId
+    const agent = getAgentById(getService(ctx, 'agents'), id)
+    if (!agent || !isDirectC2c(ctx, agent)) return null
+    const sessionId = agent.session?.id ?? agent.session?.header?.id ?? agent.id
+    const allowed = this.config?.duplexQqSessions
+    if (allowed?.length && !allowed.some(value => normalizeId(value) === normalizeId(sessionId))) return null
+    return sessionId
+  }
+
   #load() {
     if (!this.stateFile) return
     try {

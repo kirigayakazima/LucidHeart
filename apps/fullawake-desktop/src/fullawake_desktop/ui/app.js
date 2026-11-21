@@ -3,6 +3,10 @@
 const byId = id => document.getElementById(id);
 let api, state = {}, sources = { monitors: [], windows: [] }, selected = { kind: 'auto' }, notified = '', actionPending = false;
 let previewGeneration = 0;
+let homeOpen = false;
+let albumGeneration = 0;
+let albumKey;
+let home;
 
 function node(tag, value, className) {
   const result = document.createElement(tag);
@@ -24,6 +28,7 @@ function feedback(message) {
 
 function renderState(next) {
   state = next;
+  renderHome(next.home);
   lamp('usb', next.usb, 'USB 隧道 · ' + (next.usb ? '已建立' : '等待'));
   lamp('phone', next.bridge_connected, '手机小满 · ' + (next.bridge_connected ? '已连接' : '等待握手'));
   lamp('gateway', next.gateway_online, 'PC 网关 · ' + (next.gateway_online ? '运行中' : '离线'));
@@ -58,6 +63,66 @@ function renderState(next) {
     return row;
   });
   byId('turns').replaceChildren(...(rows.length ? rows : [node('p', '连麦后显示识别和回复。', 'muted')]));
+}
+
+function renderHome(snapshot) {
+  const current = snapshot?.phone_online && !snapshot.stale && Date.parse(snapshot.expiresAt) > Date.now();
+  const mood = { calm: '平静', cheerful: '开心', engaged: '专注', excited: '兴奋', tired: '倦了' };
+  const label = current ? ['手机在线', mood[snapshot.mood?.state], snapshot.sceneState?.label].filter(Boolean).join(' · ')
+    : snapshot?.unavailable === 'expired' || snapshot?.phone_online ? '状态已过期 · 安静等待' : '手机离线 · 安静等待';
+  if (byId('home-status').textContent !== label) byId('home-status').textContent = label;
+  home?.update(current ? snapshot.sceneState : null);
+  const key = current ? snapshot.generatedAt : null;
+  if (byId('home-drawer').open && key !== albumKey) void loadAlbum(key);
+}
+
+function setView(nextHome) {
+  homeOpen = nextHome;
+  byId('home-view').hidden = !nextHome;
+  byId('workbench-view').hidden = nextHome;
+  for (const [id, selected] of [['workbench-tab', !nextHome], ['home-tab', nextHome]]) {
+    const tab = byId(id);
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  }
+  if (!nextHome && byId('home-drawer').open) byId('home-drawer').close();
+  if (nextHome) previewGeneration++;
+  home.setActive(nextHome);
+}
+
+async function loadAlbum(key) {
+  albumKey = key;
+  const generation = ++albumGeneration;
+  const list = byId('home-album-items');
+  list.replaceChildren(node('p', key ? '正在读取共同相册…' : '手机离线，相册暂不可用。'));
+  if (!key) return;
+  let result;
+  try { result = await api.home(); } catch {}
+  if (generation !== albumGeneration || !byId('home-drawer').open) return;
+  if (!result?.phone_online || result.stale || result.generatedAt !== key) {
+    list.replaceChildren(node('p', '相册状态正在同步。'));
+    return;
+  }
+  const items = result.recentAlbum || [];
+  const kinds = { video_storyboard: '视频', game_moment: '游戏', user_photo: '照片' };
+  const date = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
+  const cards = items.map(item => {
+    const card = node('article', undefined, 'home-entry');
+    const time = Date.parse(item.timestamp);
+    card.append(node('h3', item.title), node('p', item.summary), node('small',
+      [kinds[item.kind], Number.isFinite(time) ? date.format(time) : '', '修订 ' + item.revision + ' 次'].filter(Boolean).join(' · ')));
+    return card;
+  });
+  list.replaceChildren(...(cards.length ? cards : [node('p', '当前私聊还没有可展示的共同高光。')]));
+}
+
+function openAlbum() {
+  const drawer = byId('home-drawer');
+  if (drawer.open) return;
+  drawer.showModal();
+  const snapshot = state.home;
+  void loadAlbum(snapshot?.phone_online && !snapshot.stale && Date.parse(snapshot.expiresAt) > Date.now()
+    ? snapshot.generatedAt : null);
 }
 
 function renderSources() {
@@ -141,6 +206,35 @@ async function repeat(callback, delay) {
 
 window.addEventListener('pywebviewready', () => {
   api = window.pywebview.api;
+  home = window.HomeCanvas.create(byId('home-canvas'), openAlbum);
+  for (const [id, selected] of [['workbench-tab', false], ['home-tab', true]]) {
+    const tab = byId(id);
+    tab.onclick = () => setView(selected);
+    tab.onkeydown = event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? false : event.key === 'End' ? true : !selected;
+      setView(next);
+      byId(next ? 'home-tab' : 'workbench-tab').focus();
+    };
+  }
+  byId('home-album').onclick = openAlbum;
+  byId('home-export').onclick = async () => {
+    const button = byId('home-export');
+    const hint = byId('home-hint');
+    button.disabled = true;
+    hint.hidden = true;
+    try {
+      const result = await api.save_home_image(home.image());
+      hint.textContent = result.error || (result.saved ? '已保存小屋画面。' : '');
+    } catch {
+      hint.textContent = '暂时无法保存小屋画面。';
+    } finally {
+      hint.hidden = !hint.textContent;
+      button.disabled = false;
+    }
+  };
+  byId('home-drawer').addEventListener('close', () => { albumGeneration++; albumKey = undefined; });
   byId('pet').onclick = async () => {
     const res = await run(() => api.toggle_pet(), true);
     if (res?.accepted) {
@@ -172,5 +266,5 @@ window.addEventListener('pywebviewready', () => {
     if (next.gateway_online && !state.gateway_online) void refreshSources();
     renderState(next);
   }, 300);
-  void repeat(async () => { if (state.gateway_online) await preview(); }, 1500);
+  void repeat(async () => { if (state.gateway_online && !homeOpen && !document.hidden) await preview(); }, 1500);
 }, { once: true });

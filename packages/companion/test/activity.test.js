@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
-import { execution, fixture, host } from './fixture.js'
+import { execution, fixture, host, noon } from './fixture.js'
 
 test('activity lifecycle is durable, scoped, and rounds cannot be overridden', t => {
   const f = fixture(t)
@@ -31,4 +33,23 @@ test('Cordis gates activity entry and reports start and finish to Heart', async 
   assert.deepEqual(h.observations.map(item => item.type), ['activity_started', 'activity_finished'])
   const quiet = host(t, { heart: { evaluateActivity: () => ({ suitable: false, reason: 'quiet-hours' }) } })
   assert.equal((await quiet.run('activity_start', { type: 'reading', title: '读书' }, execution())).ok, false)
+})
+
+test('Home activity and project peeks omit private titles and leave expired rows unchanged', t => {
+  const f = fixture(t)
+  const budget = { deadlineAt: noon + 1000 }
+  f.activities.start('a', { title: 'private activity', type: 'reading', budget })
+  f.projects.create('a', { name: 'private project', goal: 'private goal', milestones: ['private milestone'], budget })
+  assert.deepEqual(f.activities.peekActive('a'), { type: 'reading', created_at: noon, updated_at: noon })
+  assert.deepEqual(f.projects.peekActive('a'), { created_at: noon, updated_at: noon })
+  assert.equal(f.activities.peekActive('b'), null)
+  assert.equal(f.projects.peekActive('b'), null)
+  f.advance(1000)
+  assert.equal(f.activities.peekActive('a'), null)
+  assert.equal(f.projects.peekActive('a'), null)
+  for (const [file, table, status] of [['activity', 'activities', 'active'], ['projects', 'projects', 'in_progress']]) {
+    const db = new DatabaseSync(path.join(f.dataDir, file + '.sqlite'), { readOnly: true })
+    try { assert.equal(db.prepare('SELECT status FROM ' + table).get().status, status) }
+    finally { db.close() }
+  }
 })

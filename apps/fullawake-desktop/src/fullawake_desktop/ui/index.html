@@ -6,11 +6,16 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
   <title>FullAwake</title>
   <link rel="stylesheet" href="styles.css">
+  <script src="home_canvas.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
   <header>
     <div class="brand"><img class="brand-icon" src="dafeiyu.png" alt="大肥鱼"><div><h1>FullAwake</h1><p>小满的桌面工作台</p></div></div>
+    <nav class="view-switch" aria-label="视图" role="tablist">
+      <button id="workbench-tab" type="button" role="tab" aria-selected="true" aria-controls="workbench-view">工作台</button>
+      <button id="home-tab" type="button" role="tab" aria-selected="false" aria-controls="home-view" tabindex="-1">小满的家</button>
+    </nav>
     <div class="status" aria-live="polite">
       <span id="usb">USB 隧道 · 等待</span><span id="phone">手机小满 · 等待握手</span><span id="gateway">PC 网关 · 等待</span>
     </div>
@@ -20,7 +25,7 @@
       <button id="reconnect">重连手机</button>
     </div>
   </header>
-  <main>
+  <main id="workbench-view" role="tabpanel" aria-labelledby="workbench-tab">
     <div class="actions">
       <button id="call" class="call"><span>连麦</span><strong>开启连麦</strong></button>
       <button id="watch" class="watch"><span>共享画面</span><strong>开启陪看</strong></button>
@@ -67,6 +72,26 @@
       </div>
       <pre id="logs"></pre>
     </details>
+  </main>
+  <main id="home-view" role="tabpanel" aria-labelledby="home-tab" hidden>
+    <section class="home-panel" aria-labelledby="home-title">
+      <div class="home-heading">
+        <div><h2 id="home-title">小满的家</h2><p id="home-status" role="status">手机离线 · 安静等待</p></div>
+        <div class="home-tools">
+          <button id="home-album" type="button">共同相册</button>
+          <button id="home-export" type="button">保存小屋画面</button>
+        </div>
+      </div>
+      <canvas id="home-canvas" width="960" height="560" aria-label="小满的小屋，内有窗边、书桌、电视角、相册书架、小床和门口"></canvas>
+      <p id="home-hint" class="home-hint" role="status" hidden></p>
+    </section>
+    <dialog id="home-drawer" aria-labelledby="home-album-title">
+      <div class="home-heading">
+        <h2 id="home-album-title">共同相册</h2>
+        <form method="dialog"><button type="submit" aria-label="关闭共同相册">关闭</button></form>
+      </div>
+      <div id="home-album-items" aria-live="polite"></div>
+    </dialog>
   </main>
 </body>
 </html>

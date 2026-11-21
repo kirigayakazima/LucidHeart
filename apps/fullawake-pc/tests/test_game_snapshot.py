@@ -197,19 +197,21 @@ def test_buffer_is_bounded_and_flushes_on_lock_and_switch(desktop):
     assert asyncio.run(story.snapshot())['code'] == 'no_foreground_game' and not story.frames
 
 
-def test_friendly_pet_pixels_are_masked_from_thumbnail(desktop):
+@pytest.mark.parametrize('compact', [True, False])
+def test_friendly_pet_masks_only_compact_overlays(desktop, compact):
     desktop.covered = True
     screen.ctypes.windll.user32.GetPropW = lambda *_: 1
-    screen.ctypes.windll.user32.GetWindowRect = lambda _, pointer: _set_pet_rect(pointer._obj)
+    def bounds(hwnd, pointer):
+        rect = pointer._obj
+        rect.left, rect.top = desktop.origin
+        width, height = (60, 60) if compact and hwnd == 88 else desktop.size
+        rect.right, rect.bottom = rect.left + width, rect.top + height
+        return 1
+    screen.ctypes.windll.user32.GetWindowRect = bounds
     result = screen.capture_screenshot(auto_game=True, sample=True)
     image = result['image']
-    assert image.getpixel((15, 15)) == (20, 20, 24)
+    assert image.getpixel((15, 15)) == ((20, 20, 24) if compact else (210, 70, 30))
     assert image.getpixel((300, 150)) == (210, 70, 30)
-
-
-def _set_pet_rect(rect):
-    rect.left, rect.top, rect.right, rect.bottom = 10, 10, 70, 70
-    return 1
 
 
 def test_burst_with_switch_during_encoding_discards_the_sheet(desktop, monkeypatch):

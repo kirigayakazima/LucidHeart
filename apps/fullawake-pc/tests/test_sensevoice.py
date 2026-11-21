@@ -42,4 +42,4 @@ def test_sensevoice_local_model_factory_contract(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, 'sherpa_onnx', SimpleNamespace(OfflineRecognizer=SimpleNamespace(from_sense_voice=create)))
     assert VoiceCompute().sensevoice_model is not None
     assert calls[0] == {'model': str(tmp_path / 'model.int8.onnx'), 'tokens': str(tmp_path / 'tokens.txt'),
-        'language': 'auto', 'use_itn': True, 'num_threads': 4}
+        'language': 'zh', 'use_itn': True, 'num_threads': 4}

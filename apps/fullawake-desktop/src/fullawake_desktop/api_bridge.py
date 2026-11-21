@@ -1,8 +1,13 @@
 """Expose fixed console operations to local WebView content."""
+import base64
+import binascii
+from io import BytesIO
 import json
+from pathlib import Path
 from threading import Thread
 
 import httpx
+from PIL import Image
 from websockets.sync.client import connect
 from websockets.exceptions import WebSocketException
 
@@ -15,6 +20,7 @@ class ConsoleApi:
                                     timeout=2.5, trust_env=False, transport=transport)
         self._state = None
         self._listener = None
+        self._select_home_export = lambda: None
 
     def _request(self, method, route, **kwargs):
         try:
@@ -39,6 +45,8 @@ class ConsoleApi:
                             continue
             except (OSError, WebSocketException, ValueError, TimeoutError):
                 self._state = None
+                fallback = self._request('GET', 'state', timeout=.6)
+                self._state = fallback if not stop.is_set() else None
             stop.wait(.5)
 
     def _start(self):
@@ -51,15 +59,52 @@ class ConsoleApi:
         self._client.close()
 
     def state(self):
-        current = self._state
-        if current is None:
-            current = self._request('GET', 'state', timeout=.6)
+        current = self._state or {'error': '等待本地网关。'}
         supervisor = self._supervisor
+        pet_running = supervisor.pet_running()
         return {**current, 'gateway_online': 'error' not in current, 'usb': supervisor.usb,
                 'usb_error': supervisor.usb_error, 'gateway_error': supervisor.gateway_error,
-                'pet_running': supervisor.pet_running(),
+                'pet_running': pet_running,
+                'home': self._home_with_pet(current.get('home'), pet_running),
                 'auto_launch_pet': bool(supervisor.config.get('auto_launch_pet', False)),
                 'logs': current.get('logs') or list(supervisor.lines)}
+
+    @staticmethod
+    def _home_with_pet(home, pet_running):
+        if not home or not pet_running or home.get('stale'):
+            return home
+        scene = home.get('sceneState', {})
+        if scene.get('source') in ('heart', 'decoration'):
+            return {**home, 'sceneState': {'place': 'door', 'pose': 'idle', 'source': 'desktop_pet',
+                                         'label': '小满正在桌面陪你'}}
+        return home
+
+    def home(self):
+        return self._home_with_pet(self._request('GET', 'home', timeout=2.0), self._supervisor.pet_running())
+
+    def save_home_image(self, encoded):
+        if type(encoded) is not str or len(encoded) > 8_000_000:
+            return {'error': '小屋画面格式无效。'}
+        try:
+            image = base64.b64decode(encoded, validate=True)
+            with Image.open(BytesIO(image), formats=('PNG',)) as parsed:
+                width, height = parsed.size
+                if not (960 <= width <= 1920 and 560 <= height <= 1120):
+                    raise ValueError('invalid canvas dimensions')
+                parsed.verify()
+        except (OSError, ValueError, binascii.Error, Image.DecompressionBombError):
+            return {'error': '小屋画面格式无效。'}
+        try:
+            selected = self._select_home_export()
+            if not selected:
+                return {'saved': False}
+            path = Path(selected[0])
+            if path.suffix.lower() != '.png':
+                return {'error': '请选择 PNG 文件。'}
+            path.write_bytes(image)
+            return {'saved': True}
+        except (OSError, RuntimeError):
+            return {'error': '无法保存小屋画面。'}
 
     def sources(self):
         return self._request('GET', 'sources')

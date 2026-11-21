@@ -32,6 +32,13 @@ export function projectManager(db, now) {
   }
   return {
     status,
+    peekActive(scope) {
+      const rows = db.prepare("SELECT created_at, updated_at, control_json FROM projects WHERE scope=? AND status='in_progress' ORDER BY updated_at DESC,id")
+      for (const { control_json, ...project } of rows.iterate(scope)) {
+        if (!stopReason({ ...goalPolicy(), ...JSON.parse(control_json) }, now())) return project
+      }
+      return null
+    },
     create(scope, { name, goal, milestones, budget }) {
       requireThat(Array.isArray(milestones) && milestones.length >= 1 && milestones.length <= 50, '需要 1–50 个里程碑')
       const plan = milestones.map((text, index) => ({ index: index + 1, text: str(text, '里程碑'), done: false }))

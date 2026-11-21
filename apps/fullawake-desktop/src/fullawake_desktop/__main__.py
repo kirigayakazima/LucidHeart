@@ -74,6 +74,8 @@ def main():
     window = webview.create_window('FullAwake · 桌面工作台', str(ui), js_api=api,
                                    width=1170, height=820, min_size=(820, 620), background_color='#111218',
                                    minimized=False, focus=True)
+    api._select_home_export = lambda: window.create_file_dialog(
+        webview.SAVE_DIALOG, save_filename='xiaoman-home.png', file_types=('PNG (*.png)',))
 
     def bring_to_front():
         from threading import Timer
