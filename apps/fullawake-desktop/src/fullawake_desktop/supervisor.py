@@ -201,12 +201,15 @@ class Supervisor:
         if self.pet is not None and self.pet.poll() is None:
             self._pet_alive_cache = True
             return True
-        import time
-        now = time.monotonic()
-        if force_refresh or now - self._pet_checked_at >= 3.0:
-            self._pet_checked_at = now
+        if force_refresh:
             self._pet_alive_cache = bool(self._external_pet_pids())
         return self._pet_alive_cache
+
+    def refresh_pet_status(self):
+        if self.pet is not None and self.pet.poll() is None:
+            self._pet_alive_cache = True
+        else:
+            self._pet_alive_cache = bool(self._external_pet_pids())
 
     def start_pet(self):
         with self.lock:
@@ -266,6 +269,7 @@ class Supervisor:
                 self.start_pet()
             while not self.shutdown.is_set():
                 self.refresh_usb()
+                self.refresh_pet_status()
                 if self.process and (code := self.process.poll()) is not None:
                     self.gateway_error = f'网关已退出（{code}），可手动重启。'
                 self.shutdown.wait(3)
