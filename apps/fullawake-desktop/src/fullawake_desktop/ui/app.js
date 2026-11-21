@@ -28,6 +28,10 @@ function renderState(next) {
   lamp('phone', next.bridge_connected, '手机小满 · ' + (next.bridge_connected ? '已连接' : '等待握手'));
   lamp('gateway', next.gateway_online, 'PC 网关 · ' + (next.gateway_online ? '运行中' : '离线'));
   byId('call').disabled = byId('watch').disabled = byId('sync').disabled = actionPending || !next.desktop_control;
+  byId('pet').disabled = actionPending;
+  byId('pet').classList.toggle('active', Boolean(next.pet_running));
+  byId('pet').textContent = next.pet_running ? '关闭桌宠' : '启动桌宠';
+  if (document.activeElement !== byId('auto-pet')) byId('auto-pet').checked = Boolean(next.auto_launch_pet);
   byId('call').classList.toggle('active', Boolean(next.call_active));
   byId('call').lastElementChild.textContent = next.call_active ? '挂断连麦' : '开启连麦';
   byId('watch').classList.toggle('active', Boolean(next.watch_active));
@@ -137,6 +141,17 @@ async function repeat(callback, delay) {
 
 window.addEventListener('pywebviewready', () => {
   api = window.pywebview.api;
+  byId('pet').onclick = async () => {
+    const res = await run(() => api.toggle_pet(), true);
+    if (res?.accepted) {
+      notified = res.pet_running ? '桌宠已启动。' : '桌宠已关闭。';
+      renderState({ ...state, pet_running: res.pet_running });
+    }
+  };
+  byId('auto-pet').onchange = async event => {
+    const res = await run(() => api.set_auto_pet(event.target.checked));
+    if (res?.accepted) renderState({ ...state, auto_launch_pet: res.auto_launch_pet });
+  };
   byId('sync').onclick = async () => {
     const res = await run(() => api.sync_session(), true);
     if (res?.accepted) { notified = '已同步手机当前活跃私聊会话。'; renderState(state); }

@@ -3,18 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
   <title>FullAwake</title>
   <link rel="stylesheet" href="styles.css">
   <script src="app.js" defer></script>
 </head>
 <body>
   <header>
-    <div class="brand"><span class="brand-mark" aria-hidden="true">ϟ</span><div><h1>FullAwake</h1><p>小满的桌面工作台</p></div></div>
+    <div class="brand"><img class="brand-icon" src="dafeiyu.png" alt="大肥鱼"><div><h1>FullAwake</h1><p>小满的桌面工作台</p></div></div>
     <div class="status" aria-live="polite">
       <span id="usb">USB 隧道 · 等待</span><span id="phone">手机小满 · 等待握手</span><span id="gateway">PC 网关 · 等待</span>
     </div>
     <div class="header-actions">
+      <button id="pet">启动桌宠</button>
       <button id="sync">同步会话</button>
       <button id="reconnect">重连手机</button>
     </div>
@@ -59,7 +60,13 @@
         <div id="turns"><p class="muted">连麦后显示识别和回复。</p></div>
       </section>
     </div>
-    <details class="logs"><summary>网关日志</summary><button id="restart">重启网关</button><pre id="logs"></pre></details>
+    <details class="logs"><summary>设置与网关日志</summary>
+      <div class="settings-row">
+        <label class="toggle"><input id="auto-pet" type="checkbox"> 启动工作台时自动打开桌宠</label>
+        <button id="restart">重启网关</button>
+      </div>
+      <pre id="logs"></pre>
+    </details>
   </main>
 </body>
 </html>

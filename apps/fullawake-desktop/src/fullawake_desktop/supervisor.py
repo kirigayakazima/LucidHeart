@@ -45,6 +45,9 @@ class Supervisor:
         self.lock = Lock()
         self.process = None
         self.renderer = None
+        self.pet = None
+        self._pet_alive_cache = False
+        self._pet_checked_at = 0.0
         self.usb = False
         self.usb_error = ''
         self.gateway_error = ''
@@ -169,9 +172,98 @@ class Supervisor:
             self.usb = False
             self.usb_error = 'ADB 隧道建立失败。'
 
+    def _pet_dir(self):
+        configured = self.config.get('pet_dir')
+        candidates = ([Path(configured)] if isinstance(configured, str) and configured.strip() else []) + [
+            SUITE.parent / 'dsh-pet-indesktop',
+        ]
+        for candidate in candidates:
+            if (candidate / 'pet').is_dir():
+                return candidate
+        return None
+
+    def _external_pet_pids(self):
+        if os.name != 'nt':
+            return []
+        try:
+            cmd = (
+                "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { "
+                "$_.CommandLine -match 'pythonw?(\\.exe)?\"?\\s+.*-m\\s+pet(\\s|$)' "
+                "} | Select-Object -ExpandProperty ProcessId"
+            )
+            out = subprocess.run(['powershell', '-NoProfile', '-Command', cmd],
+                                 capture_output=True, text=True, timeout=3, creationflags=HIDDEN).stdout
+            return [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return []
+
+    def pet_running(self, *, force_refresh=False):
+        if self.pet is not None and self.pet.poll() is None:
+            self._pet_alive_cache = True
+            return True
+        import time
+        now = time.monotonic()
+        if force_refresh or now - self._pet_checked_at >= 3.0:
+            self._pet_checked_at = now
+            self._pet_alive_cache = bool(self._external_pet_pids())
+        return self._pet_alive_cache
+
+    def start_pet(self):
+        with self.lock:
+            if self.pet_running(force_refresh=True):
+                return {'pet_running': True, 'accepted': True}
+            pet_dir = self._pet_dir()
+            if pet_dir is None:
+                return {'pet_running': False, 'accepted': False, 'error': '未找到桌宠目录 dsh-pet-indesktop。'}
+            try:
+                venv = pet_dir / '.venv'
+                py_exe = base_python(venv) if (venv / 'pyvenv.cfg').is_file() else base_python(PC / '.venv')
+                pyw = py_exe.with_name('pythonw.exe')
+                runner = pyw if pyw.is_file() else py_exe
+                env = self.env()
+                site = venv / 'Lib/site-packages'
+                pet_paths = [pet_dir] + ([site] if site.is_dir() else [])
+                env['PYTHONPATH'] = os.pathsep.join(map(str, pet_paths))
+                env['VIRTUAL_ENV'] = str(venv)
+                env.setdefault('FULLAWAKE_GATEWAY_URL', 'http://127.0.0.1:8765')
+                self.pet = subprocess.Popen([str(runner), '-m', 'pet', '--no-chat'], cwd=pet_dir, env=env,
+                                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL, creationflags=HIDDEN)
+                self._pet_alive_cache = True
+                return {'pet_running': True, 'accepted': True}
+            except (OSError, ValueError, FileNotFoundError) as error:
+                return {'pet_running': False, 'accepted': False, 'error': f'启动桌宠失败（{type(error).__name__}）。'}
+
+    def stop_pet(self):
+        with self.lock:
+            self._stop(self.pet)
+            self.pet = None
+            for pid in self._external_pet_pids():
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)],
+                                   capture_output=True, timeout=3, creationflags=HIDDEN)
+            self._pet_alive_cache = False
+            self._pet_checked_at = 0.0
+            return {'pet_running': False, 'accepted': True}
+
+    def set_auto_launch_pet(self, enabled):
+        flag = bool(enabled)
+        self.config['auto_launch_pet'] = flag
+        file = LOCAL / 'desktop-config.json'
+        try:
+            LOCAL.mkdir(parents=True, exist_ok=True)
+            data = json.loads(file.read_text(encoding='utf-8-sig')) if file.exists() else {}
+            data['auto_launch_pet'] = flag
+            file.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        except (OSError, ValueError):
+            pass
+        return {'auto_launch_pet': flag, 'accepted': True}
+
     def start(self):
         def run():
             self.start_gateway()
+            if self.config.get('auto_launch_pet'):
+                self.start_pet()
             while not self.shutdown.is_set():
                 self.refresh_usb()
                 if self.process and (code := self.process.poll()) is not None:

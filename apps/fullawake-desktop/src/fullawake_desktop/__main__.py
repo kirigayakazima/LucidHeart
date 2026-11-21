@@ -9,9 +9,47 @@ from .supervisor import LOCAL, Supervisor
 from .tray import make_tray
 
 
+ICON_PATH = Path(__file__).parent / 'assets/dafeiyu.ico'
+_ICON_HANDLES = []
+
+
+def _apply_window_icon(title, icon_path):
+    if os.name != 'nt' or not icon_path.is_file():
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                      ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return
+        # IMAGE_ICON=1, LR_LOADFROMFILE=0x0010, WM_SETICON=0x0080
+        small = user32.LoadImageW(None, str(icon_path), 1, 16, 16, 0x0010)
+        big = user32.LoadImageW(None, str(icon_path), 1, 48, 48, 0x0010)
+        if small:
+            _ICON_HANDLES.append(small)
+            user32.SendMessageW(hwnd, 0x0080, 0, small)
+        if big:
+            _ICON_HANDLES.append(big)
+            user32.SendMessageW(hwnd, 0x0080, 1, big)
+    except Exception:
+        pass
+
+
 def main():
     import ctypes
     import pythonnet
+    if os.name == 'nt':
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('LucidHeart.FullAwake.Desktop')
+        except Exception:
+            pass
     try:
         supervisor = Supervisor()
     except (OSError, ValueError):
@@ -35,6 +73,7 @@ def main():
                                    minimized=False, focus=True)
 
     def bring_to_front():
+        _apply_window_icon('FullAwake · 桌面工作台', ICON_PATH)
         try:
             window.restore()
             window.on_top = True

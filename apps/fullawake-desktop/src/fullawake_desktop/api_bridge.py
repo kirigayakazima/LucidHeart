@@ -57,6 +57,8 @@ class ConsoleApi:
         supervisor = self._supervisor
         return {**current, 'gateway_online': 'error' not in current, 'usb': supervisor.usb,
                 'usb_error': supervisor.usb_error, 'gateway_error': supervisor.gateway_error,
+                'pet_running': supervisor.pet_running(),
+                'auto_launch_pet': bool(supervisor.config.get('auto_launch_pet', False)),
                 'logs': current.get('logs') or list(supervisor.lines)}
 
     def sources(self):
@@ -85,6 +87,14 @@ class ConsoleApi:
 
     def sync_session(self):
         return self._request('POST', 'sync', timeout=4.5)
+
+    def toggle_pet(self):
+        if self._supervisor.pet_running(force_refresh=True):
+            return self._supervisor.stop_pet()
+        return self._supervisor.start_pet()
+
+    def set_auto_pet(self, enabled):
+        return self._supervisor.set_auto_launch_pet(enabled)
 
     def restart_gateway(self):
         self._supervisor.restart()

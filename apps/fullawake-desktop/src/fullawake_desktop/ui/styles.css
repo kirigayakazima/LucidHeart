@@ -15,6 +15,12 @@ header, main { width: min(1200px, 100%); margin: auto; padding: 18px 28px; }
 header, .brand, .status, .panel-head, .meter-row, .audio-controls { display: flex; align-items: center; gap: 12px; }
 header { justify-content: space-between; border-bottom: 1px solid var(--line); }
 .brand-mark { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #2e264c; color: #cbbaff; font-size: 29px; }
+.brand-icon { width: 42px; height: 42px; border-radius: 10px; object-fit: contain; background: #222334; padding: 2px; border: 1px solid var(--line); }
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#pet.active { background: #1e3b34; border-color: #3f7a68; color: #c7f7e4; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; flex-wrap: wrap; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.toggle input { width: auto; margin: 0; padding: 0; accent-color: #b5a4ff; }
 h1, h2, p { margin: 0; }
 h1 { font-size: 20px; letter-spacing: .04em; }
 h2 { font-size: 15px; }
