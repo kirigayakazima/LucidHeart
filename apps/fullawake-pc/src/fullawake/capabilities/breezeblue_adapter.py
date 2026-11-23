@@ -49,7 +49,7 @@ class BreezeBlueAdapter:
         deadline = time.monotonic() + min(deadline_s, 8.0)
         for attempt in range(len(_RETRY_429_DELAYS) + 1):
             remaining = deadline - time.monotonic()
-            if remaining <= 0.05:
+            if remaining <= 0:
                 raise asyncio.TimeoutError('BreezeBlue deadline exceeded')
             try:
                 return await asyncio.wait_for(self._request(url, payload), min(remaining, 8.0))
