@@ -28,7 +28,7 @@ export function registerVoiceCall(ctx, config, {
   bridge, defineTool, output, readyForCall, speak, canSpeak = () => false, replyRoute = {}, resolveTarget,
 }) {
   const service = name => {
-    try { return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name] } catch { return null }
+    try { return ctx.get?.(name) ?? ctx?.[name] } catch { return null }
   }
   let capture = null
   let starting = null
@@ -106,7 +106,12 @@ export function registerVoiceCall(ctx, config, {
     if ((event?.agent?.id ?? event?.agentId ?? event?.id) === (pending?.agent ?? turn?.agent)?.id) revoke()
   })
   const onTranscript = event => {
-    void Promise.resolve().then(() => capture?.receive(event)).catch(() => {
+    const receiver = capture
+    void Promise.resolve().then(async () => {
+      if ((!receiver || await receiver.receive(event) === false) && event.is_final) {
+        ctx.logger?.warn?.('[FullAwake] 通话转写未投递 ' + (receiver ? '回合已失效' : '通话未开启'))
+      }
+    }).catch(() => {
       ctx.logger?.warn?.('[FullAwake] 通话定稿未完成')
     })
   }
@@ -168,11 +173,13 @@ export function registerVoiceCall(ctx, config, {
         if (!agent || !duplex?.startCall || !service('memory')?.handoff?.saveCall) return { message: '语音会话或记忆接力服务尚未就绪。' }
         handoffError = false
         captureEpoch = -1
-        const current = capture = duplex.startCall(agent, { channel: user.channel, speaker: user.speaker, targetId: user.targetId,
-          onInput(message) {
+        const agentId = agent.id
+        const resolveAgent = () => service('agents')?.get?.(agentId) ?? resolveTarget?.()
+        const current = capture = duplex.startCall(agent, { resolveAgent, channel: user.channel, speaker: user.speaker, targetId: user.targetId,
+          onInput(message, liveAgent = agent) {
             const block = message.content[0]
             if (!block?.text?.startsWith('[Voice message]')) return
-            pending = { agent, id: message.id }
+            pending = { agent: liveAgent, id: message.id }
           },
           onEnd() {
             if (capture !== current) return

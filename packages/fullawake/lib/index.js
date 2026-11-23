@@ -240,10 +240,11 @@ export function apply(ctx, config = {}) {
       }
       bridge.on('interrupt', observeInterrupt)
       bridge.on('pc-sync-request', onSyncTarget)
-      const offRepair = ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
-        const previous = activeTarget.currentId
-        activeTarget.observe(agent, message)
-        if (activeTarget.currentId !== previous) homeProjection?.refresh()
+      const offRepair = ctx.on?.('agent/inbox/claimed', ({ agent, message, turn }) => {
+        const previous = homeProjection && activeTarget.privateScope(ctx)
+        activeTarget.observe(agent, message, ctx)
+        if (homeProjection && activeTarget.privateScope(ctx) !== previous) homeProjection.refresh()
+        if (message?.source?.kind === 'user') homeProjection?.followUserTurn(agent?.session, turn)
         if (!agent?.id || message?.source?.kind !== 'user') return
         const block = message.content?.[0]
         if (block?.type !== 'text' || typeof block.text !== 'string') return
@@ -466,10 +467,11 @@ export function apply(ctx, config = {}) {
     })
     homeProjection = new HomeProjection(ctx, { gatewayUrl, authToken, bridge, privateScope: () => activeTarget.privateScope(ctx) })
     ctx.effect(() => homeProjection.start())
-    if (!bridge) ctx.on?.('agent/inbox/claimed', ({ agent, message }) => {
-      const previous = activeTarget.currentId
-      activeTarget.observe(agent, message)
-      if (activeTarget.currentId !== previous) homeProjection.refresh()
+    if (!bridge) ctx.on?.('agent/inbox/claimed', ({ agent, message, turn }) => {
+      const previous = activeTarget.privateScope(ctx)
+      activeTarget.observe(agent, message, ctx)
+      if (activeTarget.privateScope(ctx) !== previous) homeProjection.refresh()
+      if (message?.source?.kind === 'user') homeProjection.followUserTurn(agent?.session, turn)
     }, { global: true })
   }
 

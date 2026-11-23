@@ -7,13 +7,13 @@ SENTENCE_END = re.compile(r'([，。！？；\n,.!?;]+)')
 MAX_BUFFERED = 3
 
 
-async def stream_sentences(fragments, render):
+async def stream_sentences(fragments, render, *, sentence_end=SENTENCE_END):
     """Yield rendered sentences with at most three unconsumed sentences in flight."""
     queue = asyncio.Queue(MAX_BUFFERED)
     capacity = asyncio.Semaphore(MAX_BUFFERED)
 
     async def publish(text):
-        if not text.strip() or SENTENCE_END.fullmatch(text.strip()):
+        if not text.strip() or sentence_end.fullmatch(text.strip()):
             return
         await capacity.acquire()
         audio = await render(text)
@@ -23,7 +23,7 @@ async def stream_sentences(fragments, render):
         tail = ''
         try:
             async for fragment in fragments:
-                parts = SENTENCE_END.split(tail + fragment)
+                parts = sentence_end.split(tail + fragment)
                 for index in range(0, len(parts) - 1, 2):
                     await publish(parts[index] + parts[index + 1])
                 tail = parts[-1]

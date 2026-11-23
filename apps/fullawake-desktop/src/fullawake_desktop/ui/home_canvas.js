@@ -8,12 +8,25 @@
     sofa: [355, 760],
     desk: [1150, 682],
     computer: [1205, 672],
+    bookshelf: [177, 605],
     bed: [1250, 792],
     door: [1395, 702],
   };
 
   // Bookshelf / photo album clickable region on the upper-left wall.
   const ALBUM_RECT = { x: 14, y: 120, w: 266, h: 228 };
+  const HOTSPOTS = {
+    lamp: { x: 1038, y: 291, w: 100, h: 126 },
+    album: ALBUM_RECT,
+    sofa: { x: 105, y: 642, w: 392, h: 157 },
+    desk: { x: 1030, y: 449, w: 300, h: 236 },
+    window: { x: 576, y: 225, w: 435, h: 370 },
+    bed: { x: 1040, y: 731, w: 510, h: 133 },
+    floor: { x: 64, y: 603, w: 1472, h: 254 },
+  };
+  const FURNITURE_POSES = { sofa: 'sit', window: 'idle', desk: 'sit', bed: 'sit', floor: 'idle' };
+  const MOOD_LINES = { cheerful: '嘿嘿，被你摸头啦～', tired: '唔……再让我靠一会儿嘛' };
+  const OFFLINE = { place: 'window', pose: 'idle', source: 'offline', label: '安静等待' };
 
   // Window fairy light bulb positions along the curtain rod for live twinkling at night.
   const FAIRY_LIGHTS = [
@@ -49,7 +62,7 @@
     return (hour - 17.0) / 3.5;
   }
 
-  function create(canvas, onAlbum) {
+  function create(canvas, onAlbum, onLamp = () => {}) {
     const ctx = canvas.getContext('2d', { alpha: false });
     const scale = Math.min(devicePixelRatio || 1, 2);
     canvas.width = Math.round(width * scale);
@@ -62,13 +75,31 @@
       walk: loadImage('sprites/xiaoman_walk.png'),
       read: loadImage('sprites/xiaoman_read.png'),
       rest: loadImage('sprites/xiaoman_rest.png'),
+      snack: loadImage('sprites/xiaoman_snack.png'),
+      play: loadImage('sprites/xiaoman_play.png'),
+      happy: loadImage('sprites/xiaoman_happy.png'),
     };
 
     let active = false, frame = null, paintedAt = -Infinity;
-    let state = { place: 'window', pose: 'idle', source: 'offline' };
+    let state = OFFLINE, speech, mood, presence;
+    let localOverride = null, lampManual = null, hover = null;
     let position = places.window, from = position, destination = position, movedAt = 0;
     let facing = 1; // 1 = normal, -1 = flipped horizontally
-    let hoverAlbum = false;
+
+    function move(next, at) {
+      if (next[0] === destination[0] && next[1] === destination[1]) return;
+      destination = next;
+      [from, movedAt] = [active ? position : next, at];
+    }
+
+    function resetLocal(at) {
+      localOverride = null;
+      move(places[state.place], at);
+    }
+
+    function actualSpeech() {
+      return speech?.text && Date.parse(speech.expiresAt) > Date.now() ? speech.text : '';
+    }
 
     const triggerPaint = () => {
       if (active && !document.hidden) draw(performance.now());
@@ -119,17 +150,19 @@
           ctx.arc(fx, fy, 20, 0, Math.PI * 2);
           ctx.fill();
         }
-        // Soft pulsing warm desk lamp halo
+      }
+      const lampStrength = lampManual === null ? night : Number(lampManual);
+      if (lampStrength > 0.01) {
         const lampPulse = 0.88 + 0.12 * Math.sin(seconds * 1.4);
         const lamp = ctx.createRadialGradient(1088, 370, 12, 1088, 395, 210);
-        lamp.addColorStop(0, `rgba(255, 215, 138, ${0.22 * night * lampPulse})`);
+        lamp.addColorStop(0, `rgba(255, 215, 138, ${0.26 * lampStrength * lampPulse})`);
         lamp.addColorStop(1, 'rgba(255, 195, 110, 0)');
         ctx.fillStyle = lamp;
         ctx.fillRect(860, 180, 460, 420);
       }
 
       // Animated TV glow when Xiaoman is watching movies/videos on the sofa
-      if (state.place === 'sofa' || state.pose === 'watch') {
+      if (state.pose === 'watch') {
         const flicker = 0.78 + 0.22 * Math.sin(seconds * 3.7) * Math.cos(seconds * 1.9);
         ctx.save();
         ctx.beginPath();
@@ -161,28 +194,22 @@
       }
 
       // Subtle warm highlight when hovering the bookshelf (共同相册)
-      if (hoverAlbum) {
+      const highlight = hover === 'pet' ? characterRect() : HOTSPOTS[hover];
+      if (highlight && hover !== 'floor') {
         ctx.save();
-        ctx.strokeStyle = 'rgba(255, 226, 168, 0.78)';
-        ctx.lineWidth = 3;
-        ctx.fillStyle = 'rgba(255, 226, 168, 0.10)';
+        ctx.strokeStyle = 'rgba(255, 226, 168, 0.42)';
+        ctx.lineWidth = 2;
+        ctx.fillStyle = 'rgba(255, 226, 168, 0.06)';
         ctx.beginPath();
-        ctx.roundRect(ALBUM_RECT.x, ALBUM_RECT.y, ALBUM_RECT.w, ALBUM_RECT.h, 12);
+        ctx.roundRect(highlight.x, highlight.y, highlight.w, highlight.h, 18);
         ctx.fill();
         ctx.stroke();
-        ctx.fillStyle = 'rgba(20, 18, 32, 0.82)';
-        ctx.beginPath();
-        ctx.roundRect(ALBUM_RECT.x + 52, ALBUM_RECT.y + ALBUM_RECT.h + 10, 162, 32, 16);
-        ctx.fill();
-        ctx.fillStyle = '#f8e9cc';
-        ctx.font = '600 14px "Segoe UI", "Microsoft YaHei UI", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('点击查看共同相册', ALBUM_RECT.x + 133, ALBUM_RECT.y + ALBUM_RECT.h + 31);
         ctx.restore();
       }
     }
 
     function pickSpriteSheet(pose) {
+      if (['snack', 'play', 'happy'].includes(pose) && ready(sprites[pose])) return sprites[pose];
       if (pose === 'walk' && ready(sprites.walk)) return sprites.walk;
       if (pose === 'rest' && ready(sprites.rest)) return sprites.rest;
       if ((pose === 'read' || pose === 'sit') && ready(sprites.read)) return sprites.read;
@@ -190,7 +217,7 @@
       return null;
     }
 
-    function drawXiaoman(x, y, pose, seconds) {
+    function drawXiaoman(x, y, pose, seconds, speaking) {
       ctx.save();
       ctx.translate(x, y);
 
@@ -209,10 +236,11 @@
         const frameCount = 8;
         const cellW = sheet.naturalWidth / frameCount;
         const cellH = sheet.naturalHeight;
-        const fps = pose === 'walk' ? 9 : pose === 'rest' ? 4 : 6;
+        const fps = pose === 'walk' || speaking ? 9 : pose === 'rest' ? 4 : 6;
         const idx = Math.floor(seconds * fps) % frameCount;
         const drawSize = pose === 'rest' ? 215 : 235;
-        const bob = pose === 'walk' ? -Math.abs(Math.sin(seconds * 11)) * 6 : Math.sin(seconds * 2.0) * 1.8;
+        const bob = pose === 'walk' || pose === 'happy' ? -Math.abs(Math.sin(seconds * 11)) * 7
+          : Math.sin(seconds * (speaking ? 5 : 2)) * (speaking ? 3 : 1.8);
 
         ctx.save();
         ctx.translate(0, bob);
@@ -246,12 +274,78 @@
       ctx.restore();
     }
 
+    function drawBubble(text, x, y, alpha = 1) {
+      ctx.save();
+      ctx.font = '600 26px "Segoe UI", "Microsoft YaHei UI", sans-serif';
+      const rows = [''];
+      const characters = [...text.replace(/\s+/gu, ' ')];
+      for (const char of characters) {
+        const last = rows.length - 1;
+        if (ctx.measureText(rows[last] + char).width > 422) {
+          if (rows.length === 3) {
+            const final = [...rows[last]];
+            while (ctx.measureText(final.join('') + '…').width > 422) final.pop();
+            rows[last] = final.join('') + '…';
+            break;
+          }
+          rows.push(char);
+        } else rows[last] += char;
+      }
+      const w = Math.max(86, ...rows.map(row => ctx.measureText(row).width + 38));
+      const h = rows.length * 34 + 21;
+      const left = Math.max(16, Math.min(width - w - 16, x - w / 2));
+      const top = Math.max(16, y - h);
+      const tail = Math.max(left + 22, Math.min(left + w - 22, x));
+      ctx.globalAlpha = alpha;
+      const glass = ctx.createLinearGradient(0, top, 0, top + h);
+      glass.addColorStop(0, '#28243eed');
+      glass.addColorStop(1, '#4f395ceb');
+      ctx.fillStyle = glass;
+      ctx.strokeStyle = '#e8d5efab';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(left, top, w, h, 19);
+      ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(tail - 8, top + h - 1);
+      ctx.lineTo(tail + 8, top + h - 1); ctx.lineTo(tail, top + h + 12);
+      ctx.closePath(); ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#fff7f5';
+      rows.forEach((row, index) => ctx.fillText(row, left + w / 2, top + 28 + index * 34));
+      ctx.restore();
+    }
+
+    function drawOverlay(at, words) {
+      const [x, y] = position;
+      if (words) drawBubble(words, x, y - 221);
+      else if (state.source === 'session' && state.label?.includes('想')) {
+        drawBubble(Array.from({ length: 1 + Math.floor(at / 350) % 3 }, () => '·').join(' '), x, y - 221);
+      } else if (localOverride?.line && at - localOverride.startedAt < 3500) {
+        const age = at - localOverride.startedAt;
+        drawBubble(localOverride.line, x, y - 221, Math.min(1, (3500 - age) / 600));
+      }
+      if (localOverride?.hearts && at - localOverride.startedAt < 1500) {
+        const age = (at - localOverride.startedAt) / 1500;
+        ctx.save();
+        ctx.globalAlpha = 1 - age;
+        ctx.font = '700 27px "Segoe UI Symbol", sans-serif';
+        ctx.fillStyle = '#ffc4de';
+        [-46, 0, 46].forEach((offset, index) => {
+          ctx.fillText('♡', x + offset * (1 + age), y - 124 - age * (60 + 19 * index));
+        });
+        ctx.restore();
+      }
+    }
+
     function draw(at) {
       const now = new Date();
       ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
       const hour = now.getHours() + now.getMinutes() / 60;
       const seconds = at / 1000;
 
+      if (localOverride && localOverride.expiresAt <= at) resetLocal(at);
+      const words = actualSpeech();
       drawBackdrop(hour, seconds);
 
       const progress = Math.min(1, Math.max(0, (at - movedAt) / 1050));
@@ -262,7 +356,8 @@
         facing = destination[0] < from[0] ? 1 : -1;
       }
 
-      drawXiaoman(position[0], position[1], moving ? 'walk' : state.pose, seconds);
+      const localPose = localOverride && at < (localOverride.poseUntil ?? localOverride.expiresAt) ? localOverride.pose : null;
+      drawXiaoman(position[0], position[1], moving ? 'walk' : localPose || state.pose, seconds, Boolean(words));
 
       // Soft nocturnal / rest atmospheric veil
       const restDim = state.pose === 'rest' ? 0.14 : 0;
@@ -274,6 +369,7 @@
         ctx.fillStyle = 'rgba(24, 22, 38, 0.18)';
         ctx.fillRect(0, 0, width, height);
       }
+      drawOverlay(at, words);
     }
 
     function tick(at) {
@@ -295,40 +391,69 @@
       }
     }
 
-    function pointerInAlbum(event) {
+    function characterRect() {
+      const [x, y] = position;
+      return { x: x - 72, y: y - 200, w: 144, h: 208 };
+    }
+
+    function pointer(event) {
       const bounds = canvas.getBoundingClientRect();
-      if (!bounds.width || !bounds.height) return false;
+      if (!bounds.width || !bounds.height) return null;
       const x = (event.clientX - bounds.left) * width / bounds.width;
       const y = (event.clientY - bounds.top) * height / bounds.height;
-      return x >= ALBUM_RECT.x && x <= ALBUM_RECT.x + ALBUM_RECT.w &&
-        y >= ALBUM_RECT.y && y <= ALBUM_RECT.y + ALBUM_RECT.h;
+      const inside = rect => x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h;
+      const kind = inside(characterRect()) ? 'pet' : Object.keys(HOTSPOTS).find(key => inside(HOTSPOTS[key]));
+      return { kind, point: [x, y] };
+    }
+
+    function interact(action, point) {
+      if (action === 'lamp') {
+        lampManual = lampManual === null ? true : lampManual ? false : null;
+        onLamp(lampManual === null ? 'auto' : lampManual ? 'on' : 'off');
+        return;
+      }
+      if (action === 'album') { onAlbum(); return; }
+      if (actualSpeech() || ['session', 'pc', 'companion'].includes(state.source)) return;
+      const at = performance.now();
+      if (Object.hasOwn(FURNITURE_POSES, action)) {
+        if (presence === 'asleep') return;
+        localOverride = { pose: FURNITURE_POSES[action], startedAt: at, expiresAt: at + 30_000 };
+        move(action === 'floor' ? point : places[action], at);
+      } else if (action === 'pet') {
+        const asleep = presence === 'asleep';
+        localOverride = { pose: asleep ? 'rest' : 'happy', startedAt: at, expiresAt: at + 3500, poseUntil: at + 2500,
+          line: asleep ? 'zzZ……（轻声翻了个身）' : MOOD_LINES[mood] || '在呢，怎么啦？', hearts: true };
+        move(position, at);
+      } else if ((action === 'snack' || action === 'play') && presence !== 'asleep') {
+        localOverride = { pose: action, startedAt: at, expiresAt: at + 6000,
+          line: action === 'snack' ? '西瓜好甜！' : '差最后一面啦～' };
+        move(position, at);
+      }
     }
 
     document.addEventListener('visibilitychange', syncVisibility);
     canvas.addEventListener('mousemove', event => {
-      const next = pointerInAlbum(event);
-      if (next !== hoverAlbum) {
-        hoverAlbum = next;
-        canvas.style.cursor = next ? 'pointer' : 'default';
-      }
+      hover = pointer(event)?.kind;
+      canvas.classList.toggle('is-interactive', Boolean(hover));
     });
     canvas.addEventListener('mouseleave', () => {
-      hoverAlbum = false;
-      canvas.style.cursor = 'default';
+      hover = null;
+      canvas.classList.remove('is-interactive');
     });
     canvas.addEventListener('click', event => {
-      if (pointerInAlbum(event)) onAlbum();
+      const hit = pointer(event);
+      if (hit?.kind) interact(hit.kind, hit.point);
     });
 
     return {
-      update(scene) {
-        state = scene && Object.hasOwn(places, scene.place) ? scene : { place: 'window', pose: 'idle', source: 'offline' };
-        const next = places[state.place];
-        if (next !== destination) {
-          destination = next;
-          [from, movedAt] = [active ? position : next, performance.now()];
-        }
+      update(scene, details = {}) {
+        const next = scene && Object.hasOwn(places, scene.place) ? scene : OFFLINE;
+        const changed = ['place', 'pose', 'source', 'label'].some(key => state[key] !== next[key]);
+        state = next;
+        ({ speech, mood, presence } = details);
+        if (changed || (localOverride && actualSpeech())) resetLocal(performance.now());
       },
+      interact,
       setActive(value) { active = value; syncVisibility(); },
       image() {
         draw(performance.now());

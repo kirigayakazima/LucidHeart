@@ -71,13 +71,9 @@ class ConsoleApi:
 
     @staticmethod
     def _home_with_pet(home, pet_running):
-        if not home or not pet_running or home.get('stale'):
+        if not home or 'error' in home:
             return home
-        scene = home.get('sceneState', {})
-        if scene.get('source') in ('heart', 'decoration'):
-            return {**home, 'sceneState': {'place': 'door', 'pose': 'idle', 'source': 'desktop_pet',
-                                         'label': '小满正在桌面陪你'}}
-        return home
+        return {**home, 'pet_running': bool(pet_running or home.get('pet_running'))}
 
     def home(self):
         return self._home_with_pet(self._request('GET', 'home', timeout=2.0), self._supervisor.pet_running())
@@ -89,7 +85,9 @@ class ConsoleApi:
             image = base64.b64decode(encoded, validate=True)
             with Image.open(BytesIO(image), formats=('PNG',)) as parsed:
                 width, height = parsed.size
-                if not (960 <= width <= 1920 and 560 <= height <= 1120):
+                legacy_size = 960 <= width <= 1920 and 560 <= height <= 1120
+                home_size = 1600 <= width <= 3200 and 900 <= height <= 1800 and abs(width * 9 - height * 16) <= 16
+                if not (legacy_size or home_size):
                     raise ValueError('invalid canvas dimensions')
                 parsed.verify()
         except (OSError, ValueError, binascii.Error, Image.DecompressionBombError):

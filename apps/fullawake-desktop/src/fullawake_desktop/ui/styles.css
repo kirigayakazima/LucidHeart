@@ -282,6 +282,13 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflo
 }
 #home-title { font-size: 17px; margin-bottom: 2px; }
 #home-status { font-size: 13px; color: #c7c3dc; }
+.album-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.album-tag, #home-game-badge { padding: 4px 8px; border-radius: 12px; color: #e3ede2; background: #30463c; }
+#home-pet-badge { color: #efdbc0; font-size: 12px; padding: 6px 9px; border-radius: 16px; background: #423746; }
+.home-interactions { display: flex; flex-wrap: wrap; gap: 6px; align-self: flex-end; }
+.home-interactions button { padding: 5px 12px; border-radius: 18px; font-size: 12px; color: #f5e2ef;
+  background: #382c488c; backdrop-filter: blur(10px); }
+#home-canvas.is-interactive { cursor: pointer; }
 
 .home-stage {
   flex: 1 1 auto;

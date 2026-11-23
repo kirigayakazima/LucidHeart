@@ -3,6 +3,7 @@ from io import BytesIO
 
 import httpx
 from PIL import Image
+import pytest
 
 from fullawake_desktop.api_bridge import ConsoleApi
 from fullawake_desktop.supervisor import Supervisor
@@ -24,7 +25,8 @@ def test_home_uses_fixed_local_route_and_state_poll_never_performs_io():
     try:
         assert not api.state()['gateway_online']
         assert not calls
-        assert api.home()['sceneState']['source'] == 'desktop_pet'
+        home = api.home()
+        assert home['sceneState']['source'] == 'decoration' and home['pet_running']
         request, = calls
         assert str(request.url) == 'http://127.0.0.1:8765/v1/desktop/home'
         assert request.headers['Authorization'] == f'Bearer {supervisor.token}'
@@ -36,10 +38,11 @@ def test_home_uses_fixed_local_route_and_state_poll_never_performs_io():
         api._close()
 
 
-def test_export_only_accepts_bounded_png_and_requires_a_native_selection(tmp_path):
+@pytest.mark.parametrize('size', [(960, 560), (1600, 900), (3200, 1800)])
+def test_export_only_accepts_bounded_png_and_requires_a_native_selection(tmp_path, size):
     api = ConsoleApi(Supervisor({}))
     image = BytesIO()
-    Image.new('RGB', (960, 560), '#ffd5ab').save(image, format='PNG')
+    Image.new('RGB', size, '#ffd5ab').save(image, format='PNG')
     encoded = base64.b64encode(image.getvalue()).decode()
     destination = tmp_path / 'home.png'
     try:

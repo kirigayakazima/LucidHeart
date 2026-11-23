@@ -108,3 +108,22 @@ for (const ending of ['tool', 'speech', 'disconnect']) {
     if (ending !== 'disconnect') assert.equal(switches.at(-1), false)
   })
 }
+
+test('call resolves the current session agent for final delivery and handoff', async () => {
+  let duplex, saved, input
+  const initial = { id: 'private', session: { id: 'private', events: [] }, followup: assert.fail }
+  const messages = []
+  const live = { ...initial, followup: message => messages.push(message) }
+  let current = initial
+  applyDuplex({ provide: (_, service) => { duplex = service }, on() {},
+    memory: { handoff: { saveCall: data => { saved = data.agent } } } })
+  const call = duplex.startCall(initial, { resolveAgent: () => current, onInput: (_, agent) => { input = agent } })
+  current = live
+  call.open({ audio_epoch: 2, turnId: 'after-idle' })
+  assert.equal(await call.receive({ audio_epoch: 2, turnId: 'after-idle', text: '回来了', is_final: true }), true)
+  assert.equal(input, live)
+  assert.equal(messages[0].content[0].text, '[Voice message] 回来了')
+  current = { id: 'different', followup: assert.fail }
+  call.close()
+  assert.equal(saved, live)
+})

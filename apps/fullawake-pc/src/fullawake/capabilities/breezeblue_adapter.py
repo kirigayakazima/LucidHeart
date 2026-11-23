@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -9,6 +10,13 @@ import httpx
 from fullawake.core.config import config
 
 MAX_MP3_BYTES = 1024 * 1024
+_RETRY_429_DELAYS = (0.6, 1.2)
+
+
+class _RateLimitedError(ValueError):
+    def __init__(self, retry_after: float | None = None) -> None:
+        super().__init__('BreezeBlue HTTP 429')
+        self.retry_after = retry_after
 
 
 class BreezeBlueAdapter:
@@ -38,13 +46,38 @@ class BreezeBlueAdapter:
             raise ValueError('Invalid BreezeBlue HTTPS endpoint')
         url = f"{config.breeze_endpoint.rstrip('/')}/{quote(config.breeze_voice_id, safe='')}"
         payload = {'text': text, 'instructions': instructions or '', 'voice_settings': {'guidance_scale': 2}}
-        return await asyncio.wait_for(self._request(url, payload), min(deadline_s, 8.0))
+        deadline = time.monotonic() + min(deadline_s, 8.0)
+        for attempt in range(len(_RETRY_429_DELAYS) + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.05:
+                raise asyncio.TimeoutError('BreezeBlue deadline exceeded')
+            try:
+                return await asyncio.wait_for(self._request(url, payload), min(remaining, 8.0))
+            except _RateLimitedError as error:
+                if attempt >= len(_RETRY_429_DELAYS):
+                    raise
+                delay = _RETRY_429_DELAYS[attempt]
+                if error.retry_after is not None and 0.1 <= error.retry_after <= 4.0:
+                    delay = max(delay, error.retry_after)
+                if time.monotonic() + delay + 0.5 >= deadline:
+                    raise
+                logging.getLogger(__name__).warning(
+                    'BreezeBlue HTTP 429, retrying attempt=%d in %.1fs', attempt + 1, delay
+                )
+                await asyncio.sleep(delay)
 
     async def _request(self, url, payload):
         client = self._get_client()
         try:
             async with client.stream('POST', url, params={'output_format': 'mp3'}, json=payload,
                                      headers={'xi-api-key': config.breeze_api_key, 'Accept': 'audio/mpeg'}) as reply:
+                if reply.status_code == 429:
+                    retry_raw = reply.headers.get('retry-after', '').strip()
+                    try:
+                        retry_after = float(retry_raw) if retry_raw else None
+                    except ValueError:
+                        retry_after = None
+                    raise _RateLimitedError(retry_after)
                 if not reply.is_success:
                     raise ValueError(f'BreezeBlue HTTP {reply.status_code}')
                 data = bytearray()

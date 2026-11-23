@@ -123,6 +123,7 @@ class DesktopConsole:
         self.vad_mode = 'ptt' if config.ptt_key in PTT_VIRTUAL_KEYS else 'auto'
         self.log = ConsoleLog()
         self.home = HomeState()
+        self.watch.on_pet_event = self._on_pet_event
         gateway.desktop.capture_target = self.capture_target
         self.watch.capture_target = self.capture_target
 
@@ -132,6 +133,17 @@ class DesktopConsole:
             return {}
         key = 'hwnd' if kind == 'window' else 'monitor_id'
         return {key: self.target[key], 'console_target': True}
+
+    def _on_pet_event(self, event):
+        kind, utterance = event.get('event'), event.get('utteranceId')
+        if kind == 'action':
+            self.home.set_speech(event.get('text'), intent=event.get('intent', 'talk'),
+                                 duration_ms=event.get('audioDurationMs') or event.get('durationMs'),
+                                 utterance_id=utterance)
+        elif kind == 'playback_clock' and event.get('mode') == 'idle':
+            self.home.clear_speech(utterance)
+        elif kind in ('audio_cancel', 'interrupt'):
+            self.home.clear_speech(utterance, immediate=True)
 
     async def select(self, target):
         if target.kind == 'auto' and target.monitor_id is None and target.hwnd is None:

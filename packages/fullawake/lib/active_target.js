@@ -25,19 +25,21 @@ function getAgentById(agents, id) {
 }
 
 function getService(ctx, name) {
-  try { return typeof ctx?.get === 'function' ? ctx.get(name) : ctx?.[name] } catch { return null }
+  try { return ctx.get?.(name) ?? ctx?.[name] } catch { return null }
+}
+
+const sessionIdOf = agent => agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
+const groupId = id => /(?:^|[:-])group(?:[:-]|$)/i.test(String(id ?? ''))
+
+function qqScope(ctx, agent) {
+  const sender = getService(ctx, 'qqbotMediaSender')
+  try {
+    return sender?.resolveTargetForSession?.(sessionIdOf(agent))?.scope
+  } catch { return null }
 }
 
 function isGroupSession(ctx, agent) {
-  const sender = getService(ctx, 'qqbotMediaSender')
-  const sessionId = agent?.session?.id ?? agent?.session?.header?.id ?? agent?.id
-  try {
-    const info = sender?.resolveTargetForSession?.(sessionId)
-    if (info?.scope === 'group') return true
-    if (info?.scope === 'c2c') return false
-  } catch {}
-  const id = String(sessionId || '')
-  return /(?:^|[:-])group(?:[:-]|$)/i.test(id)
+  return qqScope(ctx, agent) === 'group' || groupId(sessionIdOf(agent))
 }
 
 function isDirectC2c(ctx, agent) {
@@ -52,6 +54,7 @@ function isDirectC2c(ctx, agent) {
 
 export class ActiveTargetStore {
   #lastAgentId = ''
+  #homeAgentId = ''
 
   constructor(config = {}, { stateFile = DEFAULT_STATE_FILE } = {}) {
     this.config = config
@@ -65,12 +68,14 @@ export class ActiveTargetStore {
 
   /** Home needs positive private-chat evidence and must never persist a fallback. */
   privateScope(ctx) {
-    const id = this.currentId
-    const agent = getAgentById(getService(ctx, 'agents'), id)
-    if (!agent || !isDirectC2c(ctx, agent)) return null
-    const sessionId = agent.session?.id ?? agent.session?.header?.id ?? agent.id
+    const agent = getAgentById(getService(ctx, 'agents'), this.#homeAgentId || this.currentId)
+    const sessionId = sessionIdOf(agent)
+    if (!normalizeId(sessionId) || groupId(sessionId)) return null
+    const scope = qqScope(ctx, agent)
+    if (scope === 'group') return null
     const allowed = this.config?.duplexQqSessions
-    if (allowed?.length && !allowed.some(value => normalizeId(value) === normalizeId(sessionId))) return null
+    if (scope === 'c2c' && allowed?.length &&
+        !allowed.some(value => normalizeId(value) === normalizeId(sessionId))) return null
     return sessionId
   }
 
@@ -99,15 +104,20 @@ export class ActiveTargetStore {
   }
 
   /** Record the most recently active authorized direct (non-group) user session. */
-  observe(agent, message) {
+  observe(agent, message, ctx) {
     if (!agent?.id || message?.source?.kind !== 'user') return false
     const qq = message.source?.qq
     if (qq && qq.channel !== 'direct') return false
     if (this.config?.duplexQqSessions?.length) {
       const id = normalizeId(agent.session?.id ?? agent.session?.header?.id ?? agent.id)
       const allowed = this.config.duplexQqSessions.some(value => normalizeId(value) === id)
-      if (!allowed) return false
+      if (!allowed) {
+        // Native conversations can update Home without changing the authorized voice target.
+        if (ctx && !qq && !groupId(sessionIdOf(agent)) && !qqScope(ctx, agent)) this.#homeAgentId = agent.id
+        return false
+      }
     }
+    this.#homeAgentId = agent.id
     this.#save(agent.id)
     return true
   }
@@ -159,6 +169,7 @@ export class ActiveTargetStore {
       this.#pickFallback(ctx) ||
       (this.config?.duplexTarget ? getAgentById(agents, this.config.duplexTarget) : null)
     if (agent?.id && !isGroupSession(ctx, agent)) {
+      this.#homeAgentId = agent.id
       this.#save(agent.id)
       return { agent, agentId: agent.id }
     }

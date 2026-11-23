@@ -16,9 +16,9 @@ class Mood(HomeInput):
 
 
 class Activity(HomeInput):
-    kind: Literal['idle', 'activity', 'project', 'singing']
+    kind: Literal['idle', 'activity', 'project', 'singing', 'thinking', 'browsing_video', 'reading_memory', 'viewing_pc']
     label: str = Field(max_length=64)
-    source: Literal['heart', 'companion']
+    source: Literal['heart', 'companion', 'session']
     startedAt: AwareDatetime | None
 
     @model_validator(mode='after')
@@ -26,8 +26,10 @@ class Activity(HomeInput):
         if self.kind == 'idle':
             if self.label or self.startedAt is not None or self.source != 'heart':
                 raise ValueError('invalid idle activity')
-        elif not self.label or self.startedAt is None or self.source != 'companion':
-            raise ValueError('missing activity evidence')
+        else:
+            source = 'session' if self.kind in SESSION_SCENES else 'companion'
+            if not self.label.strip() or self.startedAt is None or self.source != source:
+                raise ValueError('missing activity evidence')
         return self
 
 
@@ -64,6 +66,14 @@ class HomeSnapshot(HomeInput):
         return self
 
 
+SESSION_SCENES = {
+    'browsing_video': ('sofa', 'watch'),
+    'reading_memory': ('bookshelf', 'read'),
+    'viewing_pc': ('computer', 'read'),
+    'thinking': ('desk', 'sit'),
+}
+
+
 def scene(place, pose, source, label):
     return {'place': place, 'pose': pose, 'source': source, 'label': label}
 
@@ -79,10 +89,10 @@ def resolve_scene_state(phone_snapshot, pc_runtime):
         if pc_runtime.get(key):
             return scene(place, pose, 'pc', label)
     activity = phone_snapshot.activity
+    if activity.kind in SESSION_SCENES:
+        return scene(*SESSION_SCENES[activity.kind], 'session', activity.label)
     if activity.kind != 'idle':
         return scene('desk', 'sit' if activity.kind == 'singing' else 'read', 'companion', activity.label)
-    if pc_runtime.get('pet_running'):
-        return scene('door', 'idle', 'desktop_pet', '小满正在桌面陪你')
     if phone_snapshot.presence == 'asleep':
         return scene('bed', 'rest', 'heart', '正在休息')
     if phone_snapshot.presence == 'resting' or phone_snapshot.mood.state == 'tired':
@@ -97,6 +107,26 @@ class HomeState:
         self.last_sequence = 0
         self.last_generated_at = None
         self.unavailable = 'awaiting'
+        self.speech_bubble = None
+
+    def set_speech(self, text, *, intent='talk', duration_ms=None, utterance_id=None):
+        if not isinstance(text, str) or not (text := text.strip()[:200]):
+            return
+        at = self.now()
+        ms = min(duration_ms, 60_000) if type(duration_ms) is int and duration_ms > 0 else max(4000, min(15000, len(text) * 260 + 2000))
+        self.speech_bubble = {
+            'text': text, 'intent': intent if intent in ('talk', 'nod', 'smile', 'wave', 'shock') else 'talk',
+            'utteranceId': utterance_id, 'startedAt': at, 'expiresAt': at + timedelta(milliseconds=ms + 1200),
+        }
+
+    def clear_speech(self, utterance_id=None, *, immediate=False):
+        current = self.speech_bubble
+        if current is None or (utterance_id is not None and current['utteranceId'] != utterance_id):
+            return
+        if immediate:
+            self.speech_bubble = None
+        else:
+            current['expiresAt'] = min(current['expiresAt'], self.now() + timedelta(milliseconds=1200))
 
     def accept(self, snapshot):
         at = self.now()
@@ -115,12 +145,17 @@ class HomeState:
 
     def invalidate(self, reason='disconnected'):
         self.snapshot = None
+        self.speech_bubble = None
         self.unavailable = reason
 
     def view(self, pc_runtime, *, include_album=False):
-        if self.snapshot is not None and self.snapshot.expiresAt <= self.now():
+        now = self.now()
+        if self.snapshot is not None and self.snapshot.expiresAt <= now:
             self.invalidate('expired')
+        if self.speech_bubble is not None and self.speech_bubble['expiresAt'] <= now:
+            self.clear_speech(immediate=True)
         snapshot = self.snapshot
+        bubble = self.speech_bubble
         result = {
             'schemaVersion': 1, 'phone_online': snapshot is not None, 'stale': snapshot is None,
             'unavailable': self.unavailable,
@@ -130,6 +165,9 @@ class HomeState:
             'presence': snapshot.presence if snapshot else 'unknown',
             'mood': snapshot.mood.model_dump() if snapshot else None,
             'sceneState': resolve_scene_state(snapshot, pc_runtime),
+            'speechBubble': {**bubble, 'startedAt': bubble['startedAt'].isoformat(),
+                             'expiresAt': bubble['expiresAt'].isoformat()} if bubble else None,
+            'pet_running': bool(pc_runtime.get('pet_running')),
             'albumCount': len(snapshot.recentAlbum) if snapshot else 0,
             'target_label': pc_runtime.get('target_label') if snapshot and pc_runtime.get('watch_active') else None,
         }

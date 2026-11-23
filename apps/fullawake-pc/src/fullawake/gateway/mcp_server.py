@@ -45,6 +45,7 @@ from fullawake.capabilities.resident_cuda import ResidentCuda
 from fullawake.pipeline.stream_worker import stream_sentences
 
 logger = logging.getLogger("fullawake.gateway")
+logging.getLogger("dxcam").setLevel(logging.WARNING)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 _log_file = os.environ.get("FULLAWAKE_LOG_FILE", "").strip()
 if _log_file and not any(isinstance(h, logging.FileHandler) for h in logging.getLogger().handlers):

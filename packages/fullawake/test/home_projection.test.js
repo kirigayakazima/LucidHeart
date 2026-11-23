@@ -122,7 +122,7 @@ test('activity and album stay in verified private scope, without forwarding ledg
   assert.deepEqual(h.sent[3].body.recentAlbum, [])
 })
 
-test('Home resolves only an authorized positively identified QQ private session', () => {
+test('Home resolves native private chat and authorized QQ C2C while excluding groups', () => {
   const agent = { id: 'session-owner', session: { id: 'session-owner' } }
   const target = new ActiveTargetStore({ duplexQqSessions: ['owner'] }, { stateFile: null })
   let destination = 'group'
@@ -133,4 +133,64 @@ test('Home resolves only an authorized positively identified QQ private session'
   assert.equal(target.privateScope(ctx), null)
   destination = 'c2c'
   assert.equal(target.privateScope(ctx), 'session-owner')
+  destination = undefined
+  assert.equal(target.privateScope(ctx), 'session-owner')
+  services.agents.get = () => null
+  assert.equal(target.privateScope(ctx), null)
+  services.agents.get = () => ({ id: 'group-room', session: { id: 'group-room' } })
+  assert.equal(target.privateScope(ctx), null)
+})
+
+test('Home selects the native user turn without moving the QQ voice target', () => {
+  const native = { id: 'native', session: { id: 'session-native' } }
+  const qq = { id: 'owner', session: { id: 'session-owner' } }
+  const ctx = { agents: { get: id => ({ native, owner: qq })[id] },
+    qqbotMediaSender: { resolveTargetForSession: id => id === 'session-owner' ? { scope: 'c2c' } : undefined } }
+  const target = new ActiveTargetStore({ duplexTarget: 'owner', duplexQqSessions: ['owner'] }, { stateFile: null })
+  assert.equal(target.observe(native, { source: { kind: 'user' } }, ctx), false)
+  assert.equal(target.privateScope(ctx), 'session-native')
+  assert.equal(target.currentId, 'owner')
+})
+
+test('private session events map only tool names, coalesce at 400 ms and expire without a terminal event', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = setup(t)
+  h.setScope('native')
+  await setImmediate()
+  const event = (type, data, id = 'session-native') => h.events.emit('session/event', { header: { id } }, { type, data })
+  const tick = async ms => { t.mock.timers.tick(ms); await setImmediate() }
+  const turn = 4
+  event('tool/call', { name: 'xhs_read', turn }, 'group-room')
+  event('turn/start', { turn })
+  await tick(399)
+  assert.equal(h.sent.length, 1)
+  await tick(1)
+  assert.equal(h.sent.at(-1).body.activity.kind, 'thinking')
+  for (const [name, kind] of [['xhs_read', 'browsing_video'], ['memory_recall', 'reading_memory'],
+    ['pc_snapshot', 'viewing_pc'], ['rvc_speak', 'thinking']]) {
+    event('tool/call', { name: 'unrelated_tool', turn })
+    event('tool/call', { name, turn, arguments: { token: 'private arguments' } })
+    await tick(400)
+    assert.equal(h.sent.at(-1).body.activity.kind, kind)
+    assert.equal(h.sent.at(-1).body.activity.source, 'session')
+    assert.doesNotMatch(h.sent.at(-1).options.body, /arguments|private/u)
+  }
+  event('turn/end', { turn })
+  await setImmediate()
+  assert.equal(h.sent.at(-1).body.activity.kind, 'idle')
+  event('tool/call', { name: 'bili_read', turn: 5 })
+  await tick(400)
+  assert.equal(h.sent.at(-1).body.activity.kind, 'browsing_video')
+  await tick(29_600)
+  assert.equal(h.sent.at(-1).body.activity.kind, 'idle')
+  event('turn/start', { turn: 6 })
+  await tick(400)
+  assert.equal(h.sent.at(-1).body.activity.kind, 'thinking')
+  await tick(44_600)
+  assert.equal(h.sent.at(-1).body.activity.kind, 'idle')
+  const count = h.sent.length
+  h.stop()
+  event('turn/start', { turn: 7 })
+  await tick(500)
+  assert.equal(h.sent.length, count)
 })

@@ -158,6 +158,7 @@ class WatchCapability(BaseCapability):
         self.cached_sheet = None
         self.subscribers = set()
         self.player = None
+        self.on_pet_event = None
         self.bridge_output = None
         self.bridge_receipt = None
         self.bridge_retained = False
@@ -342,6 +343,15 @@ class WatchCapability(BaseCapability):
             if queue.full():
                 queue.get_nowait()
             queue.put_nowait(event)
+        self.mirror_pet_event(event)
+
+    def mirror_pet_event(self, event):
+        if self.on_pet_event is not None:
+            try:
+                self.on_pet_event(event)
+            except Exception:
+                # This observer cannot change renderer delivery or playback.
+                pass
 
     def duck_output(self, volume: float = 0.18, *, utterance: str | None = None) -> bool:
         target = utterance or self.bridge_output or (self.active[0] if self.active else None) or self.song_output
@@ -351,7 +361,7 @@ class WatchCapability(BaseCapability):
         self.publish({'event': 'playback_duck', 'utteranceId': target, 'volume': vol}, player_only=True)
         return True
 
-    def cancel_output(self, *, bridge_utterance=None, interrupt_id=None, release=True):
+    def cancel_output(self, *, bridge_utterance=None, interrupt_id=None, release=True, completed=False):
         if bridge_utterance is not None:
             return self._stop_bridge(bridge_utterance, interrupt_id)
         if self.pending:
@@ -363,6 +373,8 @@ class WatchCapability(BaseCapability):
             token = self.active[0]
             self.active = None
             self.publish({'event': 'playback_clock', 'mode': 'idle', 'mouth': 0, 'positionMs': 0, 'utteranceId': token})
+            if not completed:
+                self.mirror_pet_event({'event': 'audio_cancel', 'utteranceId': token})
             if release:
                 self.audio_leases.finish(token)
 
@@ -398,6 +410,9 @@ class WatchCapability(BaseCapability):
     def _complete_bridge(self, outcome, *, release=True):
         token, self.bridge_output = self.bridge_output, None
         receipt, self.bridge_receipt = self.bridge_receipt, None
+        if token:
+            event = 'playback_clock' if outcome in ('played', 'text_delivered') else 'audio_cancel'
+            self.mirror_pet_event({'event': event, 'mode': 'idle', 'utteranceId': token})
         if receipt and not receipt.done():
             receipt.set_result(outcome)
         retained, self.bridge_retained = self.bridge_retained, False
@@ -674,7 +689,7 @@ class WatchCapability(BaseCapability):
             heartbeat = player and socket.query_params.get('heartbeat') == '1'
             last_pong = time.monotonic()
             next_ping = last_pong
-            nonces = deque(maxlen=3)
+            nonces = deque(maxlen=8)
             if player:
                 self.player = queue
                 self.song_capable = heartbeat
@@ -684,13 +699,13 @@ class WatchCapability(BaseCapability):
                     nonlocal next_ping
                     now = time.monotonic()
                     if heartbeat:
-                        if now - last_pong >= 5:
+                        if now - last_pong >= 15:
                             await socket.close(code=1011, reason='RENDERER_DISCONNECTED')
                             return
                         if now >= next_ping:
                             nonce = uuid.uuid4().hex
                             nonces.append(nonce)
-                            next_ping = now + 2
+                            next_ping = now + 2.5
                             await asyncio.wait_for(socket.send_json({'event': 'ping', 'nonce': nonce}), 2)
                     if not self.playing(now):
                         self.cancel_output()
@@ -745,6 +760,7 @@ class WatchCapability(BaseCapability):
                         continue
                     if self.song_output and utterance == self.song_output:
                         if value.get('event') == 'playback_clock' and value.get('mode') == 'idle':
+                            self.mirror_pet_event({'event': 'playback_clock', 'mode': 'idle', 'utteranceId': utterance})
                             self.song_output = None
                             self.song_reference = None
                             self.audio_leases.finish(utterance)
@@ -759,7 +775,7 @@ class WatchCapability(BaseCapability):
                     if not self.active or not self.playing(time.monotonic()) or utterance != self.active[0]:
                         continue
                     if value.get('mode') == 'idle':
-                        self.cancel_output()
+                        self.cancel_output(completed=True)
                     elif (value.get('mode') == 'speaking' and type(value.get('mouth')) is int and
                           value['mouth'] in (0, 1, 2) and type(value.get('positionMs')) is int and
                           0 <= value['positionMs'] <= 10_000):

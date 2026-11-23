@@ -713,3 +713,18 @@ def test_vad_cancels_running_pc_tts_task(bridge, monkeypatch):
         client.portal.call(gateway.interrupts.on_speech_start, gateway.interrupts.peer)
         client.portal.call(wait, cancelled)
         assert phone.receive_json()['type'] == 'audio.interrupt'
+
+
+@pytest.mark.parametrize('context', [{'cueId': 'watch', 'watchSessionId': 'timeline'}, {'gameEventId': 'a' * 32}])
+def test_autonomous_prepare_preserves_pending_voice_trace(bridge, context):
+    client, gateway = bridge
+    with client.websocket_connect('/ws/pet?player=1'), client.websocket_connect('/ws/bridge', headers=AUTH) as phone:
+        handshake(phone, lifecycle=True, capture=True)
+        trace = {'turnId': 'user', 'released': monotonic(), 'asr_done': monotonic()}
+        gateway.interrupts.peer.trace = trace
+        phone.send_json(frame('audio.prepare', 2, {'epoch': 101, 'utteranceId': 'autonomous', **context}))
+        assert phone.receive_json()['type'] == 'audio.result'
+        assert 'command' not in trace
+        phone.send_json(frame('audio.prepare', 3, {'epoch': 102, 'utteranceId': 'reply'}))
+        assert phone.receive_json()['type'] == 'audio.prepared'
+        assert trace['command'] >= trace['asr_done']

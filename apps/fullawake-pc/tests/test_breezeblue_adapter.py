@@ -102,3 +102,24 @@ def test_reuses_async_client_within_same_event_loop(adapter, monkeypatch):
 
     asyncio.run(run_twice())
     assert len(created) == 1
+
+
+def test_retries_429_with_backoff_and_succeeds(adapter, monkeypatch):
+    calls = 0
+    slept = []
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={'Retry-After': '0.2'})
+        return httpx.Response(200, content=b'ID3recovered')
+
+    async def fake_sleep(delay):
+        slept.append(delay)
+
+    transport(monkeypatch, respond)
+    monkeypatch.setattr(breezeblue_adapter.asyncio, 'sleep', fake_sleep)
+    assert asyncio.run(adapter.synthesize('好险呀')) == b'ID3recovered'
+    assert calls == 2
+    assert slept == [0.6]

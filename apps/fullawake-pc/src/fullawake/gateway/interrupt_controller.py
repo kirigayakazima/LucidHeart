@@ -166,6 +166,7 @@ class Lease:
     game: tuple | None = None
     game_session: WatchSession | None = None
     game_event: GameEvent | None = None
+    home_only: bool = False
 
 
 @dataclass(eq=False)
@@ -384,10 +385,10 @@ class InterruptController:
         task.add_done_callback(peer.jobs.discard)
         return task
 
-    def _can_render(self, peer, lease):
+    def _can_render(self, peer, lease, *, require_player=True):
         return (self.peer is peer and peer.lease is lease and lease.command.epoch not in peer.revoked_epochs
                 and lease.command.epoch >= peer.epoch_floor
-                and time.monotonic() < lease.deadline and self.watch.player is not None
+                and time.monotonic() < lease.deadline and (not require_player or self.watch.player is not None)
                 and not is_desktop_locked() and self._fresh_cue(lease))
 
     def _fresh_cue(self, lease):
@@ -420,7 +421,7 @@ class InterruptController:
 
     async def _expire_prepared(self, peer, lease):
         while peer.lease is lease and isinstance(lease.command, Prepare):
-            if time.monotonic() >= lease.deadline or not self.watch.player or not self._fresh_cue(lease):
+            if time.monotonic() >= lease.deadline or (not self.watch.player and not lease.home_only) or not self._fresh_cue(lease):
                 self._settle(peer, lease, 'discarded')
                 return
             await asyncio.sleep(0.1)
@@ -437,7 +438,7 @@ class InterruptController:
                 return
             await asyncio.sleep(0.1)
 
-    async def _stream_to_renderer(self, peer, lease, request, cancelled, renderer=None):
+    async def _stream_to_renderer(self, peer, lease, request, cancelled, renderer=None, *, sentence_end=None):
         async def fragments():
             yield request['text']
 
@@ -451,7 +452,8 @@ class InterruptController:
 
         lease.streaming = True
         previous = None
-        async with aclosing(stream_sentences(fragments(), render)) as stream:
+        stream_kwargs = {'sentence_end': sentence_end} if sentence_end is not None else {}
+        async with aclosing(stream_sentences(fragments(), render, **stream_kwargs)) as stream:
             async for sentence, audio in stream:
                 if await cancelled():
                     return 'discarded'
@@ -462,7 +464,7 @@ class InterruptController:
                     return 'discarded'
                 if previous is None:
                     lease.deadline = time.monotonic() + 30
-                    trace = peer.trace
+                    trace = self._reply_trace(peer, lease)
                     if trace and 'command' in trace and 'played' not in trace:
                         trace['played'] = played = time.monotonic()
                         log.info('LATENCY turnId=%s stage=first_audio render_ms=%.0f total_ms=%.0f',
@@ -482,9 +484,19 @@ class InterruptController:
     async def _play(self, peer, lease):
         command = lease.command
         outcome = 'discarded'
-        if peer.trace and isinstance(command, (Speak, PlayAudio)):
-            peer.trace['reply'] = command.text
+        trace = self._reply_trace(peer, lease)
+        if trace and isinstance(command, (Speak, PlayAudio)):
+            trace['reply'] = command.text
         try:
+            if (self.watch.player is None and isinstance(command, (Speak, PetText))
+                    and lease.game is None and not (lease.cue and lease.cue.cueId)
+                    and self._can_render(peer, lease, require_player=False)):
+                # A console bubble is a text mirror, not a successful audio receipt.
+                self.watch.mirror_pet_event({'event': 'action', 'text': command.text,
+                                             'intent': getattr(command, 'intent', 'talk'),
+                                             'utteranceId': command.utteranceId})
+                return
+
             async def cancelled():
                 return not self._can_render(peer, lease)
 
@@ -493,7 +505,7 @@ class InterruptController:
             audio, duration, intent = None, 4000, 'talk'
             if isinstance(command, Speak) and command.voiceProfile == 'breezeblue':
                 started = time.monotonic()
-                if peer.capture_enabled and lease.game_event is None and len(command.text) > 18 and re.search(r'[。！？!?；;，]', command.text):
+                if peer.capture_enabled and lease.game_event is None and len(command.text) > 18 and re.search(r'[。！？!?；;\n]', command.text):
                     async def sentence_audio(sentence):
                         begin = time.monotonic()
                         mp3 = await self.breeze.synthesize(sentence, command.instructions,
@@ -506,7 +518,10 @@ class InterruptController:
                             (time.monotonic() - begin) * 1000, (downloaded - begin) * 1000,
                             (time.monotonic() - downloaded) * 1000, len(sentence))
                         return wav
-                    outcome = await self._stream_to_renderer(peer, lease, {'text': command.text}, cancelled, sentence_audio)
+                    outcome = await self._stream_to_renderer(
+                        peer, lease, {'text': command.text}, cancelled, sentence_audio,
+                        sentence_end=re.compile(r'([。！？；\n.!?;]+)'),
+                    )
                     return
                 timings = {}
                 async def render_direct():
@@ -558,7 +573,7 @@ class InterruptController:
             lease.receipt = self.watch.play_bridge(lease.renderer_id, command.text, audio, duration, intent)
             if not lease.receipt:
                 return
-            trace = peer.trace
+            trace = self._reply_trace(peer, lease)
             if audio is not None and trace and 'command' in trace and 'played' not in trace:
                 trace['played'] = played = time.monotonic()
                 log.info('LATENCY turnId=%s stage=first_audio render_ms=%.0f total_ms=%.0f '
@@ -628,18 +643,14 @@ class InterruptController:
                       'audio.cancel': Utterance, 'pet.text': PetText}
             command = models[frame.type].model_validate(frame.payload)
             now = time.monotonic()
-            trace = peer.trace
-            if trace and 'command' not in trace and frame.type in ('audio.prepare', 'audio.speak', 'audio.play'):
-                trace['command'] = now
-                # Covers USB bridge + phone DSH scheduling + DeepSeek generation of the reply/tool call.
-                log.info('LATENCY turnId=%s stage=phone_llm kind=%s phone_llm_ms=%.0f',
-                         trace['turnId'], frame.type, (now - trace['asr_done']) * 1000)
             peer.prune_revoked(now)
             lease = peer.lease
             matches = lease and (lease.command.epoch, lease.command.utteranceId) == (command.epoch, command.utteranceId)
             if frame.type == 'audio.cancel':
                 if matches:
                     self._settle(peer, lease, 'cancelled')
+                if command.epoch == peer.highest_epoch:
+                    self.watch.mirror_pet_event({'event': 'audio_cancel', 'utteranceId': command.utteranceId})
                 continue
             if matches and isinstance(lease.command, Prepare) and isinstance(command, (Speak, PlayAudio, PetText)):
                 direct = isinstance(command, Speak) and command.voiceProfile == 'breezeblue'
@@ -663,7 +674,9 @@ class InterruptController:
                 continue
             if isinstance(command, Prepare):
                 lease = Lease(command, now + 25, cue=command, timeline=self.watch.timeline if command.cueId else None)
-                if (not peer.turn_lifecycle or not self.watch.player or is_desktop_locked() or
+                lease.home_only = (self.watch.player is None and self.watch.on_pet_event is not None
+                                   and not (command.cueId or command.gameProcess or command.gameEventId))
+                if (not peer.turn_lifecycle or (not self.watch.player and not lease.home_only) or is_desktop_locked() or
                         bool(command.cueId) != bool(command.watchSessionId) or not self._fresh_cue(lease)):
                     self._result(peer, command, 'discarded')
                     continue
@@ -684,14 +697,31 @@ class InterruptController:
                     session.claimed = True
                     lease.game, lease.game_session, lease.game_event = session.game, session, event
                     lease.deadline = event.timestamp + EVENT_SECONDS
+                if not (command.cueId or command.gameEventId):
+                    self._trace_command(peer, frame.type, now)
                 peer.lease = lease
                 peer.send('audio.prepared', epoch=command.epoch, utteranceId=command.utteranceId)
                 self._spawn(peer, self._expire_prepared(peer, lease))
                 if lease.game is not None:
                     self._spawn(peer, self._guard_game(peer, lease))
             else:
+                self._trace_command(peer, frame.type, now)
                 lease = peer.lease = Lease(command, now + command.deadlineMs / 1000)
                 lease.worker = self._spawn(peer, self._play(peer, lease))
+
+    @staticmethod
+    def _reply_trace(peer, lease):
+        if lease.cue and (lease.cue.cueId or lease.cue.gameEventId):
+            return None
+        return peer.trace
+
+    @staticmethod
+    def _trace_command(peer, kind, now):
+        trace = peer.trace
+        if trace and 'command' not in trace:
+            trace['command'] = now
+            log.info('LATENCY turnId=%s stage=phone_llm kind=%s phone_llm_ms=%.0f',
+                     trace['turnId'], kind, (now - trace['asr_done']) * 1000)
 
     @staticmethod
     async def _read(socket, *, allow_audio=False):

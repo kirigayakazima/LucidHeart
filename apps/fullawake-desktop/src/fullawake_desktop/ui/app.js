@@ -71,7 +71,12 @@ function renderHome(snapshot) {
   const label = current ? ['手机在线', mood[snapshot.mood?.state], snapshot.sceneState?.label].filter(Boolean).join(' · ')
     : snapshot?.unavailable === 'expired' || snapshot?.phone_online ? '状态已过期 · 安静等待' : '手机离线 · 安静等待';
   if (byId('home-status').textContent !== label) byId('home-status').textContent = label;
-  home?.update(current ? snapshot.sceneState : null);
+  byId('home-game-badge').hidden = !(current && snapshot.sceneState?.place === 'computer' && snapshot.sceneState.source === 'pc');
+  byId('home-pet-badge').hidden = !snapshot?.pet_running;
+  home?.update(current ? snapshot.sceneState : null, {
+    speech: snapshot?.speechBubble, mood: current ? snapshot.mood?.state : null,
+    presence: current ? snapshot.presence : null,
+  });
   const key = current ? snapshot.generatedAt : null;
   if (byId('home-drawer').open && key !== albumKey) void loadAlbum(key);
 }
@@ -104,13 +109,16 @@ async function loadAlbum(key) {
     return;
   }
   const items = result.recentAlbum || [];
-  const kinds = { video_storyboard: '视频', game_moment: '游戏', user_photo: '照片' };
+  const kinds = { video_storyboard: '视频分镜', game_moment: '游戏时刻', user_photo: '共同照片' };
   const date = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
   const cards = items.map(item => {
     const card = node('article', undefined, 'home-entry');
     const time = Date.parse(item.timestamp);
-    card.append(node('h3', item.title), node('p', item.summary), node('small',
-      [kinds[item.kind], Number.isFinite(time) ? date.format(time) : '', '修订 ' + item.revision + ' 次'].filter(Boolean).join(' · ')));
+    const meta = node('div', undefined, 'album-meta');
+    meta.append(node('span', kinds[item.kind], 'album-tag'));
+    if (Number.isFinite(time)) meta.append(node('time', date.format(time)));
+    if (item.revision > 1) meta.append(node('span', '已修订 v' + item.revision, 'album-tag'));
+    card.append(node('h3', item.title), node('p', item.summary), meta);
     return card;
   });
   list.replaceChildren(...(cards.length ? cards : [node('p', '当前私聊还没有可展示的共同高光。')]));
@@ -206,7 +214,13 @@ async function repeat(callback, delay) {
 
 window.addEventListener('pywebviewready', () => {
   api = window.pywebview.api;
-  home = window.HomeCanvas.create(byId('home-canvas'), openAlbum);
+  home = window.HomeCanvas.create(byId('home-canvas'), openAlbum, mode => {
+    document.querySelector('[data-home-action="lamp"]').textContent =
+      { auto: '台灯 · 自动', on: '台灯 · 开', off: '台灯 · 关' }[mode];
+  });
+  for (const button of document.querySelectorAll('[data-home-action]')) {
+    button.addEventListener('click', () => home.interact(button.dataset.homeAction));
+  }
   for (const [id, selected] of [['workbench-tab', false], ['home-tab', true]]) {
     const tab = byId(id);
     tab.onclick = () => setView(selected);
