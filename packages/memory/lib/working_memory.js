@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { isInjectedMessage, readQqUtterance } from './host-context.js';
+import { shanghaiDay } from './store.js';
 
-const TTL_MS = 24 * 60 * 60 * 1000;
+const TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const limit = (value, size) => typeof value === 'string'
   ? [...value.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim()].slice(0, size).join('') : '';
 const id = value => typeof value === 'string' && value.length <= 256 && value.trim() ? value : null;
@@ -73,6 +74,7 @@ function atomicWrite(file, body) {
 
 export class WorkingMemory {
   constructor(dataDir, now = Date.now) {
+    this.dataDir = dataDir;
     this.directory = path.join(dataDir, 'working_memory');
     this.now = now;
   }
@@ -112,7 +114,7 @@ export function collectExchanges(events, matches) {
     if (event.type === 'user/message' && !isInjectedMessage(message)) {
       const accepted = matches(message);
       const raw = message?.source?.qq ? readQqUtterance(message)?.text : text(message)
-        .replace(/^(?:\[(?:近期工作记忆|交接线索|上次语音被打断)[\s\S]*?\n\n)+/u, '')
+        .replace(/^(?:\[(?:近期工作记忆|近几日直聊片段|交接线索|上次语音被打断)[\s\S]*?\n\n)+/u, '')
         .replace(/^\[Voice message\]\s*/u, '');
       current = accepted && raw ? { user: raw, assistant: '', messageId: message.id } : null;
     }
@@ -133,4 +135,92 @@ export function collectExchanges(events, matches) {
 export function workingExchanges(exchanges) {
   return exchanges.map(item => item.assistant
     ? `${limit(item.user, 28)} / ${limit(item.assistant, 29)}` : limit(item.user, 60));
+}
+
+export function saveDailyEpisode(dataDir, identity, { exchanges = [], focus = [] } = {}, now = Date.now()) {
+  if (!dataDir || identity?.channel !== 'direct') return null;
+  const cleanExchanges = (Array.isArray(exchanges) ? exchanges : []).map(item => limit(item, 80)).filter(Boolean).slice(-3);
+  const cleanFocus = (Array.isArray(focus) ? focus : []).map(item => limit(item, 42)).filter(Boolean).slice(-2);
+  if (!cleanExchanges.length && !cleanFocus.length) return null;
+  const day = shanghaiDay(new Date(now));
+  const dir = path.join(dataDir, 'episodes');
+  const file = path.join(dir, `${day}.jsonl`);
+  const signature = JSON.stringify({
+    scope: identity.scope ?? null,
+    targetId: identity.targetId ?? null,
+    exchanges: cleanExchanges,
+    focus: cleanFocus,
+  });
+  try {
+    if (fs.existsSync(file)) {
+      const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          const prevSig = JSON.stringify({
+            scope: parsed.scope ?? null,
+            targetId: parsed.targetId ?? null,
+            exchanges: parsed.exchanges ?? [],
+            focus: parsed.focus ?? [],
+          });
+          if (prevSig === signature) return null;
+        } catch {}
+      }
+    }
+  } catch {}
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const record = {
+    day,
+    time: new Date(now).toISOString(),
+    scope: identity.scope,
+    targetId: identity.targetId,
+    focus: cleanFocus,
+    exchanges: cleanExchanges,
+  };
+  fs.appendFileSync(file, JSON.stringify(record) + '\n', { mode: 0o600 });
+  return record;
+}
+
+export function renderRecentEpisodes(dataDir, identity, { days = 5, maxBytes = 600, now = Date.now() } = {}) {
+  if (!dataDir || identity?.channel !== 'direct') return '';
+  const dir = path.join(dataDir, 'episodes');
+  if (!fs.existsSync(dir)) return '';
+  const seen = new Set();
+  const entries = [];
+  for (let offset = 0; offset < days; offset += 1) {
+    const day = shanghaiDay(new Date(now - offset * 86_400_000));
+    const file = path.join(dir, `${day}.jsonl`);
+    if (!fs.existsSync(file)) continue;
+    let lines = [];
+    try {
+      lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    } catch { continue; }
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const item = JSON.parse(lines[i]);
+        if (identity.scope && item.scope && item.scope !== identity.scope) continue;
+        const itemTarget = String(item.targetId ?? '');
+        const idTarget = String(identity.targetId ?? '');
+        if (itemTarget && idTarget && !itemTarget.startsWith('host:') && !idTarget.startsWith('host:') && itemTarget !== idTarget) {
+          continue;
+        }
+        const rows = [...(Array.isArray(item.exchanges) ? item.exchanges : [])].reverse();
+        for (const ex of rows) {
+          const clean = limit(ex, 80);
+          if (!clean || seen.has(clean)) continue;
+          seen.add(clean);
+          entries.push({ day: item.day || day, text: clean });
+        }
+      } catch {}
+    }
+  }
+  if (!entries.length) return '';
+  const header = '[近几日直聊片段，仅作参考]\n';
+  const footer = '[直聊片段结束]\n\n';
+  let body = '';
+  for (const entry of entries) {
+    const line = `- ${entry.day} ${entry.text}\n`;
+    if (Buffer.byteLength(header + body + line + footer) <= maxBytes) body += line;
+  }
+  return body ? header + body + footer : '';
 }

@@ -1,6 +1,14 @@
 import { CHECKPOINT_AT, FOLD_AT, ContextHygiene, contextHealth, sessionEvents } from './context_hygiene.js';
 import { estimateTokens } from './budget.js';
-import { collectExchanges, continuityIdentity, continuityKey, renderWorkingMemory, workingExchanges } from './working_memory.js';
+import {
+  collectExchanges,
+  continuityIdentity,
+  continuityKey,
+  renderRecentEpisodes,
+  renderWorkingMemory,
+  saveDailyEpisode,
+  workingExchanges,
+} from './working_memory.js';
 import { getZonedParts } from './store.js';
 
 const IDLE_MS = 15 * 60 * 1000;
@@ -70,8 +78,14 @@ export class ContextBudgetGuard {
     if (!identity) return '';
     if (state.injected) return '';
     const working = this.workingMemory.load(identity);
-    if (!working) state.injected = true;
-    return working ? renderWorkingMemory(working) : '';
+    const workingClue = working ? renderWorkingMemory(working) : '';
+    const now = typeof this.workingMemory?.now === 'function' ? this.workingMemory.now() : Date.now();
+    const episodeClue = this.workingMemory?.dataDir
+      ? renderRecentEpisodes(this.workingMemory.dataDir, identity, { now })
+      : '';
+    const clue = [workingClue, episodeClue].filter(Boolean).join('');
+    if (!clue) state.injected = true;
+    return clue;
   }
 
   markInjected(agent) {
@@ -155,12 +169,18 @@ export class ContextBudgetGuard {
       continuityKey(continuityIdentity(message, this.scope, sessionId(state.session))) === key);
     if (!recent.length) return;
     const notes = [...state.notes.values()].filter(note => note.key === key && Date.now() - note.at < 86_400_000);
+    const focus = recent.slice(-2).map(item => item.user);
+    const exchanges = workingExchanges(recent);
     this.workingMemory.save(identity, {
-      current_focus: recent.slice(-2).map(item => item.user),
-      recent_exchanges: workingExchanges(recent),
+      current_focus: focus,
+      recent_exchanges: exchanges,
       ...(notes.some(note => note.type === 'media') && { recent_media: notes.filter(note => note.type === 'media').map(note => note.value) }),
       ...(notes.some(note => note.type === 'thread') && { open_threads: notes.filter(note => note.type === 'thread').map(note => note.value) }),
     });
+    if (identity.channel === 'direct' && this.workingMemory?.dataDir) {
+      const now = typeof this.workingMemory.now === 'function' ? this.workingMemory.now() : Date.now();
+      saveDailyEpisode(this.workingMemory.dataDir, identity, { exchanges, focus }, now);
+    }
     if (!checkpoint) return;
     const record = { status: 'saved', estimatedInputTokens: this.health(state.session).estimatedInputTokens, factRetained: false };
     try {

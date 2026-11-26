@@ -6,7 +6,7 @@ import { findContradictions } from './contradictions.js';
 const durableKinds = ['preference', 'relationship', 'episodic', 'fact'];
 const routine = new Set(['早', '早安', '早上好', '晚安', '晚上好', '你好', '嗨', '哈喽', '在吗',
   '签到', '打卡', '早安打卡', '晚安打卡', '谢谢', '哈哈', 'hello', 'hi', 'good morning', 'good night']);
-function isRoutine(text) {
+export function isRoutine(text) {
   const words = text.replace(/[\p{P}\p{S}]/gu, '').trim().toLowerCase();
   return !words || routine.has(words);
 }
@@ -21,6 +21,14 @@ const firstPerson = /^(?:我|本人)(?!们|的?(?:朋友|同事|家人|父母|�
 const uncertain = /如果|假如|要是|假设|也许|可能|说不定|大概|据说|听说|我猜|我想象|我打算|我想要|吗$|么$|呢$/u;
 const leadIn = /^(?:(?:其实|更正一下|补充一下|请记住|帮我记住|记住)[，,：:\s]*)+/u;
 const comparable = text => text.normalize('NFKC').trim().replace(/[。！!.]+$/u, '').replace(/\s+/gu, ' ');
+const stopTokens = new Set([...'我你他她它们的了呢吧啊哦呀嘛就都也把给在是有这那一个']);
+const meaningfulTokens = text => [...text.normalize('NFKC').toLowerCase()]
+  .filter(ch => /[\p{Script=Han}a-z0-9]/u.test(ch) && !stopTokens.has(ch));
+const charBigrams = tokens => {
+  const out = new Set();
+  for (let i = 0; i < tokens.length - 1; i += 1) out.add(tokens[i] + tokens[i + 1]);
+  return out;
+};
 
 function matchingStatement(rawSnippet, fact, quote, speaker, channel) {
   if (!rawSnippet || /[「」『』“”"《》]/u.test(rawSnippet)) return;
@@ -39,12 +47,42 @@ function matchingStatement(rawSnippet, fact, quote, speaker, channel) {
   }
 }
 
+function groundedEvidenceClause(rawSnippet, quote, content) {
+  if (!rawSnippet || !content || /[「」『』“”"《》]/u.test(rawSnippet)) return null;
+  const factTokens = meaningfulTokens(content);
+  const factSet = new Set(factTokens);
+  const factBigrams = charBigrams(factTokens);
+  if (factSet.size === 0) return null;
+  for (const clause of rawSnippet.match(/[^。！？!?；;\n]+[。！？!?；;]?/gu) ?? []) {
+    const statement = clause.trim().replace(leadIn, '').replace(/[。！!；;\s]+$/u, '');
+    if (!statement || (quote && !clause.includes(quote)) || /[?？]/u.test(statement) || uncertain.test(statement)) continue;
+    const rawTokens = meaningfulTokens(statement);
+    const rawSet = new Set(rawTokens);
+    if (rawSet.size === 0) continue;
+    let matched = 0;
+    for (const ch of rawSet) if (factSet.has(ch)) matched += 1;
+    let matchedBigrams = 0;
+    for (const bg of charBigrams(rawTokens)) if (factBigrams.has(bg)) matchedBigrams += 1;
+    const recall = matched / rawSet.size;
+    if (matched >= 2 && recall >= 0.45 && (matchedBigrams >= 1 || rawSet.size <= 3)) {
+      return { statement, firstPerson: false };
+    }
+  }
+  return null;
+}
+
 export function buildIntakeMetadata(host, { content, kind, origin, evidence, importance }) {
   const { sessionId, channel, speaker, messageId, observedAt, rawSnippet } = host;
-  const statement = matchingStatement(rawSnippet, content, evidence, speaker, channel);
+  const isNativeDirect = host.origin === 'user_request' && !channel && Boolean(sessionId && messageId && observedAt);
+  const effectiveChannel = channel || (isNativeDirect ? 'direct' : null);
+  const effectiveSpeaker = speaker || (isNativeDirect ? 'user' : null);
+  const statement = matchingStatement(rawSnippet, content, evidence, effectiveSpeaker, effectiveChannel)
+    ?? groundedEvidenceClause(rawSnippet, evidence, content);
   const quote = evidence || statement?.statement;
-  const resolved = host.origin === 'user_request' && Boolean(sessionId && channel && speaker && messageId && observedAt &&
-    quote && quote.length <= 120 && rawSnippet?.includes(quote));
+  const resolved = host.origin === 'user_request' && Boolean(
+    sessionId && effectiveChannel && effectiveSpeaker && messageId && observedAt &&
+    quote && quote.length <= 120 && rawSnippet?.includes(quote)
+  );
   let claimType = 'model_inference';
   if (resolved && origin !== 'model_inference' && origin !== 'casual_chat') {
     if (statement?.firstPerson) claimType = 'user_statement';
@@ -52,7 +90,7 @@ export function buildIntakeMetadata(host, { content, kind, origin, evidence, imp
   }
   return {
     source: {
-      ...(sessionId && { sessionId }), ...(channel && { channel }), ...(speaker && { speaker }),
+      ...(sessionId && { sessionId }), ...(effectiveChannel && { channel: effectiveChannel }), ...(effectiveSpeaker && { speaker: effectiveSpeaker }),
       ...(messageId && { messageId }), ...(observedAt && { observedAt }),
       ...(quote && quote.length <= 120 && rawSnippet?.includes(quote) && { evidenceText: quote }),
     },
@@ -61,8 +99,8 @@ export function buildIntakeMetadata(host, { content, kind, origin, evidence, imp
       : claimType === 'observation' ? IntakeWeights.shared_experience
       : origin === 'casual_chat' ? IntakeWeights.casual_chat : IntakeWeights.model_inference,
     confirmed: claimType === 'user_statement',
-    ...(channel === 'direct' && speaker && { audience: [{ channel, speaker }] }),
-    ...(channel === 'group' && host.targetId && { audience: [{ channel, targetId: host.targetId, participants: [speaker] }] }),
+    ...(effectiveChannel === 'direct' && effectiveSpeaker && { audience: [{ channel: effectiveChannel, speaker: effectiveSpeaker }] }),
+    ...(effectiveChannel === 'group' && host.targetId && { audience: [{ channel: effectiveChannel, targetId: host.targetId, participants: [effectiveSpeaker] }] }),
     ...(importance !== undefined && { importance, salience: { importance, reason: 'intake-importance', policyVersion: '1' } }),
     retentionClass: claimType === 'model_inference' ? 'unknown' : kind === 'episodic' ? 'episodic' : 'stable',
   };

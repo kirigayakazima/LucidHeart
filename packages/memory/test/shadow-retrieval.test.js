@@ -23,16 +23,16 @@ function fixture(t) {
   return { dataDir, open };
 }
 
-test('200-token conversation ceiling counts the wrapper and selects complete ranked entries', () => {
+test('360-token conversation ceiling counts the wrapper and selects complete ranked entries', () => {
   const label = '小满的回忆';
-  const prefix = `[${label}: 1. ]`;
-  const exact = 'a'.repeat(CONVERSATION_TOKEN_BUDGET - Buffer.byteLength(prefix));
-  assert.equal(Buffer.byteLength(formatConversationProjection([{ content: exact }], label)), 200);
-  const oversized = [{ content: exact + 'b' }, { content: '🌙'.repeat(60) }];
+  assert.equal(CONVERSATION_TOKEN_BUDGET, 360);
+  const exact = 'a'.repeat(1420);
+  assert.equal(formatConversationProjection([{ content: exact }], label), `[${label}: 1. ${exact}]`);
+  const oversized = [{ content: exact + 'bbbb' }, { content: '🌙'.repeat(720) }];
   assert.equal(formatConversationProjection(oversized, label, { maxTokens: 999 }), '');
   assert.equal(formatConversationProjection([...oversized, { content: '星星{{代号}}' }], label),
     '[小满的回忆: 1. 星星｛｛代号｝｝]');
-  assert.equal(formatConversationProjection([{ content: '星星' }], label, { maxTokens: 10 }), '');
+  assert.equal(formatConversationProjection([{ content: '星星' }], label, { maxTokens: 5 }), '');
 });
 
 test('shadow audits a real reorder after returning identical FTS results and keeps evidence out of logs', async t => {

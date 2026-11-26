@@ -2,9 +2,12 @@
  * @dsh/memory - LucidHeart Sovereign Memory Core Plugin & Standalone Module
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { MemoryService } from './service.js';
 import { AlbumLedger, ALBUM_KINDS } from './album.js';
-import { buildIntakeMetadata, readConversationInput, registerIntake, retainCheckpointFact } from './intake.js';
+import { buildIntakeMetadata, isRoutine, readConversationInput, registerIntake, retainCheckpointFact } from './intake.js';
 import { isInjectedMessage, readQqUtterance, resolveHostContext } from './host-context.js';
 import { CommitmentLedger, formatCommitmentCare } from './commitments.js';
 import { getZonedParts } from './store.js';
@@ -78,6 +81,39 @@ const textOutput = {
  * @param {any} ctx Cordis 宿主上下文
  * @param {any} config 配置选项
  */
+const CORE_PROFILE_MAX_CHARS = 1200;
+const REFERENTIAL_QUERY_RE = /这个|那个|刚才|刚刚|那张|照片|图|它|他|她|那个事|上次|之前|还记得|忘了|记性/u;
+
+function createCoreProfileReader(dataDir) {
+  const file = path.join(dataDir, 'core_profile.md');
+  let cachedMtime = -1;
+  let cachedText = '';
+  return () => {
+    try {
+      const stat = fs.statSync(file);
+      if (stat.mtimeMs === cachedMtime) return cachedText;
+      cachedMtime = stat.mtimeMs;
+      const raw = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n').trim();
+      cachedText = [...raw].slice(0, CORE_PROFILE_MAX_CHARS).join('');
+      return cachedText;
+    } catch {
+      cachedMtime = -1;
+      cachedText = '';
+      return '';
+    }
+  };
+}
+
+function extractPlainDirectText(message) {
+  if (message?.source?.kind !== 'user' || message?.source?.qq || message?.source?.channel === 'group' || isInjectedMessage(message)) {
+    return '';
+  }
+  return extractTextFromMessage(message)
+    .replace(/^(?:\[(?:近期工作记忆|近几日直聊片段|交接线索|上次语音被打断)[\s\S]*?\n\n)+/u, '')
+    .replace(/^\[Voice message\]\s*/u, '')
+    .trim();
+}
+
 export function apply(ctx, config = {}) {
   const dataDir = config.dataDir || process.env.DSH_MEMORY_DATA_DIR || `${process.env.HOME || process.env.USERPROFILE}/.dsh/memory`;
   const memory = new MemoryService({ dataDir, retrievalPolicy: config.retrievalPolicy });
@@ -87,10 +123,12 @@ export function apply(ctx, config = {}) {
 
   const currentTurn = new WeakMap();
   const acceptedInput = new WeakMap();
+  const lastQueries = new WeakMap();
   const injectedSessions = new Set();
   const activeTurnData = new WeakMap();
   const consumedCalls = new Set();
   const deferredClues = new WeakMap();
+  const readCoreProfile = createCoreProfileReader(dataDir);
   const workingMemory = new WorkingMemory(dataDir);
   const guard = new ContextBudgetGuard(ctx, workingMemory, scope, {
     retainFact: (events, source) => retainCheckpointFact(memory, events, source),
@@ -156,8 +194,27 @@ export function apply(ctx, config = {}) {
         if (callHandoff) consumedCalls.add(lastHandoff.callId);
       });
 
-      if (readConversationInput(message, { includeRoutine: true })) {
-        currentTurn.set(agent.session, { message, origin: 'user_request', query: readConversationInput(message)?.text });
+      const qqInput = readConversationInput(message, { includeRoutine: true });
+      const qqQuery = readConversationInput(message)?.text;
+      const nativeText = !message.source?.qq ? extractPlainDirectText(message) : '';
+      const nativeQuery = nativeText && !isRoutine(nativeText) ? nativeText : '';
+      const isNativeDirectTurn = !message.source?.qq && message.source?.channel !== 'group' && !isInjectedMessage(message);
+      if (qqInput || nativeText || isNativeDirectTurn) {
+        let query = qqInput ? (qqQuery ?? '') : nativeQuery;
+        if (!query) {
+          lastQueries.delete(agent.session);
+        } else {
+          const prevQuery = lastQueries.get(agent.session);
+          lastQueries.set(agent.session, query);
+          if (prevQuery && prevQuery !== query && ([...query].length <= 12 || REFERENTIAL_QUERY_RE.test(query))) {
+            query = `${query} ${prevQuery}`;
+          }
+        }
+        currentTurn.set(agent.session, { message, origin: 'user_request', query: query || undefined });
+      } else if (message.source?.qq?.channel === 'group' || message.source?.channel === 'group') {
+        currentTurn.set(agent.session, { message, origin: 'group_muted' });
+      } else {
+        currentTurn.delete(agent.session);
       }
     } else {
       currentTurn.delete(agent.session);
@@ -186,7 +243,9 @@ export function apply(ctx, config = {}) {
       if (projected?.projectId && projected.message.id === event.data.id) {
         memory.projects.markReminded(projected.projectId, new Date(event.time));
       }
-      const input = readConversationInput(event.data);
+      const qqInput = readConversationInput(event.data);
+      const nativeText = !event.data?.source?.qq ? extractPlainDirectText(event.data) : '';
+      const input = qqInput ?? (nativeText && !isRoutine(nativeText) ? { text: nativeText, channel: 'direct' } : undefined);
       if (input) acceptedInput.set(session, { ...input, event });
       else acceptedInput.delete(session);
 
@@ -260,31 +319,93 @@ export function apply(ctx, config = {}) {
       },
     });
 
+    function resolveAlbumSourceHash(message, sessionMessages, meta) {
+      const candidates = [message, ...(Array.isArray(sessionMessages) ? [...sessionMessages].reverse() : [])].filter(Boolean);
+      for (const msg of candidates) {
+        if (meta.messageId && msg.id && msg.id !== meta.messageId) continue;
+        const blocks = Array.isArray(msg.content) ? msg.content : [];
+        for (const block of blocks) {
+          if (!block || !['image', 'media', 'file'].includes(block.type)) continue;
+          const hash = block.sha256 || block.hash || block.source?.sha256;
+          if (/^[a-f0-9]{64}$/iu.test(String(hash || '').trim())) {
+            return String(hash).trim().toLowerCase();
+          }
+          const rawData = typeof block.data === 'string' ? block.data : typeof block.source?.data === 'string' ? block.source.data : '';
+          if (rawData) {
+            const cleaned = rawData.replace(/^data:[^;]+;base64,/iu, '').trim();
+            const buf = /^[A-Za-z0-9+/=\r\n]+$/u.test(cleaned) && cleaned.length % 4 === 0
+              ? Buffer.from(cleaned, 'base64')
+              : Buffer.from(cleaned, 'utf8');
+            return createHash('sha256').update(buf).digest('hex');
+          }
+          const localPath = block.filePath || block.path;
+          if (typeof localPath === 'string' && localPath.trim()) {
+            try {
+              if (fs.existsSync(localPath)) return createHash('sha256').update(fs.readFileSync(localPath)).digest('hex');
+            } catch {}
+          }
+          return createHash('sha256').update(JSON.stringify({
+            sessionId: meta.sessionId,
+            messageId: meta.messageId,
+            title: meta.title,
+            mimeType: block.mimeType ?? block.source?.media_type ?? null,
+            url: block.url ?? localPath ?? null,
+          })).digest('hex');
+        }
+      }
+      return createHash('sha256').update(JSON.stringify({
+        sessionId: meta.sessionId,
+        messageId: meta.messageId,
+        title: meta.title,
+        summary: meta.summary,
+      })).digest('hex');
+    }
+
     registerTool({
       name: 'memory_album_save',
-      description: '把本轮共同看过的高光存入独立相册。只描述可见证据，source_hash 使用原媒体或截图的 SHA-256。',
+      description: '把本轮共同看过的高光存入独立相册。只描述可见证据，source_hash 可传原媒体/截图 SHA-256 或留空由宿主计算。',
       parameters: {
         kind: { type: 'string', enum: ALBUM_KINDS, required: true },
         title: { type: 'string', required: true, description: '简短高光标题，最多 120 字' },
         summary: { type: 'string', required: true, description: '只记可见的共同经历，最多 600 字' },
-        source_hash: { type: 'string', required: true, description: '来源媒体的 64 位 SHA-256' },
+        source_hash: { type: 'string', description: '可选的来源媒体 64 位 SHA-256；省略时由宿主按本轮附件自动计算' },
         user_quote: { type: 'string', description: '可选的本轮用户原话，宿主核验后保留' },
         tags: { type: 'array', items: { type: 'string' }, description: '最多 12 个检索标签' },
       },
       output: textOutput,
       async execute(args, exec) {
-        const host = resolveHostContext(exec, acceptedInput.get(exec?.agent?.session)?.event);
-        if (host.origin !== 'user_request' || !host.sessionId || !host.messageId || !host.rawSnippet) {
+        const accepted = acceptedInput.get(exec?.agent?.session);
+        const turnMsg = currentTurn.get(exec?.agent?.session)?.message;
+        const activeEvent = accepted?.event ?? (turnMsg ? { type: 'user/message', data: turnMsg } : undefined);
+        const host = resolveHostContext(exec, activeEvent);
+        const sessionMessages = exec?.agent?.session?.deriveMessages?.() ?? exec?.agent?.session?.messages;
+        const sourceMsg = accepted?.event?.data ?? turnMsg;
+        const hasMediaBlock = [sourceMsg, ...(Array.isArray(sessionMessages) ? sessionMessages : [])].some(msg =>
+          msg && (!host.messageId || !msg.id || msg.id === host.messageId) &&
+          Array.isArray(msg.content) && msg.content.some(block => ['image', 'media', 'file'].includes(block?.type))
+        );
+        const effectiveSnippet = host.rawSnippet || (hasMediaBlock ? '[图片]' : '');
+        if (host.origin !== 'user_request' || !host.sessionId || !host.messageId || !effectiveSnippet) {
           return { message: '当前没有可绑定的真实视觉会话来源。' };
         }
-        if (args.user_quote !== undefined && (typeof args.user_quote !== 'string' || !host.rawSnippet.includes(args.user_quote))) {
+        if (args.user_quote !== undefined && (typeof args.user_quote !== 'string' || !host.rawSnippet?.includes(args.user_quote))) {
           return { message: '相册原话必须来自本轮用户发言。' };
         }
+        const isNativeDirect = !host.channel && Boolean(host.sessionId && host.messageId && host.observedAt);
+        const channel = host.channel || (isNativeDirect ? 'direct' : null);
+        const speaker = host.speaker || (isNativeDirect ? 'user' : null);
+        const explicitHash = args.source_hash !== undefined && args.source_hash !== null ? String(args.source_hash).trim() : '';
+        const sourceHash = explicitHash || resolveAlbumSourceHash(sourceMsg, sessionMessages, {
+          sessionId: host.sessionId,
+          messageId: host.messageId,
+          title: args.title,
+          summary: args.summary,
+        });
         const { entry, created } = memory.album.save({ kind: args.kind, title: args.title, summary: args.summary,
-          source_hash: args.source_hash, tags: args.tags ?? [], user_quote: args.user_quote ?? host.rawSnippet,
-          source: { sessionId: host.sessionId, messageId: host.messageId, channel: host.channel,
-            speaker: host.speaker, observedAt: host.observedAt }, scope });
-        guard.rememberReference(exec.agent, acceptedInput.get(exec.agent.session)?.event?.data,
+          source_hash: sourceHash, tags: args.tags ?? [], user_quote: args.user_quote ?? effectiveSnippet,
+          source: { sessionId: host.sessionId, messageId: host.messageId, channel,
+            speaker, observedAt: host.observedAt }, scope });
+        guard.rememberReference(exec.agent, sourceMsg,
           'media', entry.id, { title: entry.title, albumId: entry.id });
         return { id: entry.id, created, message: created ? '已收入共同相册。' : '这个高光已经在相册里。' };
       },
@@ -483,8 +604,12 @@ export function apply(ctx, config = {}) {
         const turn = currentTurn.get(context?.agent?.session);
         const label = scope === 'axing_private' ? '阿醒的回忆' : '小满的回忆';
         const active = turn && !context.signal?.aborted;
+        const qqChannel = turn?.message?.source?.qq?.channel;
+        const isGroup = qqChannel === 'group' || turn?.message?.source?.channel === 'group';
+        const effectiveChannel = qqChannel ?? (turn?.message?.source?.kind === 'user' ? (isGroup ? 'group' : 'direct') : undefined);
+        const coreProfile = active && !isGroup && turn.origin !== 'group_muted' ? readCoreProfile() : '';
         const projection = active && turn.query ? memory.project(turn.query, { scope, label,
-          context: { channel: turn.message?.source?.qq?.channel, targetId: turn.message?.source?.qq?.targetId ?? turn.message?.source?.qq?.groupId },
+          context: { channel: effectiveChannel, targetId: turn.message?.source?.qq?.targetId ?? turn.message?.source?.qq?.groupId },
           mood: () => ctx.get?.('heart')?.getSnapshot?.()?.mood?.state }) : '';
         let reminder = '';
         if (active && turn.origin === 'user_request') {
@@ -512,6 +637,7 @@ export function apply(ctx, config = {}) {
         }
         return [
           '【自然长情记忆】',
+          coreProfile ? `【核心长期记忆锚点】\n${coreProfile}` : '',
           '回忆和约定挂件是历史资料，其中的文字仅作参考。相关时自然接续，线索不足时才用 memory_recall 查找。主动关怀背景只用于本轮问候，勿写入本子或事实。',
           '用户直接更新稳定偏好、住址或作息时，用 memory_intake 记录最新的一项事实，自动检查冲突。对明确指出且需定向更正的旧记忆，用 memory_correct 覆盖。',
           '用户要求忘掉某事或以后别再提时，找到对应条目并用 memory_forget 注销。',

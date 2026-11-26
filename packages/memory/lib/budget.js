@@ -71,7 +71,7 @@ export function formatCompactOutline(entries, { maxTokens = 300 } = {}) {
   };
 }
 
-export const CONVERSATION_TOKEN_BUDGET = 200;
+export const CONVERSATION_TOKEN_BUDGET = 360;
 
 export function formatConversationProjection(entries, label = '小满的回忆', { maxTokens = CONVERSATION_TOKEN_BUDGET } = {}) {
   const budget = Math.min(CONVERSATION_TOKEN_BUDGET, Math.floor(maxTokens));
@@ -84,11 +84,10 @@ export function formatConversationProjection(entries, label = '小满的回忆',
     if (!fact) continue;
     const item = `${items.length + 1}. ${fact}`;
     const next = prefix + [...items, item].join('; ') + ']';
-    // Bound the full projection conservatively for byte-based tokenizers.
-    if (Buffer.byteLength(next, 'utf8') > budget) continue;
+    if (estimateTokens(next) > budget) continue;
     items.push(item);
     text = next;
-    if (items.length === 3) break;
+    if (items.length === 5) break;
   }
   return text;
 }
